@@ -1,0 +1,56 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+name: public-ci
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  custody:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Verify tracked public tree
+        run: python tools/public_export.py verify --require-public-tree
+      - name: Verify downloadable source archive
+        run: python tools/public_export.py verify-archive
+
+  runtime-tests:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure public runtime tests
+        run: cmake -S recomp-runtime -B build/recomp-runtime
+      - name: Build public runtime tests
+        run: cmake --build build/recomp-runtime --config Debug --target recomp_runtime_test
+      - name: Run public runtime tests
+        run: ctest --test-dir build/recomp-runtime -C Debug --output-on-failure
+      - name: Prove partial authentication fails closed
+        shell: pwsh
+        run: |
+          $source = (Resolve-Path recomp-runtime/runtime_public_fixture.c).Path
+          $output = & cmake -S recomp-runtime -B build/missing-hash `
+            "-DRECOMP_FUNCTION_SOURCE=$source" 2>&1 | Out-String
+          if ($LASTEXITCODE -eq 0 -or
+              $output -notmatch "must be supplied together") {
+            throw "configure accepted a generated source without its receipt hash"
+          }
+      - name: Prove a wrong authentication hash fails closed
+        shell: pwsh
+        run: |
+          $source = (Resolve-Path recomp-runtime/runtime_public_fixture.c).Path
+          $output = & cmake -S recomp-runtime -B build/wrong-hash `
+            "-DRECOMP_FUNCTION_SOURCE=$source" `
+            "-DRECOMP_FUNCTION_SHA256=0000000000000000000000000000000000000000000000000000000000000000" `
+            2>&1 | Out-String
+          if ($LASTEXITCODE -eq 0 -or
+              $output -notmatch "does not match the authenticated receipt") {
+            throw "configure accepted a generated source with the wrong receipt hash"
+          }

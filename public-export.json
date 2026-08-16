@@ -1,0 +1,58 @@
+{
+  "version": 1,
+  "license": "GPL-3.0-or-later",
+  "max_file_bytes": 262144,
+  "include": [
+    ".github/workflows/public-ci.yml",
+    ".gitignore",
+    "AGENTS.md",
+    "CONTRIBUTING.md",
+    "LICENSE",
+    "NOTICE",
+    "README.md",
+    "public-export.json",
+    "docs/building.md",
+    "docs/public-status.md",
+    "private/README.md",
+    "recomp-runtime/**",
+    "third_party/README.md",
+    "tools/public_export.py",
+    "xbe/**"
+  ],
+  "quarantine": [
+    "decomp/**",
+    "docs/**",
+    "patches/**",
+    "private/**",
+    "reference/**",
+    "scripts/**",
+    "specs/**",
+    "symbols/**",
+    "third_party/**",
+    "tools/**"
+  ],
+  "allowed_private_paths": [
+    "private/README.md"
+  ],
+  "forbidden_extensions": [
+    ".xbe",
+    ".iso",
+    ".xiso",
+    ".img",
+    ".bin",
+    ".cue",
+    ".ppf",
+    ".afs",
+    ".xtf",
+    ".xpr",
+    ".xmv",
+    ".sfd",
+    ".wav",
+    ".wma",
+    ".xbx",
+    ".qcow2",
+    ".sav",
+    ".jsonl"
+  ],
+  "byte_literal_exceptions": []
+}

@@ -1,0 +1,13 @@
+DOAXBV Native PC Port
+
+This repository contains independently written source for interoperability and
+porting work. It does not contain or distribute the game, generated game code,
+assets, console firmware, or other proprietary data.
+
+Dead or Alive Xtreme Beach Volleyball, Xbox, and related names and marks belong
+to their respective owners. This project is not affiliated with or endorsed by
+those owners.
+
+The GPL-3.0-or-later license applies only to material whose copyright holders
+have made it available under those terms. It does not grant rights to the game
+or third-party material.
