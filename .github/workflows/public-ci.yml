@@ -35,6 +35,7 @@ jobs:
       - name: Prove partial authentication fails closed
         shell: pwsh
         run: |
+          $PSNativeCommandUseErrorActionPreference = $false
           $source = (Resolve-Path recomp-runtime/runtime_public_fixture.c).Path
           $output = & cmake -S recomp-runtime -B build/missing-hash `
             "-DRECOMP_FUNCTION_SOURCE=$source" 2>&1 | Out-String
@@ -45,6 +46,7 @@ jobs:
       - name: Prove a wrong authentication hash fails closed
         shell: pwsh
         run: |
+          $PSNativeCommandUseErrorActionPreference = $false
           $source = (Resolve-Path recomp-runtime/runtime_public_fixture.c).Path
           $output = & cmake -S recomp-runtime -B build/wrong-hash `
             "-DRECOMP_FUNCTION_SOURCE=$source" `
