@@ -74,6 +74,23 @@ falsifiable mechanism, and test the smallest safe change.
 Do not vendor game-specific `xboxrecomp` forks or generated output into this
 repository. General lifter fixes belong in focused upstream pull requests.
 
+## Agent skills
+
+### Issue tracker
+
+Issues, specs, and Wayfinder maps live in GitHub Issues for
+`NoRain211/doaxbv-re`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Use `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, and
+`wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+This is a single-context repository: use root `CONTEXT.md` and system-wide ADRs
+under `docs/adr/`. See `docs/agents/domain.md`.
+
 ## Governance
 
 Changes to this file must keep the custody rules at least as strict. Propose
