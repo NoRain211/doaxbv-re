@@ -43,6 +43,7 @@ jobs:
               $output -notmatch "must be supplied together") {
             throw "configure accepted a generated source without its receipt hash"
           }
+          exit 0
       - name: Prove a wrong authentication hash fails closed
         shell: pwsh
         run: |
@@ -56,3 +57,4 @@ jobs:
               $output -notmatch "does not match the authenticated receipt") {
             throw "configure accepted a generated source with the wrong receipt hash"
           }
+          exit 0
