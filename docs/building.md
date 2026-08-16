@@ -16,9 +16,10 @@ dispatch behavior; it is not generated game code and proves no game parity.
 
 ## Authenticated local route
 
-Contributors who own the game may generate source locally with a separate
-`xboxrecomp` checkout. Keep all inputs and generated output under ignored
-directories.
+Contributors who own the game may generate source locally with the pinned
+`tools/xboxrecomp` submodule. Initialize it with
+`git submodule update --init --recursive`. Keep all inputs and generated output
+under ignored directories.
 
 Supply generated inputs only with their exact receipt hashes:
 

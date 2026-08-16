@@ -20,8 +20,9 @@ right to submit. Never commit:
 - code copied from xemu, Cxbx, nxdk, or another project without preserving and
   satisfying its license.
 
-Keep local inputs under `private/`. General `xboxrecomp` fixes should be sent
-upstream separately; do not add a game-specific lifter fork here.
+Keep local inputs under `private/`. The pinned upstream `xboxrecomp` checkout
+lives at `tools/xboxrecomp`. General lifter fixes should be sent upstream
+separately; do not add a game-specific lifter fork here.
 
 ## Verification
 

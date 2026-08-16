@@ -4,6 +4,7 @@
   "max_file_bytes": 262144,
   "include": [
     ".github/workflows/public-ci.yml",
+    ".gitmodules",
     ".gitignore",
     "AGENTS.md",
     "CONTRIBUTING.md",
@@ -20,7 +21,9 @@
     "private/README.md",
     "recomp-runtime/**",
     "third_party/README.md",
+    "tools/README.md",
     "tools/public_export.py",
+    "tools/xboxrecomp",
     "xbe/**"
   ],
   "quarantine": [
@@ -37,6 +40,13 @@
   ],
   "allowed_private_paths": [
     "private/README.md"
+  ],
+  "gitlinks": [
+    {
+      "path": "tools/xboxrecomp",
+      "url": "https://github.com/sp00nznet/xboxrecomp.git",
+      "commit": "32da23872a552b12b4a932c9d5a6e952bb3f24bb"
+    }
   ],
   "forbidden_extensions": [
     ".xbe",

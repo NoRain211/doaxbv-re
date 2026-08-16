@@ -18,6 +18,12 @@ Requirements:
 - Visual Studio with the C and C++ toolchain
 - CMake 3.20 or newer
 
+Clone with the pinned lifter:
+
+```powershell
+git clone --recurse-submodules https://github.com/NoRain211/doaxbv-re.git
+```
+
 ```powershell
 cmake -S recomp-runtime -B build/recomp-runtime
 cmake --build build/recomp-runtime --config Debug
@@ -32,6 +38,7 @@ authenticated local-input workflow.
 
 - `recomp-runtime/` - active runtime, adapters, models, presenters, and tests.
 - `xbe/` - XBE parsing and hashing used by local runners.
+- `tools/` - pinned upstream lifter and public custody tooling.
 - `docs/` - public build guidance and an honest status summary.
 - `private/` - ignored local inputs and generated output; only its README is
   tracked.

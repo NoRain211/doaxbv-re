@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import configparser
 import fnmatch
 import hashlib
 import io
@@ -57,6 +58,13 @@ class ExportError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class Gitlink:
+    path: str
+    url: str
+    commit: str
+
+
+@dataclass(frozen=True)
 class Manifest:
     include: tuple[str, ...]
     quarantine: tuple[str, ...]
@@ -64,6 +72,7 @@ class Manifest:
     forbidden_extensions: frozenset[str]
     byte_literal_exceptions: frozenset[str]
     max_file_bytes: int
+    gitlinks: tuple[Gitlink, ...]
 
 
 def load_manifest(path: Path = MANIFEST_PATH) -> Manifest:
@@ -74,6 +83,17 @@ def load_manifest(path: Path = MANIFEST_PATH) -> Manifest:
     exception_hashes = {
         entry["sha256"].lower() for entry in data["byte_literal_exceptions"]
     }
+    gitlinks = tuple(
+        Gitlink(
+            path=entry["path"],
+            url=entry["url"],
+            commit=entry["commit"].lower(),
+        )
+        for entry in data.get("gitlinks", [])
+    )
+    for gitlink in gitlinks:
+        if not re.fullmatch(r"[0-9a-f]{40}", gitlink.commit):
+            raise ExportError(f"invalid gitlink commit for {gitlink.path}")
     return Manifest(
         include=tuple(data["include"]),
         quarantine=tuple(data["quarantine"]),
@@ -83,6 +103,7 @@ def load_manifest(path: Path = MANIFEST_PATH) -> Manifest:
         ),
         byte_literal_exceptions=frozenset(exception_hashes),
         max_file_bytes=int(data["max_file_bytes"]),
+        gitlinks=gitlinks,
     )
 
 
@@ -101,9 +122,93 @@ def run_git(*args: str, cwd: Path = ROOT, binary: bool = False):
     return result.stdout
 
 
-def tracked_paths(root: Path = ROOT) -> tuple[str, ...]:
-    output = run_git("ls-files", "-z", cwd=root)
-    return tuple(path for path in output.split("\0") if path)
+def index_entries(root: Path = ROOT) -> tuple[tuple[str, ...], dict[str, str]]:
+    files: list[str] = []
+    gitlinks: dict[str, str] = {}
+    output = run_git("ls-files", "--stage", "-z", cwd=root)
+    for record in output.split("\0"):
+        if not record:
+            continue
+        metadata, separator, path = record.partition("\t")
+        if not separator:
+            raise ExportError("invalid git index entry")
+        mode, object_id, stage = metadata.split()
+        if stage != "0":
+            raise ExportError(f"unmerged git index entry: {path}")
+        if mode == "160000":
+            gitlinks[path] = object_id.lower()
+        else:
+            files.append(path)
+    return tuple(files), gitlinks
+
+
+def tree_gitlinks(root: Path = ROOT) -> dict[str, str]:
+    gitlinks: dict[str, str] = {}
+    output = run_git("ls-tree", "-r", "-z", "HEAD", cwd=root)
+    for record in output.split("\0"):
+        if not record:
+            continue
+        metadata, separator, path = record.partition("\t")
+        if not separator:
+            raise ExportError("invalid git tree entry")
+        mode, object_type, object_id = metadata.split()
+        if mode == "160000" and object_type == "commit":
+            gitlinks[path] = object_id.lower()
+    return gitlinks
+
+
+def configured_gitlinks(root: Path = ROOT) -> dict[str, str]:
+    path = root / ".gitmodules"
+    if not path.is_file():
+        return {}
+
+    parser = configparser.ConfigParser(interpolation=None)
+    try:
+        parser.read_string(path.read_text(encoding="utf-8"))
+    except (UnicodeDecodeError, configparser.Error) as error:
+        raise ExportError(f"invalid .gitmodules: {error}") from error
+
+    configured: dict[str, str] = {}
+    for section in parser.sections():
+        if not section.startswith('submodule "') or not section.endswith('"'):
+            raise ExportError(f"invalid .gitmodules section: {section}")
+        submodule_path = parser.get(section, "path", fallback="")
+        url = parser.get(section, "url", fallback="")
+        if not submodule_path or not url:
+            raise ExportError(f"incomplete .gitmodules section: {section}")
+        if submodule_path in configured:
+            raise ExportError(f"duplicate submodule path: {submodule_path}")
+        configured[submodule_path] = url
+    return configured
+
+
+def verify_gitlinks(
+    actual: dict[str, str], manifest: Manifest, root: Path = ROOT
+) -> int:
+    errors: list[str] = []
+    expected = {gitlink.path: gitlink for gitlink in manifest.gitlinks}
+    if len(expected) != len(manifest.gitlinks):
+        errors.append("duplicate gitlink path in public-export.json")
+
+    for path in sorted(set(actual) - set(expected)):
+        errors.append(f"{path}: undeclared gitlink")
+    for path in sorted(set(expected) - set(actual)):
+        errors.append(f"{path}: declared gitlink is absent")
+
+    configured = configured_gitlinks(root)
+    for path in sorted(set(configured) - set(expected)):
+        errors.append(f"{path}: undeclared .gitmodules entry")
+    for path, gitlink in expected.items():
+        if classify(path, manifest) != "include":
+            errors.append(f"{path}: gitlink path is not explicitly included")
+        if actual.get(path) != gitlink.commit:
+            errors.append(f"{path}: gitlink commit differs from public-export.json")
+        if configured.get(path) != gitlink.url:
+            errors.append(f"{path}: submodule URL differs from public-export.json")
+
+    if errors:
+        raise ExportError("\n".join(errors))
+    return len(expected)
 
 
 def matches(path: str, patterns: Iterable[str]) -> bool:
@@ -212,17 +317,18 @@ def verify_entries(
     return included, quarantined
 
 
-def worktree_entries(root: Path = ROOT) -> dict[str, bytes]:
+def worktree_entries(root: Path = ROOT) -> tuple[dict[str, bytes], dict[str, str]]:
     entries: dict[str, bytes] = {}
-    for path in tracked_paths(root):
+    paths, gitlinks = index_entries(root)
+    for path in paths:
         source = root / Path(path)
         if not source.is_file():
             raise ExportError(f"tracked file is missing from the worktree: {path}")
         entries[path] = source.read_bytes()
-    return entries
+    return entries, gitlinks
 
 
-def archive_entries(root: Path = ROOT) -> dict[str, bytes]:
+def archive_entries(root: Path = ROOT) -> tuple[dict[str, bytes], dict[str, str]]:
     archive = run_git("archive", "--format=tar", "HEAD", cwd=root, binary=True)
     entries: dict[str, bytes] = {}
     with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as stream:
@@ -233,23 +339,33 @@ def archive_entries(root: Path = ROOT) -> dict[str, bytes]:
             if file_object is None:
                 raise ExportError(f"unable to read archive member: {member.name}")
             entries[member.name] = file_object.read()
-    return entries
+    return entries, tree_gitlinks(root)
 
 
 def verify_source(require_public_tree: bool) -> None:
     manifest = load_manifest()
+    entries, gitlinks = worktree_entries()
     included, quarantined = verify_entries(
-        worktree_entries(), manifest, require_public_tree
+        entries, manifest, require_public_tree
     )
-    print(f"public export verification passed: included={included} quarantined={quarantined}")
+    gitlink_count = verify_gitlinks(gitlinks, manifest)
+    print(
+        "public export verification passed: "
+        f"included={included} quarantined={quarantined} gitlinks={gitlink_count}"
+    )
 
 
 def verify_archive() -> None:
     manifest = load_manifest()
+    entries, gitlinks = archive_entries()
     included, quarantined = verify_entries(
-        archive_entries(), manifest, require_public_tree=True
+        entries, manifest, require_public_tree=True
     )
-    print(f"public archive verification passed: included={included} quarantined={quarantined}")
+    gitlink_count = verify_gitlinks(gitlinks, manifest)
+    print(
+        "public archive verification passed: "
+        f"included={included} quarantined={quarantined} gitlinks={gitlink_count}"
+    )
 
 
 def export_tree(destination: Path) -> None:
@@ -257,8 +373,9 @@ def export_tree(destination: Path) -> None:
         raise ExportError("source worktree must be clean before export")
 
     manifest = load_manifest()
-    entries = worktree_entries()
+    entries, gitlinks = worktree_entries()
     verify_entries(entries, manifest, require_public_tree=False)
+    verify_gitlinks(gitlinks, manifest)
     included_paths = [
         path for path in sorted(entries) if classify(path, manifest) == "include"
     ]
@@ -275,17 +392,31 @@ def export_tree(destination: Path) -> None:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(normalize_public_bytes(entries[path]))
 
+    for gitlink in manifest.gitlinks:
+        target = destination / Path(gitlink.path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        run_git(
+            "clone",
+            "--no-checkout",
+            "--filter=blob:none",
+            gitlink.url,
+            str(target),
+            cwd=destination,
+        )
+        run_git("checkout", "--detach", gitlink.commit, cwd=target)
+        if run_git("rev-parse", "HEAD", cwd=target).strip() != gitlink.commit:
+            raise ExportError(f"{gitlink.path}: exported submodule commit differs")
+
     exported = {
-        path.relative_to(destination).as_posix(): path.read_bytes()
-        for path in destination.rglob("*")
-        if path.is_file()
+        path: (destination / Path(path)).read_bytes() for path in included_paths
     }
     included, quarantined = verify_entries(
         exported, manifest, require_public_tree=True
     )
     print(
         f"public export created: destination={destination} "
-        f"included={included} quarantined={quarantined}"
+        f"included={included} quarantined={quarantined} "
+        f"gitlinks={len(manifest.gitlinks)}"
     )
 
 

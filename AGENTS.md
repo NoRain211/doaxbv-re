@@ -14,8 +14,8 @@ generated functions in coherent clusters.
 
 The tracked runtime under `recomp-runtime/` owns guest memory, registers,
 dispatch, kernel adapters, device models, D3D8 replacements, and host
-presentation. A separately cloned `xboxrecomp` lifts a user-owned XBE into an
-ignored local directory.
+presentation. The pinned `tools/xboxrecomp` submodule lifts a user-owned XBE
+into an ignored local directory.
 
 D3D8 is statically linked into the game image. Replace it at the API level
 through `recomp_lookup_manual()`. Keep device models callable as plain
@@ -62,9 +62,8 @@ falsifiable mechanism, and test the smallest safe change.
 
 ## Tool routing
 
-- Translation or regeneration: use a separate checkout of
-  `https://github.com/sp00nznet/xboxrecomp` and keep its generated output
-  ignored.
+- Translation or regeneration: use the pinned `tools/xboxrecomp` submodule and
+  keep its generated output ignored.
 - Static addresses, xrefs, or function bounds: use one bounded Ghidra query and
   record the binary identity.
 - Real kernel or hardware behavior: use xemu as a live oracle.
