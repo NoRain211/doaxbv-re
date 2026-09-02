@@ -20,7 +20,6 @@ static int expect_float(const char *check, float actual, float expected)
         (double)expected);
     return 0;
 }
-
 static int expect_u32(const char *check, uint32_t actual, uint32_t expected)
 {
     if (actual == expected) {
@@ -149,4 +148,3 @@ int recomp_sse_semantics_test(void)
 
     return passed;
 }
-

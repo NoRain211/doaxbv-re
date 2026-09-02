@@ -44,7 +44,6 @@ static uint32_t rotate_left(uint32_t value, unsigned bits)
 {
     return (value << bits) | (value >> (32u - bits));
 }
-
 /* One SHA-1 compression over a 64-byte big-endian block. */
 static void sha1_compress(uint32_t *state, const uint8_t *block)
 {
@@ -275,4 +274,3 @@ RecompFunction recomp_kernel_crypto(uint32_t ordinal)
     default: return NULL;
     }
 }
-

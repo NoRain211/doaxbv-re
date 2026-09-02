@@ -49,7 +49,6 @@ static int expect_digest(
         label, text, expected);
     return 0;
 }
-
 static int expect_u32(const char *field, uint32_t actual, uint32_t expected)
 {
     if (actual == expected) {
@@ -193,4 +192,3 @@ int recomp_kernel_crypto_test(void)
 
     return passed;
 }
-
