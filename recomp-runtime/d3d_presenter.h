@@ -4,6 +4,9 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "d3d_render_state_model.h"
+#include "d3d_texture_model.h"
+
 typedef struct RecompD3dPresenter RecompD3dPresenter;
 
 typedef enum RecompD3dPresenterColorFormat {
@@ -29,6 +32,7 @@ typedef struct RecompD3dPresenterConfig {
 typedef enum RecompD3dPresenterCommandType {
     RECOMP_D3D_PRESENTER_COMMAND_CLEAR,
     RECOMP_D3D_PRESENTER_COMMAND_PRESENT,
+    RECOMP_D3D_PRESENTER_COMMAND_DRAW,
 } RecompD3dPresenterCommandType;
 
 typedef struct RecompD3dPresenterClearCommand {
@@ -45,11 +49,39 @@ typedef struct RecompD3dPresenterPresentCommand {
     uint32_t swap_counter;
 } RecompD3dPresenterPresentCommand;
 
+/* One indexed draw. Buffer contents stay in guest memory: the adapter passes
+   host pointers and byte counts it has already bounds-checked, so the
+   presenter never decodes guest addresses itself. */
+typedef struct RecompD3dPresenterDrawCommand {
+    uint32_t primitive_type;
+    uint32_t index_count;
+    uint32_t triangle_count;
+    uint32_t vertex_count;
+    uint32_t vertex_stride;
+    uint32_t fvf;
+    const void *vertex_bytes;
+    const void *index_bytes;
+    /* World-view-projection rows, already composed by the adapter. */
+    float transform[16];
+    bool has_transform;
+    /* Depth and alpha-test state in force for this draw, already decoded by
+       the render-state model so the presenter never sees a method number. */
+    RecompD3dDepthState depth;
+    RecompD3dBlendState blend;
+    /* Stage 0 texture for this draw. `texture_bytes` is a host-readable view
+       of guest pixel memory, valid only for the duration of the submit. */
+    RecompD3dTextureDesc texture;
+    bool has_texture;
+    const void *texture_bytes;
+    uint32_t texture_byte_count;
+} RecompD3dPresenterDrawCommand;
+
 typedef struct RecompD3dPresenterCommand {
     RecompD3dPresenterCommandType type;
     union {
         RecompD3dPresenterClearCommand clear;
         RecompD3dPresenterPresentCommand present;
+        RecompD3dPresenterDrawCommand draw;
     } data;
 } RecompD3dPresenterCommand;
 
@@ -80,6 +112,19 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
     const RecompD3dPresenterCommand *command);
 RecompD3dPresenterError recomp_d3d_presenter_destroy(
     RecompD3dPresenter **presenter);
+
+/* Process-wide host pacing toggle. When enabled, presents use
+   DXGI_PRESENT_DO_NOT_WAIT instead of vsync so the guest frame loop runs at
+   CPU speed. The guest does not depend on wall-clock time (kernel waits are
+   already immediate), so this only removes unintended host pacing; it does
+   not force guest state. Intended for the full-program runner; the default
+   (vsync) remains for windowed tests. */
+void recomp_d3d_presenter_set_immediate_present(bool enabled);
+
+/* Observation only: reports which guest texture formats draws actually
+   sampled, and which ones a draw asked for but the presenter could not
+   upload. Bind counts alone cannot answer that. */
+void recomp_d3d_presenter_report_draw_textures(void);
 
 #ifdef __cplusplus
 }

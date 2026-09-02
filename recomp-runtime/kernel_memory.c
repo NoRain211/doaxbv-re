@@ -117,6 +117,28 @@ static uint32_t allocate_guest(
     return base;
 }
 
+static uint32_t allocate_contiguous_guest(
+    uint32_t size,
+    uint32_t lowest_address,
+    uint32_t highest_address,
+    uint32_t alignment,
+    uint32_t protect)
+{
+    uint32_t actual_size = effective_size(size);
+    uint32_t base = xbox_ContiguousAlloc(
+        actual_size, lowest_address, highest_address, alignment);
+
+    if (base == 0u) {
+        return 0u;
+    }
+    if (track_allocation(
+            base, actual_size, protect, ALLOCATION_CONTIGUOUS) == NULL) {
+        return 0u;
+    }
+    recomp_guest_memset(base, 0, actual_size);
+    return base;
+}
+
 static void free_guest(uint32_t base)
 {
     Allocation *allocation = find_allocation(base);
@@ -169,9 +191,8 @@ static void bridge_mm_allocate_contiguous_memory(void)
 {
     kernel_return(
         1u,
-        allocate_guest(
-            kernel_arg(1u), 0x1000u, PAGE_READWRITE,
-            ALLOCATION_CONTIGUOUS));
+        allocate_contiguous_guest(
+            kernel_arg(1u), 0u, UINT32_MAX, 0u, PAGE_READWRITE));
 }
 
 static void bridge_mm_allocate_contiguous_memory_ex(void)
@@ -183,9 +204,9 @@ static void bridge_mm_allocate_contiguous_memory_ex(void)
     }
     kernel_return(
         5u,
-        allocate_guest(
-            kernel_arg(1u), alignment, kernel_arg(5u),
-            ALLOCATION_CONTIGUOUS));
+        allocate_contiguous_guest(
+            kernel_arg(1u), kernel_arg(2u), kernel_arg(3u), alignment,
+            kernel_arg(5u)));
 }
 
 static void bridge_mm_allocate_system_memory(void)
@@ -246,7 +267,12 @@ static void bridge_mm_free_system_memory(void)
 
 static void bridge_mm_get_physical_address(void)
 {
-    kernel_return(1u, kernel_arg(1u));
+    uint32_t address = kernel_arg(1u);
+
+    if (address >= 0x80000000u && address < 0x84000000u) {
+        address -= 0x80000000u;
+    }
+    kernel_return(1u, address);
 }
 
 static void bridge_mm_lock_unlock_buffer_pages(void)

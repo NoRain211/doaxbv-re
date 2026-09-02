@@ -38,10 +38,34 @@ extern uint32_t g_recomp_7c7c0_origin;
 #define esp recomp_runtime.registers.esp
 #define g_esp (*recomp_esp_register())
 #define g_seh_ebp recomp_runtime.registers.ebp
+/* The lifter publishes the established frame as g_ebp and re-publishes it
+   before calls; g_seh_ebp is the same guest EBP the SEH helper path reads.
+   One register, two emitted names. */
+#define g_ebp recomp_runtime.registers.ebp
 #define g_fp_stack recomp_runtime.fpu_stack
 #define g_fp_top recomp_runtime.fpu_top
 #define g_fp_control_word recomp_runtime.fpu_control_word
 #define g_fp_cmp recomp_runtime.fpu_compare
+
+/* Result of an x87 compare, in the shape the status word wants:
+ *   -1 less, 0 equal, 1 greater, 2 unordered (either operand is NaN).
+ * The unordered case matters: `fucompp` of a value with itself followed by
+ * `test ah, 0x44; jp` is how this era's CRT asks "is this a NaN", and
+ * collapsing it to "equal" answers no every time.
+ * Ported from the lifter's own runtime template. */
+#define RECOMP_FCMP(a, b) \
+    (((a) != (a) || (b) != (b)) ? 2 : (a) < (b) ? -1 : (a) > (b) ? 1 : 0)
+
+/* x86 parity flag: 1 when the low byte of the result has an EVEN number of set
+ * bits. Used by the x87 float-compare idiom `fnstsw ax; test ah, mask; jp/jnp`,
+ * which is how all pre-SSE code branches on a float comparison.
+ * Ported from the lifter's own runtime template. */
+static inline int recomp_parity8(uint32_t x)
+{
+    x &= 0xFFu; x ^= x >> 4; x ^= x >> 2; x ^= x >> 1;
+    return (int)(~x & 1u);   /* 1 = even parity (PF set) */
+}
+#define RECOMP_PARITY8(x) recomp_parity8((uint32_t)(x))
 
 #define MEM32(address) (*recomp_memory_u32((uint32_t)(address)))
 #define MEM16(address) (*recomp_memory_u16((uint32_t)(address)))
@@ -146,10 +170,172 @@ static inline uint32_t ROR32(uint32_t value, unsigned int count)
     (sp) += 4u; \
 } while (0)
 #define RECOMP_ICALL_SAFE(address, saved_esp) do { \
-    recomp_dispatch_indirect((uint32_t)(address), (uint32_t)(saved_esp)); \
+    recomp_dispatch_indirect_site( \
+        (uint32_t)(address), (uint32_t)(saved_esp), __FILE__, __LINE__); \
 } while (0)
 #define RECOMP_ITAIL(address) do { \
-    recomp_dispatch_indirect((uint32_t)(address), g_esp); \
+    recomp_dispatch_indirect_site( \
+        (uint32_t)(address), g_esp, __FILE__, __LINE__); \
 } while (0)
+
+/* ── SSE ────────────────────────────────────────────────────────────────
+   RecompXmm and the register file live in runtime.h beside the other
+   architectural state. These names alias it so generated code can keep
+   writing xmm0..xmm7 directly. */
+#define xmm0 recomp_runtime.xmm[0]
+#define xmm1 recomp_runtime.xmm[1]
+#define xmm2 recomp_runtime.xmm[2]
+#define xmm3 recomp_runtime.xmm[3]
+#define xmm4 recomp_runtime.xmm[4]
+#define xmm5 recomp_runtime.xmm[5]
+#define xmm6 recomp_runtime.xmm[6]
+#define xmm7 recomp_runtime.xmm[7]
+
+/* Packed transfers keep the guest side under the normal address translation,
+   so bounds checks, the cached alias, and the APU aperture still apply. The
+   register itself is a host local and is addressed as a host pointer. */
+#define XMM_MEM(address) recomp_xmm_mem((uint32_t)(address))
+#define XMM_STORE(address, reg) \
+    recomp_guest_store((uint32_t)(address), &(reg), 16u)
+#define XMM_LOAD_LOW(reg, address) \
+    recomp_guest_load(&(reg).f[0], (uint32_t)(address), 8u)
+#define XMM_STORE_LOW(address, reg) \
+    recomp_guest_store((uint32_t)(address), &(reg).f[0], 8u)
+#define XMM_LOAD_HIGH(reg, address) \
+    recomp_guest_load(&(reg).f[2], (uint32_t)(address), 8u)
+#define XMM_STORE_HIGH(address, reg) \
+    recomp_guest_store((uint32_t)(address), &(reg).f[2], 8u)
+
+static inline RecompXmm recomp_xmm_mem(uint32_t address)
+{
+    RecompXmm value;
+
+    recomp_guest_load(&value, address, 16u);
+    return value;
+}
+
+static inline RecompXmm XMM_ZERO(void)
+{
+    RecompXmm value;
+
+    value.u[0] = 0u;
+    value.u[1] = 0u;
+    value.u[2] = 0u;
+    value.u[3] = 0u;
+    return value;
+}
+
+/* MOVSS from memory zeroes bits 127:32; MOVSS between registers does not. */
+static inline RecompXmm XMM_SCALAR(float lane0)
+{
+    RecompXmm value = XMM_ZERO();
+
+    value.f[0] = lane0;
+    return value;
+}
+
+static inline RecompXmm XMM_SCALAR_BITS(uint32_t lane0)
+{
+    RecompXmm value = XMM_ZERO();
+
+    value.u[0] = lane0;
+    return value;
+}
+
+static inline RecompXmm XMM_SCALAR_DOUBLE(double lane0)
+{
+    RecompXmm value = XMM_ZERO();
+
+    value.d[0] = lane0;
+    return value;
+}
+
+#define RECOMP_XMM_LANEWISE(name, expression) \
+    static inline RecompXmm name(RecompXmm a, RecompXmm b) \
+    { \
+        RecompXmm r; \
+        int i; \
+        for (i = 0; i < 4; ++i) { \
+            expression; \
+        } \
+        return r; \
+    }
+
+RECOMP_XMM_LANEWISE(XMM_ADD, r.f[i] = a.f[i] + b.f[i])
+RECOMP_XMM_LANEWISE(XMM_SUB, r.f[i] = a.f[i] - b.f[i])
+RECOMP_XMM_LANEWISE(XMM_MUL, r.f[i] = a.f[i] * b.f[i])
+RECOMP_XMM_LANEWISE(XMM_DIV, r.f[i] = a.f[i] / b.f[i])
+/* MINPS/MAXPS return the second operand when either input is NaN. */
+RECOMP_XMM_LANEWISE(XMM_MIN, r.f[i] = a.f[i] < b.f[i] ? a.f[i] : b.f[i])
+RECOMP_XMM_LANEWISE(XMM_MAX, r.f[i] = a.f[i] > b.f[i] ? a.f[i] : b.f[i])
+RECOMP_XMM_LANEWISE(XMM_AND, r.u[i] = a.u[i] & b.u[i])
+RECOMP_XMM_LANEWISE(XMM_ANDN, r.u[i] = ~a.u[i] & b.u[i])
+RECOMP_XMM_LANEWISE(XMM_OR, r.u[i] = a.u[i] | b.u[i])
+RECOMP_XMM_LANEWISE(XMM_XOR, r.u[i] = a.u[i] ^ b.u[i])
+RECOMP_XMM_LANEWISE(XMM_CMP_EQ, r.u[i] = a.f[i] == b.f[i] ? 0xffffffffu : 0u)
+RECOMP_XMM_LANEWISE(XMM_CMP_LT, r.u[i] = a.f[i] < b.f[i] ? 0xffffffffu : 0u)
+RECOMP_XMM_LANEWISE(XMM_CMP_LE, r.u[i] = a.f[i] <= b.f[i] ? 0xffffffffu : 0u)
+RECOMP_XMM_LANEWISE(XMM_CMP_NEQ, r.u[i] = a.f[i] != b.f[i] ? 0xffffffffu : 0u)
+
+/* SHUFPS takes the low half from the destination and the high half from the
+   source. It is the broadcast in every matrix concatenation. */
+static inline RecompXmm XMM_SHUFFLE(RecompXmm a, RecompXmm b, unsigned int imm)
+{
+    RecompXmm r;
+
+    r.u[0] = a.u[imm & 3u];
+    r.u[1] = a.u[(imm >> 2) & 3u];
+    r.u[2] = b.u[(imm >> 4) & 3u];
+    r.u[3] = b.u[(imm >> 6) & 3u];
+    return r;
+}
+
+static inline RecompXmm XMM_UNPACK_LOW(RecompXmm a, RecompXmm b)
+{
+    RecompXmm r;
+
+    r.u[0] = a.u[0];
+    r.u[1] = b.u[0];
+    r.u[2] = a.u[1];
+    r.u[3] = b.u[1];
+    return r;
+}
+
+static inline RecompXmm XMM_UNPACK_HIGH(RecompXmm a, RecompXmm b)
+{
+    RecompXmm r;
+
+    r.u[0] = a.u[2];
+    r.u[1] = b.u[2];
+    r.u[2] = a.u[3];
+    r.u[3] = b.u[3];
+    return r;
+}
+
+/* MOVLHPS: destination high half takes the source low half. */
+static inline RecompXmm XMM_MOVE_LOW_TO_HIGH(RecompXmm a, RecompXmm b)
+{
+    RecompXmm r = a;
+
+    r.u[2] = b.u[0];
+    r.u[3] = b.u[1];
+    return r;
+}
+
+/* MOVHLPS: destination low half takes the source high half. */
+static inline RecompXmm XMM_MOVE_HIGH_TO_LOW(RecompXmm a, RecompXmm b)
+{
+    RecompXmm r = a;
+
+    r.u[0] = b.u[2];
+    r.u[1] = b.u[3];
+    return r;
+}
+
+static inline uint32_t XMM_MOVEMASK(RecompXmm a)
+{
+    return ((a.u[0] >> 31) & 1u) | ((a.u[1] >> 30) & 2u) |
+           ((a.u[2] >> 29) & 4u) | ((a.u[3] >> 28) & 8u);
+}
 
 #endif

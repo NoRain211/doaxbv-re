@@ -6,9 +6,20 @@
 enum {
     RECOMP_DSOUND_MANAGER_SIZE = 0x28u,
     RECOMP_DSOUND_DEVICE_SIZE = 0xa8u,
+    RECOMP_DSOUND_APU_SIZE = 0x7e0u,
     RECOMP_DSOUND_MANAGER_DEVICE_OFFSET = 0x08u,
+    RECOMP_DSOUND_MANAGER_APU_OFFSET = 0x0cu,
     RECOMP_DSOUND_MANAGER_LIST_FORWARD_OFFSET = 0x10u,
     RECOMP_DSOUND_MANAGER_LIST_BACK_OFFSET = 0x14u,
+    RECOMP_DSOUND_DEVICE_EFFECTS_HANDLE_OFFSET = 0x0cu,
+    RECOMP_DSOUND_DEVICE_EFFECTS_HANDLE_NONE = 0xffffffffu,
+    RECOMP_DSOUND_APU_INNER_OFFSET = 0x08u,
+    RECOMP_DSOUND_APU_DEVICE_OFFSET = 0x0cu,
+    RECOMP_DSOUND_APU_MIXER_DEVICE_OFFSET = 0x5cu,
+    RECOMP_DSOUND_APU_DEVICE_TAIL_OFFSET = 0xd4u,
+    RECOMP_DSOUND_APU_COUNTER_A_POINTER_OFFSET = 0x2f8u,
+    RECOMP_DSOUND_APU_COUNTER_B_POINTER_OFFSET = 0x2fcu,
+    RECOMP_DSOUND_APU_PAGE_POOL_OFFSET = 0x300u,
     RECOMP_DSOUND_OK = 0x00000000u,
     RECOMP_DSOUND_POINTER_ERROR = 0x80004003u,
     RECOMP_DSOUND_OUT_OF_MEMORY = 0x8007000eu,
@@ -29,6 +40,7 @@ typedef struct RecompDsoundServiceModel {
     uint32_t commit_count;
     uint32_t manager;
     uint32_t device;
+    uint32_t apu;
     uint32_t public_device;
     uint32_t manager_reference_count;
     uint32_t device_reference_count;
@@ -44,6 +56,7 @@ typedef struct RecompDsoundServiceModel {
 typedef struct RecompDsoundCreateResources {
     uint32_t manager;
     uint32_t device;
+    uint32_t apu;
 } RecompDsoundCreateResources;
 
 void recomp_dsound_service_reset(RecompDsoundServiceModel *model);

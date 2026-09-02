@@ -960,7 +960,124 @@ static void bridge_nt_query_information_file(void)
     kernel_return(5u, status);
 }
 
+/* NtSetInformationFile(FileHandle, IoStatusBlock, FileInformation, Length,
+   FileInformationClass) is stdcall with five arguments.
+
+   The frozen native host answered every class with an unconditional success
+   and touched nothing. That is not safe here: the title calls this while
+   writing its save, and the two classes it needs - moving the file pointer
+   and setting end-of-file - change what a following NtWriteFile does. Claiming
+   success without applying them writes correct bytes to the wrong offset, and
+   the corruption only shows up when the save is read back.
+
+   Classes outside the two below are reported as succeeding, which matches the
+   frozen host, because a title commonly sets attributes or timestamps it never
+   reads back. Each one is logged with its class so an unhandled class that
+   does matter is visible rather than silent. */
+static void bridge_nt_set_information_file(void)
+{
+    const uint32_t FILE_POSITION_INFORMATION = 14u;
+    const uint32_t FILE_END_OF_FILE_INFORMATION = 20u;
+    const uint32_t FILE_ALLOCATION_INFORMATION = 19u;
+    uint32_t guest_handle = kernel_arg(1u);
+    uint32_t io_status_block = kernel_arg(2u);
+    uint32_t file_information = kernel_arg(3u);
+    uint32_t length = kernel_arg(4u);
+    uint32_t file_information_class = kernel_arg(5u);
+
+    uint32_t status = RECOMP_STATUS_INVALID_HANDLE;
+    uint64_t value = 0u;
+    const char *policy = "invalid-handle";
+
+    if (file_information != 0u && length >= 8u) {
+        value = (uint64_t)*recomp_memory_u32(file_information) |
+                ((uint64_t)*recomp_memory_u32(file_information + 4u) << 32u);
+    }
+
+    for (size_t i = 0; i < MAX_FILE_HANDLES; ++i) {
+        if (!file_handles[i].active ||
+            file_handles[i].guest_handle != guest_handle) {
+            continue;
+        }
+
+        if (file_handles[i].kind == FILE_HANDLE_PSEUDO) {
+            status = RECOMP_STATUS_SUCCESS;
+            policy = "pseudo-handle-accepted";
+            break;
+        }
+
+        if (file_information_class == FILE_POSITION_INFORMATION) {
+            if (length < 8u) {
+                status = 0xc0000004u; /* STATUS_INFO_LENGTH_MISMATCH */
+                policy = "position-length-mismatch";
+                break;
+            }
+            /* The cursor this runtime keeps is the one NtReadFile and
+               NtWriteFile use when the guest passes no explicit offset, so
+               moving it here is the whole point of the call. */
+            file_handles[i].cursor = value;
+            status = RECOMP_STATUS_SUCCESS;
+            policy = "host-file-position-set";
+            break;
+        }
+
+        if (file_information_class == FILE_END_OF_FILE_INFORMATION) {
+            LARGE_INTEGER move;
+            HANDLE host = file_handles[i].host_handle;
+
+            if (length < 8u) {
+                status = 0xc0000004u;
+                policy = "end-of-file-length-mismatch";
+                break;
+            }
+            if (host == INVALID_HANDLE_VALUE) {
+                status = RECOMP_STATUS_INVALID_HANDLE;
+                policy = "end-of-file-no-host-handle";
+                break;
+            }
+            move.QuadPart = (LONGLONG)value;
+            if (!SetFilePointerEx(host, move, NULL, FILE_BEGIN) ||
+                !SetEndOfFile(host)) {
+                status = 0xc0000022u; /* STATUS_ACCESS_DENIED */
+                policy = "host-file-truncate-failed";
+                break;
+            }
+            status = RECOMP_STATUS_SUCCESS;
+            policy = "host-file-end-of-file-set";
+            break;
+        }
+
+        /* Allocation size is a hint on a host filesystem that grows files on
+           demand, so accepting it without acting is faithful, not a stub. */
+        status = RECOMP_STATUS_SUCCESS;
+        policy = file_information_class == FILE_ALLOCATION_INFORMATION
+            ? "allocation-hint-accepted"
+            : "class-accepted-without-action";
+        break;
+    }
+
+    if (io_status_block != 0u) {
+        *recomp_memory_u32(io_status_block) = status;
+        *recomp_memory_u32(io_status_block + 4u) =
+            status == RECOMP_STATUS_SUCCESS ? length : 0u;
+    }
+
+    fprintf(
+        stderr,
+        "recomp kernel: NtSetInformationFile handle=%u class=%u len=%u"
+        " value=%llu policy='%s' status=0x%08x\n",
+        (unsigned)guest_handle,
+        (unsigned)file_information_class,
+        (unsigned)length,
+        (unsigned long long)value,
+        policy,
+        (unsigned)status);
+
+    kernel_return(5u, status);
+}
+
 static void bridge_nt_query_directory_file(void)
+
 {
     const uint32_t RECOMP_STATUS_INVALID_PARAMETER = 0xc000000du;
     const uint32_t RECOMP_STATUS_NO_MORE_FILES = 0x80000006u;
@@ -1504,6 +1621,7 @@ RecompFunction recomp_kernel_file(uint32_t ordinal)
     case 215u: return bridge_nt_query_symbolic_link_object;
     case 218u: return bridge_nt_query_volume_information_file;
     case 219u: return bridge_nt_read_file;
+    case 226u: return bridge_nt_set_information_file;
     case 236u: return bridge_nt_write_file;
     default: return NULL;
     }

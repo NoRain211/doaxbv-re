@@ -4,6 +4,7 @@
 #include "d3d_presenter.h"
 #include "runtime.h"
 
+#include <stdbool.h>
 #include <stdint.h>
 
 void recomp_d3d_frame_adapter_initialize(
@@ -11,6 +12,13 @@ void recomp_d3d_frame_adapter_initialize(
     uint32_t device_address);
 void recomp_d3d_frame_adapter_reset(void);
 void recomp_d3d_frame_adapter_reset_buffers(void);
+/* The presenter created by this adapter, or NULL before initialization.
+   The draw seam submits through the same presenter so clear, draw, and
+   present stay ordered on one owning thread. */
+RecompD3dPresenter *recomp_d3d_frame_adapter_presenter(void);
+/* The guest's swap counter, so seams that run per draw can tell which frame
+   they are in. Diagnostics only; nothing in the frame path depends on it. */
+uint32_t recomp_d3d_frame_adapter_swap_counter(void);
 void recomp_d3d_clear_adapter(void);
 void recomp_d3d_swap_adapter(void);
 RecompFunction recomp_d3d_frame_lookup_manual(uint32_t guest_address);

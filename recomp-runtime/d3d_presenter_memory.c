@@ -62,6 +62,9 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
     case RECOMP_D3D_PRESENTER_COMMAND_PRESENT:
         ++snapshot->present_count;
         break;
+    case RECOMP_D3D_PRESENTER_COMMAND_DRAW:
+        ++snapshot->draw_count;
+        break;
     default:
         return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
     }
@@ -83,6 +86,17 @@ RecompD3dPresenterError recomp_d3d_presenter_destroy(
     *presenter = NULL;
     active_presenter = NULL;
     return RECOMP_D3D_PRESENTER_OK;
+}
+
+void recomp_d3d_presenter_set_immediate_present(bool enabled)
+{
+    /* The in-memory presenter never blocks; there is no pacing to remove. */
+    (void)enabled;
+}
+
+void recomp_d3d_presenter_report_draw_textures(void)
+{
+    /* The in-memory presenter uploads no textures, so it has none to report. */
 }
 
 bool recomp_d3d_presenter_memory_snapshot(

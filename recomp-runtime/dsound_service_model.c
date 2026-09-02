@@ -84,12 +84,13 @@ uint32_t recomp_dsound_create(
         return RECOMP_DSOUND_POINTER_ERROR;
     }
     if (resources == NULL || resources->manager == 0u ||
-        resources->device == 0u) {
+        resources->device == 0u || resources->apu == 0u) {
         return RECOMP_DSOUND_OUT_OF_MEMORY;
     }
 
     model->manager = resources->manager;
     model->device = resources->device;
+    model->apu = resources->apu;
     model->public_device =
         resources->manager + RECOMP_DSOUND_MANAGER_DEVICE_OFFSET;
     model->manager_reference_count = 2u;

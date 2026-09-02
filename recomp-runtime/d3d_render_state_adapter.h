@@ -19,4 +19,8 @@ RecompFunction recomp_d3d_render_state_lookup_manual(uint32_t guest_address);
 void recomp_d3d_render_state_adapter_reset(void);
 const RecompD3dRenderStateModel *recomp_d3d_render_state_adapter_model(void);
 
+/* Reports the render states the guest actually set, so a consumer wiring
+   state to the host can see which ones this title uses rather than guess. */
+void recomp_d3d_render_state_adapter_report(void);
+
 #endif

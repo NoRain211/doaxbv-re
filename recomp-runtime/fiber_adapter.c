@@ -7,6 +7,7 @@
 
 #include <inttypes.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 enum {
     XAPI_CREATE_FIBER_ADDRESS = 0x00182fbbu,
@@ -20,6 +21,8 @@ enum {
 typedef struct RecompHostFiber {
     bool active;
     uint32_t guest_handle;
+    uint32_t entry;
+    uint64_t switch_count;
     LPVOID native_fiber;
 } RecompHostFiber;
 
@@ -112,7 +115,8 @@ static VOID WINAPI fiber_entry(void *parameter)
     entry = fiber->entry;
     recomp_runtime.registers = fiber->registers;
     *recomp_memory_u32(0u) = fiber->exception_list;
-    recomp_dispatch_indirect(entry, fiber->registers.esp);
+    recomp_dispatch_indirect_site(
+        entry, fiber->registers.esp, __FILE__, __LINE__);
     fail_fiber("entry-returned", host->guest_handle);
 }
 
@@ -140,6 +144,25 @@ void recomp_fiber_adapter_reset(void)
 const RecompFiberModel *recomp_fiber_adapter_model(void)
 {
     return &fiber_model;
+}
+
+void recomp_fiber_adapter_report(void)
+{
+    for (size_t i = 0u; i < RECOMP_FIBER_MAX_COUNT; ++i) {
+        const RecompHostFiber *host = &host_fibers[i];
+
+        if (!host->active) {
+            continue;
+        }
+        fprintf(
+            stderr,
+            "recomp fiber: handle=0x%08" PRIx32 " entry=0x%08" PRIx32
+            " resumed=%llu%s\n",
+            host->guest_handle,
+            host->entry,
+            (unsigned long long)host->switch_count,
+            host == current_host_fiber ? " (current)" : "");
+    }
 }
 
 static void convert_thread_to_fiber_adapter(void)
@@ -252,8 +275,16 @@ static void create_fiber_adapter(void)
     *host = (RecompHostFiber){
         .active = true,
         .guest_handle = guest_handle,
+        .entry = entry,
         .native_fiber = native_fiber,
     };
+    fprintf(
+        stderr,
+        "recomp fiber: created handle=0x%08" PRIx32 " entry=0x%08" PRIx32
+        " parameter=0x%08" PRIx32 "\n",
+        guest_handle,
+        entry,
+        parameter);
     finish(entry_esp, 3u, guest_handle);
 }
 
@@ -278,6 +309,51 @@ static void switch_to_fiber_adapter(void)
 
     outgoing->registers = recomp_runtime.registers;
     outgoing->registers.esp = entry_esp + 8u;
+    /* Hardware preserves the x87 and SSE context per thread. Measured at 240
+       of 240 switches, this program's stack is non-empty at the boundary, so
+       without this the incoming fiber inherits the outgoing one's floating
+       point and silently computes with it. */
+    recomp_fpu_context_save(&outgoing->fpu);
+    /* Round 28 probe. RecompFiber carries only RecompRegisters, while the
+       x87 stack, fpu_top and the XMM file live outside it in RecompRuntime
+       and are therefore shared by every fiber. Real hardware gives each
+       thread its own FP context. If fpu_top is ever non-zero here, live
+       floating-point values are crossing a fiber boundary. Opt-in. */
+    {
+        static const char *fpu_trace;
+        static bool fpu_trace_read;
+        static uint32_t fpu_trace_lines;
+        static uint32_t switches_seen;
+        static uint32_t switches_with_stack;
+
+        if (!fpu_trace_read) {
+            fpu_trace_read = true;
+            fpu_trace = getenv("RECOMP_FIBER_FPU");
+        }
+        if (fpu_trace != NULL) {
+            ++switches_seen;
+            if (recomp_runtime.fpu_top != 0u) {
+                ++switches_with_stack;
+            }
+            if (fpu_trace_lines < 240u &&
+                (recomp_runtime.fpu_top != 0u ||
+                 (switches_seen % 500u) == 0u)) {
+                ++fpu_trace_lines;
+                fprintf(
+                    stderr,
+                    "recomp fiber fpu: switches=%" PRIu32
+                    " nonempty=%" PRIu32 " top=%" PRIu32
+                    " cmp=%d from=%08" PRIx32 " to=%08" PRIx32 "\n",
+                    switches_seen,
+                    switches_with_stack,
+                    recomp_runtime.fpu_top,
+                    recomp_runtime.fpu_compare,
+                    outgoing->guest_handle,
+                    target_handle);
+            }
+        }
+    }
+    ++target_host->switch_count;
     outgoing->exception_list = *recomp_memory_u32(0u);
     *recomp_memory_u32(outgoing->guest_handle + 12u) =
         outgoing->registers.esp;
@@ -285,6 +361,7 @@ static void switch_to_fiber_adapter(void)
         fail_fiber("switch-state", target_handle);
     }
     recomp_runtime.registers = target->registers;
+    recomp_fpu_context_restore(&target->fpu);
     *recomp_memory_u32(0u) = target->exception_list;
     publish_current_fiber(target_handle);
     current_host_fiber = target_host;

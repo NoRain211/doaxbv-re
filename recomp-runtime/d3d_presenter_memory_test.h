@@ -15,6 +15,7 @@ typedef struct RecompD3dPresenterMemorySnapshot {
     size_t command_count;
     size_t clear_count;
     size_t present_count;
+    size_t draw_count;
     RecompD3dPresenterCommand
         commands[RECOMP_D3D_PRESENTER_MEMORY_COMMAND_CAPACITY];
 } RecompD3dPresenterMemorySnapshot;

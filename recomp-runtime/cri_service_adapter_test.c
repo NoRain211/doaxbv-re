@@ -209,7 +209,14 @@ int recomp_cri_service_adapter_test(void)
     };
     adapter = recomp_cri_service_lookup_manual(0x001877d0u);
     adapter();
-    passed &= expect_u32("stream status order", call_order, 298u);
+    /* ADXF_GetStat must drive the full file-worker step (lane 2, worker I/O,
+       worker service) before the stat read, or a resource load queued while
+       the guest spins on this poll can never complete. */
+    passed &= expect_u32("stream status order", call_order, 2498u);
+    passed &= expect_u32(
+        "stream status worker I/O entry ESP",
+        file_worker_io_entry_esp,
+        TEST_ENTRY_ESP - 4u);
     passed &= expect_u32("stream status entry ESP", stat_entry_esp, TEST_ENTRY_ESP);
     passed &= expect_u32(
         "stream status return ESP", recomp_runtime.registers.esp,

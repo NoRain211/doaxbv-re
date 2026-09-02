@@ -85,6 +85,9 @@ add_executable(recomp_runtime_test
     d3d_creation_model.c
     d3d_creation_adapter.c
     d3d_creation_model_test.c
+    d3d_draw_model.c
+    d3d_draw_adapter.c
+    d3d_draw_model_test.c
     d3d_frame_model.c
     d3d_frame_model_test.c
     d3d_frame_adapter.c
@@ -117,6 +120,7 @@ add_executable(recomp_runtime_test
     fiber_adapter.c
     fiber_model_test.c
     flag_macro_test.c
+    sse_semantics_test.c
     directory_model.c
     directory_model_test.c
     input_model.c
@@ -129,8 +133,14 @@ add_executable(recomp_runtime_test
     program_manual.c
     ohci_model.c
     ohci_model_test.c
+    apu_model.c
+    apu_model_test.c
     kernel_interrupt.c
     kernel_memory.c
+    kernel_rtl.c
+    kernel_rtl_test.c
+    kernel_crypto.c
+    kernel_crypto_test.c
     kernel_thread.c
     kernel_thread_test.c
     kernel_video.c
@@ -169,6 +179,7 @@ if(RECOMP_BOUNDARY_SOURCE)
         runtime_boundary_test.c
         ohci_model.c
         kernel_ordinals.c
+        apu_model.c
         "${_recomp_boundary_source}")
     target_include_directories(recomp_runtime_boundary_test PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -202,11 +213,13 @@ if(RECOMP_ENTRY_SOURCE)
         kernel_debug.c
         device_model.c
         ohci_model.c
+        apu_model.c
         kernel_device.c
         kernel_interrupt.c
         kernel_file.c
         kernel_memory.c
         kernel_rtl.c
+        kernel_crypto.c
         kernel_thread.c
         kernel_video.c
         host_diagnostics.cpp
@@ -230,6 +243,12 @@ if(RECOMP_PROGRAM_DIR)
         recomp_0008.c recomp_0009.c recomp_0010.c recomp_0011.c
         recomp_0012.c recomp_0013.c recomp_0014.c recomp_0015.c
         recomp_dispatch.c recomp_funcs.h)
+    # Chunk count grows as recovered bodies are added, so trailing chunks are
+    # optional. A present chunk still enters the manifest, and the pinned
+    # manifest hash fails closed if the member set is not the expected one.
+    if(EXISTS "${_recomp_program_dir}/recomp_0016.c")
+        list(INSERT _recomp_program_names 16 recomp_0016.c)
+    endif()
     set(_recomp_program_sources)
     set(_recomp_program_manifest "")
     foreach(_name IN LISTS _recomp_program_names)
@@ -261,7 +280,7 @@ if(RECOMP_PROGRAM_DIR)
     set(_ebp_before "\n    uint32_t ebp;\n")
     set(_ebp_after "\n    uint32_t ebp = g_seh_ebp;\n")
     set(_ebp_growth 12)
-    set(_ebp_expected 11100)
+set(_ebp_expected 11147)
     set(_ebp_applied 0)
     set(_recomp_derived_sources)
     foreach(_source IN LISTS _recomp_program_sources)
@@ -346,6 +365,8 @@ if(RECOMP_PROGRAM_DIR)
         program_manual.c
         d3d_creation_model.c
         d3d_creation_adapter.c
+        d3d_draw_model.c
+        d3d_draw_adapter.c
         d3d_frame_model.c
         d3d_frame_adapter.c
         d3d_presenter_d3d11.cpp
@@ -377,11 +398,13 @@ if(RECOMP_PROGRAM_DIR)
         kernel_debug.c
         device_model.c
         ohci_model.c
+        apu_model.c
         kernel_device.c
         kernel_interrupt.c
         kernel_file.c
         kernel_memory.c
         kernel_rtl.c
+        kernel_crypto.c
         kernel_thread.c
         kernel_video.c
         host_diagnostics.cpp
@@ -397,7 +420,7 @@ if(RECOMP_PROGRAM_DIR)
         "${_recomp_program_dir}"
         "${CMAKE_CURRENT_SOURCE_DIR}/../xbe")
     target_link_libraries(recomp_program_runner PRIVATE
-        bcrypt dbghelp d3d11 dxgi user32 xinput9_1_0)
+        bcrypt dbghelp d3d11 d3dcompiler dxgi user32 xinput9_1_0)
 endif()
 
 include(CTest)
@@ -417,8 +440,8 @@ string(STRIP "${error}" error)
 if(NOT result EQUAL 2)
     message(FATAL_ERROR "invalid access exited ${result}, expected 2")
 endif()
-if(NOT error STREQUAL
-        "recomp runtime: undeclared 4-byte guest memory access at 0xffffffff")
+if(NOT error MATCHES
+        "^recomp runtime: undeclared 4-byte guest memory access at 0xffffffff")
     message(FATAL_ERROR "unexpected invalid-access diagnostic: ${error}")
 endif()
 ]=])

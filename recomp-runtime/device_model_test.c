@@ -35,6 +35,20 @@ uint32_t xbox_HeapAlloc(uint32_t size, uint32_t alignment)
     return aligned;
 }
 
+uint32_t xbox_ContiguousAlloc(
+    uint32_t size,
+    uint32_t lowest_address,
+    uint32_t highest_address,
+    uint32_t alignment)
+{
+    (void)lowest_address;
+    (void)highest_address;
+    if (alignment < 0x1000u) {
+        alignment = 0x1000u;
+    }
+    return xbox_HeapAlloc(size, alignment);
+}
+
 void xbox_HeapFree(uint32_t guest_address)
 {
     test_heap_freed = guest_address;

@@ -159,6 +159,57 @@ int recomp_dsound_service_adapter_test(void)
     passed &= expect_u32(
         "model device", model->device, TEST_HEAP_BASE + 0x30u);
 
+    {
+        uint32_t apu = TEST_HEAP_BASE + 0xe0u;
+        uint32_t pool = apu + 0x300u;
+
+        passed &= expect_u32("model apu", model->apu, apu);
+        passed &= expect_u32(
+            "manager apu", *recomp_memory_u32(TEST_HEAP_BASE + 0x0cu), apu);
+        passed &= expect_u32(
+            "apu vtable", *recomp_memory_u32(apu), 0x00239e44u);
+        passed &= expect_u32(
+            "apu references", *recomp_memory_u32(apu + 4u), 1u);
+        passed &= expect_u32(
+            "apu inner vtable", *recomp_memory_u32(apu + 8u), 0x00239e40u);
+        passed &= expect_u32(
+            "apu device", *recomp_memory_u32(apu + 0x0cu),
+            TEST_HEAP_BASE + 0x30u);
+        passed &= expect_u32(
+            "apu page pool vtable", *recomp_memory_u32(pool), 0x00239e98u);
+        /* The empty self-linked block list is what stops the CMcpxBuffer_Play
+           walk that previously ran off into unmapped memory. */
+        passed &= expect_u32(
+            "apu page pool block list", *recomp_memory_u32(pool + 4u),
+            pool + 4u);
+        passed &= expect_u32(
+            "apu page pool block list back", *recomp_memory_u32(pool + 8u),
+            pool + 4u);
+        passed &= expect_u32(
+            "apu page pool second list", *recomp_memory_u32(pool + 0x0cu),
+            pool + 0x0cu);
+        passed &= expect_u32(
+            "apu page pool tag", *recomp_memory_u32(pool + 0x1cu),
+            0x00214074u);
+        /* sub_001FB4C2 leaves the largest-free-block cache null, so an
+           allocation request fails instead of mapping pages. */
+        passed &= expect_u32(
+            "apu page pool cache", *recomp_memory_u32(pool + 0x18u), 0u);
+        passed &= expect_u32(
+            "apu tail list first", *recomp_memory_u32(apu + 0x728u),
+            apu + 0x728u);
+        passed &= expect_u32(
+            "apu tail list last", *recomp_memory_u32(apu + 0x750u),
+            apu + 0x750u);
+        passed &= expect_u32(
+            "apu tail list last back", *recomp_memory_u32(apu + 0x754u),
+            apu + 0x750u);
+        passed &= expect_u32(
+            "apu counter a", *recomp_memory_u32(0x0021406cu), 0xc0u);
+        passed &= expect_u32(
+            "apu counter b", *recomp_memory_u32(0x00214070u), 0x40u);
+    }
+
     write_argument(0u, TEST_HEAP_BASE + 8u);
     write_argument(1u, TEST_CALL_BASE + 0x300u);
     write_argument(2u, 18812u);
@@ -223,6 +274,22 @@ int recomp_dsound_service_adapter_test(void)
     passed &= expect_u32(
         "device allocation rollback", xbox_HeapCheckpoint(),
         TEST_HEAP_BASE + 0x100u);
+
+    recomp_dsound_service_adapter_reset();
+    recomp_test_heap_reset(TEST_HEAP_BASE + 0x400u, 2);
+    write_argument(1u, TEST_OUTPUT);
+    *recomp_memory_u32(TEST_OUTPUT) = 0xa5a5a5a5u;
+    recomp_runtime.registers.esp = TEST_ENTRY_ESP;
+    adapter();
+    passed &= expect_u32(
+        "apu allocation failure HRESULT", recomp_runtime.registers.eax,
+        RECOMP_DSOUND_OUT_OF_MEMORY);
+    passed &= expect_u32(
+        "apu allocation failure output",
+        *recomp_memory_u32(TEST_OUTPUT), 0u);
+    passed &= expect_u32(
+        "apu allocation rollback", xbox_HeapCheckpoint(),
+        TEST_HEAP_BASE + 0x400u);
 
     recomp_dsound_service_adapter_reset();
     recomp_test_heap_reset(TEST_HEAP_BASE + 0x200u, 0);

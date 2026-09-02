@@ -18,7 +18,16 @@ uint32_t g_recomp_78d80_origin;
 uint32_t g_recomp_7c450_origin;
 uint32_t g_recomp_7c7c0_origin;
 
-static uint32_t heap_cursor = 0x01000000u;
+enum {
+    XBOX_CACHED_ALIAS = 0x80000000u,
+    XBOX_HEAP_BASE = 0x01000000u,
+    XBOX_HEAP_LIMIT = 0x03800000u,
+    XBOX_CONTIGUOUS_LIMIT = 0x03f00000u,
+    XBOX_PAGE_SIZE = 0x1000u,
+};
+
+static uint32_t heap_cursor = XBOX_HEAP_BASE;
+static uint32_t contiguous_cursor = XBOX_CONTIGUOUS_LIMIT;
 static uint32_t next_thread_handle = 0xbee10000u;
 static uint32_t current_thread_id = 1u;
 static jmp_buf thread_exit;
@@ -38,7 +47,8 @@ static void call0(uint32_t guest_address)
     uint32_t saved_esp = recomp_runtime.registers.esp;
 
     push32(0u);
-    recomp_dispatch_indirect(guest_address, saved_esp);
+    recomp_dispatch_indirect_site(
+        guest_address, saved_esp, __FILE__, __LINE__);
 }
 
 static void call3(
@@ -53,7 +63,8 @@ static void call3(
     push32(second);
     push32(first);
     push32(0u);
-    recomp_dispatch_indirect(guest_address, saved_esp);
+    recomp_dispatch_indirect_site(
+        guest_address, saved_esp, __FILE__, __LINE__);
 }
 
 void recomp_program_missing(uint32_t guest_address)
@@ -104,8 +115,11 @@ static void bridge_ps_create_system_thread_ex(void)
         push32(0u);
         thread_exit_active = 1;
         if (setjmp(thread_exit) == 0) {
-            recomp_dispatch_indirect(
-                start_routine, recomp_runtime.registers.esp + 12u);
+            recomp_dispatch_indirect_site(
+                start_routine,
+                recomp_runtime.registers.esp + 12u,
+                __FILE__,
+                __LINE__);
         }
         thread_exit_active = 0;
         current_thread_id = creator_thread_id;
@@ -156,9 +170,24 @@ static void bridge_rtl_enter_critical_section(void)
 {
     uint32_t entry_esp = recomp_runtime.registers.esp;
     uint32_t critical_section = *recomp_memory_u32(entry_esp + 4u);
-    uint32_t owner = *recomp_memory_u32(critical_section + 24u);
-    uint32_t recursion = *recomp_memory_u32(critical_section + 20u);
-    uint32_t lock_count = *recomp_memory_u32(critical_section + 16u);
+    uint32_t owner;
+    uint32_t recursion;
+    uint32_t lock_count;
+
+    /* The adapter dereferences its argument before anything else, so a bad
+       pointer faults with no context. Report it against the argument slot. */
+    if (critical_section == 0u || critical_section >= 0x04000000u) {
+        fprintf(
+            stderr,
+            "recomp kernel: RtlEnterCriticalSection pointer 0x%08" PRIx32
+            " out of guest RAM entry_esp=0x%08" PRIx32 "\n",
+            critical_section,
+            entry_esp);
+    }
+
+    owner = *recomp_memory_u32(critical_section + 24u);
+    recursion = *recomp_memory_u32(critical_section + 20u);
+    lock_count = *recomp_memory_u32(critical_section + 16u);
 
     if (owner != 0u && owner != current_thread_id) {
         fprintf(
@@ -279,7 +308,7 @@ uint32_t xbox_HeapAlloc(uint32_t size, uint32_t alignment)
     }
     aligned = ((uint64_t)heap_cursor + alignment - 1u) & ~(uint64_t)(alignment - 1u);
     end = aligned + size;
-    if (end > 0x03800000u) {
+    if (end > XBOX_HEAP_LIMIT || end > contiguous_cursor) {
         return 0u;
     }
     heap_cursor = (uint32_t)end;
@@ -298,11 +327,49 @@ uint32_t xbox_HeapCheckpoint(void)
 
 bool xbox_HeapRestore(uint32_t checkpoint)
 {
-    if (checkpoint < 0x01000000u || checkpoint > heap_cursor) {
+    if (checkpoint < XBOX_HEAP_BASE || checkpoint > heap_cursor) {
         return false;
     }
     heap_cursor = checkpoint;
     return true;
+}
+
+uint32_t xbox_ContiguousAlloc(
+    uint32_t size,
+    uint32_t lowest_address,
+    uint32_t highest_address,
+    uint32_t alignment)
+{
+    uint64_t rounded_size;
+    uint64_t upper_bound;
+    uint64_t base;
+
+    if (size == 0u) {
+        return 0u;
+    }
+    if (alignment < XBOX_PAGE_SIZE) {
+        alignment = XBOX_PAGE_SIZE;
+    }
+    if ((alignment & (alignment - 1u)) != 0u) {
+        return 0u;
+    }
+    rounded_size = ((uint64_t)size + XBOX_PAGE_SIZE - 1u) &
+        ~(uint64_t)(XBOX_PAGE_SIZE - 1u);
+    upper_bound = highest_address == UINT32_MAX
+        ? XBOX_CONTIGUOUS_LIMIT
+        : (uint64_t)highest_address + 1u;
+    if (upper_bound > contiguous_cursor) {
+        upper_bound = contiguous_cursor;
+    }
+    if (rounded_size > upper_bound) {
+        return 0u;
+    }
+    base = (upper_bound - rounded_size) & ~(uint64_t)(alignment - 1u);
+    if (base < lowest_address || base < heap_cursor) {
+        return 0u;
+    }
+    contiguous_cursor = (uint32_t)base;
+    return XBOX_CACHED_ALIAS | (uint32_t)base;
 }
 
 uint64_t doaxbv_ftol2_i64_bits(double value)

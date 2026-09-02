@@ -77,6 +77,139 @@ static void prepare_lock(uint32_t locked_rect)
     recomp_runtime.registers.eax = 0xa5a5a5a5u;
 }
 
+/* Descriptor bytes below are the guest's own table values at 0x001F16B8,
+   read out of the XBE: 0x12 -> 0xa2, 0x0c -> 0x04, 0x2e -> 0x62. */
+static int describe_test(void)
+{
+    RecompD3dTextureDesc desc;
+    RecompD3dTextureCensus census = {0};
+    int passed = 1;
+
+    /* Linear A8R8G8B8 render target: Size carries the real dimensions. */
+    passed &= recomp_d3d_texture_describe(
+        0x00001200u,
+        ((4u - 1u) << 24u) | (63u << 12u) | 127u,
+        0x8021b000u,
+        0xa2u,
+        &desc);
+    passed &= expect_u32("linear format byte", desc.format_byte, 0x12u);
+    passed &= expect_u32("linear width", desc.width, 128u);
+    passed &= expect_u32("linear height", desc.height, 64u);
+    passed &= expect_u32("linear pitch", desc.pitch, 256u);
+    passed &= expect_u32("linear bpp", desc.bits_per_pixel, 32u);
+    passed &= expect_u32("linear data", desc.data, 0x0021b000u);
+    passed &= desc.linear && desc.render_target && !desc.depth;
+
+    /* Swizzled DXT1: Size is zero, so dimensions come from the format
+       dword's log2 fields. */
+    passed &= recomp_d3d_texture_describe(
+        0x06500c00u, 0u, 0x00030000u, 0x04u, &desc);
+    passed &= expect_u32("swizzled format byte", desc.format_byte, 0x0cu);
+    passed &= expect_u32("swizzled width", desc.width, 32u);
+    passed &= expect_u32("swizzled height", desc.height, 64u);
+    passed &= expect_u32("swizzled bpp", desc.bits_per_pixel, 4u);
+    passed &= !desc.linear && !desc.render_target && !desc.depth;
+
+    /* Linear D24S8 must report as a depth format. */
+    passed &= recomp_d3d_texture_describe(
+        0x00002e00u, 1u, 0u, 0x62u, &desc);
+    passed &= expect_u32("depth format byte", desc.format_byte, 0x2eu);
+    passed &= desc.depth && !desc.render_target;
+
+    passed &= !recomp_d3d_texture_describe(0u, 0u, 0u, 0u, NULL);
+
+    /* The census folds repeats and counts them. */
+    recomp_d3d_texture_describe(0x00001200u, 1u, 0u, 0xa2u, &desc);
+    recomp_d3d_texture_census_record(&census, &desc, 0u);
+    recomp_d3d_texture_census_record(&census, &desc, 0u);
+    passed &= expect_u32("census binds", census.entries[0].bind_count, 2u);
+    passed &= expect_u32("census overflow", census.overflow_count, 0u);
+    passed &= census.entries[1].used ? 0 : 1;
+
+    /* The same surface on another stage is a separate binding, because the
+       draw path only ever samples stage 0. */
+    recomp_d3d_texture_census_record(&census, &desc, 1u);
+    passed &= expect_u32("census stage", census.entries[1].stage, 1u);
+    passed &= expect_u32("census stage binds", census.entries[1].bind_count, 1u);
+    return passed;
+}
+
+static int describe_swizzle(void)
+{
+    static uint8_t source[64u * 32u];
+    static uint8_t destination[64u * 32u];
+    uint32_t mask_x = 0u;
+    uint32_t mask_y = 0u;
+    int passed = 1;
+    uint32_t y;
+
+    /* A square surface interleaves evenly: x owns the even bits. */
+    recomp_d3d_texture_swizzle_masks(4u, 4u, &mask_x, &mask_y);
+    passed &= expect_u32("square mask x", mask_x, 0x5u);
+    passed &= expect_u32("square mask y", mask_y, 0xau);
+    passed &= expect_u32(
+        "square origin",
+        recomp_d3d_texture_swizzle_offset(0u, 0u, mask_x, mask_y), 0u);
+    passed &= expect_u32(
+        "square (1,0)",
+        recomp_d3d_texture_swizzle_offset(1u, 0u, mask_x, mask_y), 1u);
+    passed &= expect_u32(
+        "square (0,1)",
+        recomp_d3d_texture_swizzle_offset(0u, 1u, mask_x, mask_y), 2u);
+    passed &= expect_u32(
+        "square (1,1)",
+        recomp_d3d_texture_swizzle_offset(1u, 1u, mask_x, mask_y), 3u);
+    passed &= expect_u32(
+        "square (3,3)",
+        recomp_d3d_texture_swizzle_offset(3u, 3u, mask_x, mask_y), 15u);
+
+    /* When one axis runs out of bits the other keeps the high bits, so a
+       wide surface degenerates to 2x2 tiles stacked along x. */
+    recomp_d3d_texture_swizzle_masks(8u, 2u, &mask_x, &mask_y);
+    passed &= expect_u32("wide mask x", mask_x, 0xdu);
+    passed &= expect_u32("wide mask y", mask_y, 0x2u);
+    passed &= expect_u32(
+        "wide (2,0)",
+        recomp_d3d_texture_swizzle_offset(2u, 0u, mask_x, mask_y), 4u);
+    passed &= expect_u32(
+        "wide (4,1)",
+        recomp_d3d_texture_swizzle_offset(4u, 1u, mask_x, mask_y), 10u);
+
+    /* Unswizzling must be the exact inverse: seed the source through the
+       swizzle so every destination texel lands in row-major order. */
+    for (y = 0u; y < 32u; ++y) {
+        uint32_t x;
+
+        recomp_d3d_texture_swizzle_masks(64u, 32u, &mask_x, &mask_y);
+        for (x = 0u; x < 64u; ++x) {
+            source[recomp_d3d_texture_swizzle_offset(x, y, mask_x, mask_y)] =
+                (uint8_t)((x * 7u) + y);
+        }
+    }
+    passed &= recomp_d3d_texture_unswizzle(
+        source, destination, 64u, 32u, 1u) ? 1 : 0;
+    for (y = 0u; y < 32u; ++y) {
+        uint32_t x;
+
+        for (x = 0u; x < 64u; ++x) {
+            if (destination[(y * 64u) + x] != (uint8_t)((x * 7u) + y)) {
+                passed &= expect_u32(
+                    "unswizzled texel",
+                    destination[(y * 64u) + x],
+                    (uint8_t)((x * 7u) + y));
+                return passed;
+            }
+        }
+    }
+
+    /* Non-power-of-two surfaces have no swizzle and must be refused. */
+    passed &= recomp_d3d_texture_unswizzle(
+        source, destination, 24u, 32u, 1u) ? 0 : 1;
+    passed &= recomp_d3d_texture_unswizzle(
+        source, destination, 64u, 32u, 0u) ? 0 : 1;
+    return passed;
+}
+
 int recomp_d3d_texture_model_test(void)
 {
     static uint8_t static_memory[TEST_STATIC_SIZE];
@@ -99,6 +232,8 @@ int recomp_d3d_texture_model_test(void)
     uint32_t resolved;
     int passed = 1;
 
+    passed &= describe_test();
+    passed &= describe_swizzle();
     passed &= !recomp_d3d_set_texture(
         &isolated, RECOMP_D3D_TEXTURE_STAGE_COUNT, 0u);
     passed &= recomp_d3d_texture_resolve_cpu_address(

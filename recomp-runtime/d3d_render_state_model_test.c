@@ -55,6 +55,123 @@ static void prepare_call(
     recomp_runtime.registers.eax = 0xa5a5a5a5u;
 }
 
+/* The depth and alpha-test values below are the ones this title actually
+   writes, taken from a full-run census of the simple render states, so the
+   test fails if the decode of a state the game relies on ever drifts. */
+static int depth_state_test(void)
+{
+    RecompD3dRenderStateModel model;
+    RecompD3dDepthState state;
+    int passed = 1;
+
+    /* An untouched model must report the Xbox D3D8 defaults, not the host's:
+       Direct3D 11 defaults depth compare to LESS, which is not the same. */
+    recomp_d3d_render_state_reset(&model);
+    recomp_d3d_depth_state(&model, &state);
+    passed &= expect_u32(
+        "default depth func", state.depth_func,
+        RECOMP_D3D_COMPARE_LESS_EQUAL);
+    passed &= expect_u32(
+        "default depth write", state.depth_write_enable ? 1u : 0u, 1u);
+    passed &= expect_u32(
+        "default alpha test", state.alpha_test_enable ? 1u : 0u, 0u);
+
+    /* ZENABLE is a separate entry point, so depth testing follows it. */
+    passed &= expect_u32(
+        "default depth test", state.depth_test_enable ? 1u : 0u, 0u);
+    recomp_d3d_set_z_enable(&model, 1u);
+    recomp_d3d_depth_state(&model, &state);
+    passed &= expect_u32(
+        "enabled depth test", state.depth_test_enable ? 1u : 0u, 1u);
+
+    /* Observed live: DEPTH_MASK 0x035c = 1, DEPTH_FUNC 0x0354 absent,
+       ALPHA_TEST 0x0300 = 0, ALPHA_FUNC 0x033c = 0x204 (GREATER),
+       ALPHA_REF 0x0340 = 1. */
+    recomp_d3d_set_simple_render_state(&model, 0x0004035cu, 0u);
+    recomp_d3d_set_simple_render_state(&model, 0x00040354u, 0x00000204u);
+    recomp_d3d_set_simple_render_state(&model, 0x00040300u, 1u);
+    recomp_d3d_set_simple_render_state(&model, 0x0004033cu, 0x00000204u);
+    recomp_d3d_set_simple_render_state(&model, 0x00040340u, 1u);
+    recomp_d3d_depth_state(&model, &state);
+    passed &= expect_u32(
+        "depth write off", state.depth_write_enable ? 1u : 0u, 0u);
+    passed &= expect_u32(
+        "depth func greater", state.depth_func, RECOMP_D3D_COMPARE_GREATER);
+    passed &= expect_u32(
+        "alpha test on", state.alpha_test_enable ? 1u : 0u, 1u);
+    passed &= expect_u32(
+        "alpha func greater", state.alpha_func, RECOMP_D3D_COMPARE_GREATER);
+    passed &= expect_u32("alpha ref", state.alpha_ref, 1u);
+
+    /* Every GL comparison enum must map, and nothing outside the range may. */
+    {
+        RecompD3dCompareFunc func = RECOMP_D3D_COMPARE_NEVER;
+        if (!recomp_d3d_compare_func_from_nv(0x0207u, &func) ||
+            func != RECOMP_D3D_COMPARE_ALWAYS ||
+            !recomp_d3d_compare_func_from_nv(0x0203u, &func) ||
+            func != RECOMP_D3D_COMPARE_LESS_EQUAL ||
+            recomp_d3d_compare_func_from_nv(0x0208u, &func) ||
+            recomp_d3d_compare_func_from_nv(0x01ffu, &func)) {
+            fprintf(stderr, "D3D depth state: compare decode wrong\n");
+            passed = 0;
+        }
+    }
+    return passed;
+}
+
+/* Blend values observed live: BLEND_ENABLE 0x0304 = 1, SRC 0x0344 = 0x302
+   (SRC_ALPHA), DST 0x0348 = 0x303 (INV_SRC_ALPHA), EQUATION 0x0350 = 0x8006
+   (ADD) - the standard translucency setup. */
+static int blend_state_test(void)
+{
+    RecompD3dRenderStateModel model;
+    RecompD3dBlendState state;
+    int passed = 1;
+
+    recomp_d3d_render_state_reset(&model);
+    recomp_d3d_blend_state(&model, &state);
+    passed &= expect_u32(
+        "default blend enable", state.blend_enable ? 1u : 0u, 0u);
+
+    recomp_d3d_set_simple_render_state(&model, 0x00040304u, 1u);
+    recomp_d3d_set_simple_render_state(&model, 0x00040344u, 0x00000302u);
+    recomp_d3d_set_simple_render_state(&model, 0x00040348u, 0x00000303u);
+    recomp_d3d_set_simple_render_state(&model, 0x00040350u, 0x00008006u);
+    recomp_d3d_blend_state(&model, &state);
+    passed &= expect_u32("blend enable", state.blend_enable ? 1u : 0u, 1u);
+    passed &= expect_u32(
+        "blend src", state.src_factor, RECOMP_D3D_BLEND_SRC_ALPHA);
+    passed &= expect_u32(
+        "blend dst", state.dst_factor, RECOMP_D3D_BLEND_INV_SRC_ALPHA);
+    passed &= expect_u32("blend op", state.op, RECOMP_D3D_BLEND_OP_ADD);
+
+    {
+        RecompD3dBlendFactor factor = RECOMP_D3D_BLEND_ZERO;
+        RecompD3dBlendOp op = RECOMP_D3D_BLEND_OP_ADD;
+
+        /* ZERO and ONE live outside the 0x03xx block. */
+        if (!recomp_d3d_blend_factor_from_nv(0x0000u, &factor) ||
+            factor != RECOMP_D3D_BLEND_ZERO ||
+            !recomp_d3d_blend_factor_from_nv(0x0001u, &factor) ||
+            factor != RECOMP_D3D_BLEND_ONE ||
+            recomp_d3d_blend_factor_from_nv(0x0002u, &factor) ||
+            recomp_d3d_blend_factor_from_nv(0x8001u, &factor)) {
+            fprintf(stderr, "D3D blend state: factor decode wrong\n");
+            passed = 0;
+        }
+        /* 0x8009 is not an equation, and the signed NV extensions have no
+           host equivalent, so both must be refused. */
+        if (!recomp_d3d_blend_op_from_nv(0x800bu, &op) ||
+            op != RECOMP_D3D_BLEND_OP_REVERSE_SUBTRACT ||
+            recomp_d3d_blend_op_from_nv(0x8009u, &op) ||
+            recomp_d3d_blend_op_from_nv(0xf005u, &op)) {
+            fprintf(stderr, "D3D blend state: equation decode wrong\n");
+            passed = 0;
+        }
+    }
+    return passed;
+}
+
 int recomp_d3d_render_state_model_test(void)
 {
     static uint8_t static_memory[TEST_STATIC_SIZE];
@@ -566,6 +683,9 @@ int recomp_d3d_render_state_model_test(void)
     passed &= expect_u32("adapter reset value", model->normalize_normals, 0u);
     passed &= expect_u32(
         "adapter reset count", model->normalize_normals_update_count, 0u);
+
+    passed &= depth_state_test();
+    passed &= blend_state_test();
 
     return passed;
 }

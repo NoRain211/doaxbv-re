@@ -9,6 +9,7 @@
 void sub_00189800(void);
 int recomp_device_model_test(void);
 int recomp_d3d_creation_model_test(void);
+int recomp_d3d_draw_model_test(void);
 int recomp_d3d_frame_model_test(void);
 int recomp_d3d_frame_adapter_test(void);
 int recomp_d3d_presenter_memory_test(void);
@@ -22,13 +23,17 @@ int recomp_cri_service_adapter_test(void);
 int recomp_crt_format_adapter_test(void);
 int recomp_fiber_model_test(void);
 int recomp_flag_macro_test(void);
+int recomp_sse_semantics_test(void);
 int recomp_directory_model_test(void);
 int recomp_input_model_test(void);
 int recomp_input_pulse_source_test(void);
 int recomp_symbolic_link_model_test(void);
 int recomp_ohci_model_test(void);
+int recomp_apu_model_test(void);
 int recomp_kernel_thread_test(void);
 int recomp_kernel_video_test(void);
+int recomp_kernel_rtl_test(void);
+int recomp_kernel_crypto_test(void);
 
 typedef struct LeafFixture {
     const char *name;
@@ -542,6 +547,7 @@ int main(int argc, char **argv)
     passed &= run_cached_ram_alias();
     passed &= recomp_device_model_test();
     passed &= recomp_d3d_creation_model_test();
+    passed &= recomp_d3d_draw_model_test();
     passed &= recomp_d3d_frame_model_test();
     passed &= recomp_d3d_presenter_memory_test();
     passed &= recomp_d3d_frame_adapter_test();
@@ -555,13 +561,17 @@ int main(int argc, char **argv)
     passed &= recomp_crt_format_adapter_test();
     passed &= recomp_fiber_model_test();
     passed &= recomp_flag_macro_test();
+    passed &= recomp_sse_semantics_test();
     passed &= recomp_directory_model_test();
     passed &= recomp_input_model_test();
     passed &= recomp_input_pulse_source_test();
     passed &= recomp_symbolic_link_model_test();
     passed &= recomp_ohci_model_test();
+    passed &= recomp_apu_model_test();
     passed &= recomp_kernel_thread_test();
     passed &= recomp_kernel_video_test();
+    passed &= recomp_kernel_rtl_test();
+    passed &= recomp_kernel_crypto_test();
     passed &= run_usb0_ohci_initialization();
 
     if (!passed) {

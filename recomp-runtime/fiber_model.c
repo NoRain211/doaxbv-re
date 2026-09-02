@@ -51,6 +51,12 @@ RecompFiber *recomp_fiber_add(
                 .exception_list = exception_list,
                 .registers = *registers,
             };
+            /* A new thread starts with an empty x87 stack and the reset
+               control word, not a zeroed one: 0x037F is the hardware value
+               after FNINIT, and zero would mean all exceptions unmasked with
+               24-bit precision. The rest of the context is already zero from
+               the compound literal, which is the correct empty stack. */
+            fiber->fpu.fpu_control_word = 0x037fu;
             return fiber;
         }
     }

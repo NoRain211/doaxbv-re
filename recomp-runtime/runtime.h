@@ -5,6 +5,15 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/* An XMM register is 128 bits wide. The union keeps both views because the
+   bitwise ops implement sign-mask and select idioms that are only correct on
+   the integer lanes, while the arithmetic ops need the float lanes. */
+typedef union RecompXmm {
+    float f[4];
+    double d[2];
+    uint32_t u[4];
+} RecompXmm;
+
 typedef struct RecompRegisters {
     uint32_t eax;
     uint32_t ecx;
@@ -35,8 +44,27 @@ typedef struct RecompFunctionEntry {
     RecompFunction function;
 } RecompFunctionEntry;
 
+/* The per-thread floating-point context. Hardware gives every thread its own
+   x87 stack and SSE register file and preserves them across a context
+   switch; the runtime keeps them global so a value can straddle the several
+   C bodies one guest routine is split into. Anything that switches guest
+   execution contexts must therefore save and restore this explicitly. */
+typedef struct RecompFpuContext {
+    RecompXmm xmm[8];
+    double fpu_stack[8];
+    uint32_t fpu_top;
+    uint16_t fpu_control_word;
+    int fpu_compare;
+} RecompFpuContext;
+
 typedef struct RecompRuntime {
     RecompRegisters registers;
+    /* XMM is architectural state, not a scratch local. The lifter splits one
+       guest routine into several C functions, so a value produced in one
+       block and read in the next - a return value in xmm0, or a spill
+       straddling a branch - is lost if these live on the C stack. The x87
+       stack below is global for exactly the same reason. */
+    RecompXmm xmm[8];
     double fpu_stack[8];
     uint32_t fpu_top;
     /* x87 control word. FNSTCW/FLDCW read and write this; the CRT's
@@ -84,12 +112,39 @@ void recomp_guest_memset(
     uint32_t destination,
     int value,
     size_t size);
+/* Wide transfers between guest memory and a host local, used by the packed
+   SSE lifting. The guest side keeps the usual address translation; the host
+   side is a plain pointer because an XMM register is not guest memory. */
+void recomp_guest_load(void *destination, uint32_t source, size_t size);
+void recomp_guest_store(uint32_t destination, const void *source, size_t size);
 uint32_t *recomp_ebp_register(void);
 uint32_t *recomp_esp_register(void);
 bool recomp_dispatch(uint32_t guest_address);
 void recomp_dispatch_indirect(uint32_t guest_address, uint32_t saved_esp);
+void recomp_dispatch_indirect_site(
+    uint32_t guest_address,
+    uint32_t saved_esp,
+    const char *member,
+    int line);
 void recomp_generated_breakpoint(const char *member, int line);
 const char *recomp_kernel_ordinal_name(uint32_t ordinal);
+/* Reads one frame of the live indirect-dispatch stack, 0 being the
+   innermost. Returns false when the depth is not populated. The site strings
+   point at static storage owned by the runtime and stay valid for the run.
+   This exists so a probe can name the guest caller of an adapter without
+   guessing at stack layout: the lifter pushes a literal 0 where hardware
+   would have pushed a return address, so the guest frame carries no usable
+   return address, but the dispatch site does carry __FILE__ and __LINE__. */
+bool recomp_dispatch_frame_at(
+    size_t depth,
+    uint32_t *guest_address,
+    const char **member,
+    int *line);
+/* Copies the live floating-point context out of / into the runtime. These
+   are plain functions over plain state so a scheduler can use them without
+   knowing how the guest call was intercepted. */
+void recomp_fpu_context_save(RecompFpuContext *context);
+void recomp_fpu_context_restore(const RecompFpuContext *context);
 
 extern uint32_t recomp_last_dispatch_address;
 
@@ -158,11 +213,12 @@ extern uint32_t recomp_last_dispatch_address;
     (sp) += 4u; \
 } while (0)
 #define RECOMP_ICALL_SAFE(address, saved_esp) do { \
-    recomp_dispatch_indirect( \
-        (uint32_t)(address), (uint32_t)(saved_esp)); \
+    recomp_dispatch_indirect_site( \
+        (uint32_t)(address), (uint32_t)(saved_esp), __FILE__, __LINE__); \
 } while (0)
 #define RECOMP_ITAIL(address) do { \
-    recomp_dispatch_indirect((uint32_t)(address), g_esp); \
+    recomp_dispatch_indirect_site( \
+        (uint32_t)(address), g_esp, __FILE__, __LINE__); \
 } while (0)
 #endif
 

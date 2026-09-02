@@ -59,6 +59,30 @@ int recomp_fiber_model_test(void)
 
     passed &= expect_u32("main added", main_fiber != NULL, 1u);
     passed &= expect_u32("worker added", worker_fiber != NULL, 1u);
+    /* A new fiber starts with an empty x87 stack and the reset control word.
+       Zero would mean all exceptions unmasked at 24-bit precision, which is
+       not what a thread starts with. */
+    passed &= expect_u32(
+        "worker fpu control word",
+        worker_fiber->fpu.fpu_control_word,
+        0x037fu);
+    passed &= expect_u32("worker fpu empty", worker_fiber->fpu.fpu_top, 0u);
+    /* Each fiber owns its floating-point context. Storing into one must not
+       be visible through the other, which is the whole point of moving this
+       state off the shared runtime. */
+    main_fiber->fpu.fpu_top = 5u;
+    main_fiber->fpu.fpu_compare = -1;
+    worker_fiber->fpu.fpu_top = 2u;
+    worker_fiber->fpu.fpu_compare = 1;
+    passed &= expect_u32("main fpu isolated", main_fiber->fpu.fpu_top, 5u);
+    passed &= expect_u32(
+        "main fpu compare isolated",
+        (uint32_t)(main_fiber->fpu.fpu_compare + 2),
+        1u);
+    passed &= expect_u32(
+        "worker fpu isolated",
+        worker_fiber->fpu.fpu_top,
+        2u);
     passed &= expect_u32(
         "duplicate rejected",
         recomp_fiber_add(

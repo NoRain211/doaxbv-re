@@ -3,6 +3,19 @@
 enum {
     D3D_SIMPLE_COMMAND_BASE = 0x00040000u,
     D3D_SIMPLE_METHOD_MASK = 0x00001ffcu,
+    /* NV2A Kelvin method offsets, as written by the Xbox D3D8 driver. */
+    D3D_METHOD_ALPHA_TEST_ENABLE = D3D_SIMPLE_COMMAND_BASE | 0x0300u,
+    D3D_METHOD_BLEND_ENABLE = D3D_SIMPLE_COMMAND_BASE | 0x0304u,
+    D3D_METHOD_ALPHA_FUNC = D3D_SIMPLE_COMMAND_BASE | 0x033cu,
+    D3D_METHOD_ALPHA_REF = D3D_SIMPLE_COMMAND_BASE | 0x0340u,
+    D3D_METHOD_BLEND_SRC = D3D_SIMPLE_COMMAND_BASE | 0x0344u,
+    D3D_METHOD_BLEND_DST = D3D_SIMPLE_COMMAND_BASE | 0x0348u,
+    D3D_METHOD_BLEND_EQUATION = D3D_SIMPLE_COMMAND_BASE | 0x0350u,
+    D3D_METHOD_DEPTH_FUNC = D3D_SIMPLE_COMMAND_BASE | 0x0354u,
+    D3D_METHOD_DEPTH_MASK = D3D_SIMPLE_COMMAND_BASE | 0x035cu,
+    /* Comparisons arrive as GL enums, NEVER through ALWAYS. */
+    D3D_NV_COMPARE_BASE = 0x00000200u,
+    D3D_NV_COMPARE_LAST = 0x00000207u,
     D3D_CULL_NONE = 0u,
     D3D_CULL_CW = 0x00000900u,
     D3D_CULL_CCW = 0x00000901u,
@@ -171,4 +184,177 @@ bool recomp_d3d_get_simple_render_state(
     }
     *value = model->simple_values[index];
     return true;
+}
+
+bool recomp_d3d_compare_func_from_nv(
+    uint32_t value,
+    RecompD3dCompareFunc *func)
+{
+    if (func == NULL || value < D3D_NV_COMPARE_BASE ||
+        value > D3D_NV_COMPARE_LAST) {
+        return false;
+    }
+    *func = (RecompD3dCompareFunc)(value - D3D_NV_COMPARE_BASE);
+    return true;
+}
+
+/* Reads one simple state, or reports absence so the caller can apply the
+   guest-side default rather than the host's. */
+static bool simple_or_absent(
+    const RecompD3dRenderStateModel *model,
+    uint32_t method,
+    uint32_t *value)
+{
+    return recomp_d3d_get_simple_render_state(model, method, value);
+}
+
+void recomp_d3d_depth_state(
+    const RecompD3dRenderStateModel *model,
+    RecompD3dDepthState *state)
+{
+    uint32_t value;
+
+    if (state == NULL) {
+        return;
+    }
+
+    /* Xbox D3D8 defaults, used whenever the guest has not written the state. */
+    state->depth_test_enable = true;
+    state->depth_write_enable = true;
+    state->depth_func = RECOMP_D3D_COMPARE_LESS_EQUAL;
+    state->alpha_test_enable = false;
+    state->alpha_func = RECOMP_D3D_COMPARE_ALWAYS;
+    state->alpha_ref = 0u;
+
+    if (model == NULL) {
+        return;
+    }
+
+    /* D3DRS_ZENABLE has its own entry point rather than a simple method, and
+       its third value (USEW) still tests depth, so anything non-zero enables
+       the test. */
+    state->depth_test_enable = model->z_enable != D3D_ZBUFFER_FALSE;
+
+    if (simple_or_absent(model, D3D_METHOD_DEPTH_MASK, &value)) {
+        state->depth_write_enable = value != 0u;
+    }
+    if (simple_or_absent(model, D3D_METHOD_DEPTH_FUNC, &value)) {
+        recomp_d3d_compare_func_from_nv(value, &state->depth_func);
+    }
+    if (simple_or_absent(model, D3D_METHOD_ALPHA_TEST_ENABLE, &value)) {
+        state->alpha_test_enable = value != 0u;
+    }
+    if (simple_or_absent(model, D3D_METHOD_ALPHA_FUNC, &value)) {
+        recomp_d3d_compare_func_from_nv(value, &state->alpha_func);
+    }
+    if (simple_or_absent(model, D3D_METHOD_ALPHA_REF, &value)) {
+        state->alpha_ref = value & 0xffu;
+    }
+}
+
+bool recomp_d3d_blend_factor_from_nv(
+    uint32_t value,
+    RecompD3dBlendFactor *factor)
+{
+    if (factor == NULL) {
+        return false;
+    }
+    /* ZERO and ONE sit outside the 0x03xx run, so this cannot be arithmetic. */
+    switch (value) {
+    case 0x0000u:
+        *factor = RECOMP_D3D_BLEND_ZERO;
+        return true;
+    case 0x0001u:
+        *factor = RECOMP_D3D_BLEND_ONE;
+        return true;
+    case 0x0300u:
+        *factor = RECOMP_D3D_BLEND_SRC_COLOR;
+        return true;
+    case 0x0301u:
+        *factor = RECOMP_D3D_BLEND_INV_SRC_COLOR;
+        return true;
+    case 0x0302u:
+        *factor = RECOMP_D3D_BLEND_SRC_ALPHA;
+        return true;
+    case 0x0303u:
+        *factor = RECOMP_D3D_BLEND_INV_SRC_ALPHA;
+        return true;
+    case 0x0304u:
+        *factor = RECOMP_D3D_BLEND_DST_ALPHA;
+        return true;
+    case 0x0305u:
+        *factor = RECOMP_D3D_BLEND_INV_DST_ALPHA;
+        return true;
+    case 0x0306u:
+        *factor = RECOMP_D3D_BLEND_DST_COLOR;
+        return true;
+    case 0x0307u:
+        *factor = RECOMP_D3D_BLEND_INV_DST_COLOR;
+        return true;
+    case 0x0308u:
+        *factor = RECOMP_D3D_BLEND_SRC_ALPHA_SATURATE;
+        return true;
+    default:
+        return false;
+    }
+}
+
+bool recomp_d3d_blend_op_from_nv(uint32_t value, RecompD3dBlendOp *op)
+{
+    if (op == NULL) {
+        return false;
+    }
+    switch (value) {
+    case 0x8006u:
+        *op = RECOMP_D3D_BLEND_OP_ADD;
+        return true;
+    case 0x8007u:
+        *op = RECOMP_D3D_BLEND_OP_MIN;
+        return true;
+    case 0x8008u:
+        *op = RECOMP_D3D_BLEND_OP_MAX;
+        return true;
+    case 0x800au:
+        *op = RECOMP_D3D_BLEND_OP_SUBTRACT;
+        return true;
+    case 0x800bu:
+        *op = RECOMP_D3D_BLEND_OP_REVERSE_SUBTRACT;
+        return true;
+    default:
+        /* The signed NV extensions (0xf005/0xf006) have no host equivalent. */
+        return false;
+    }
+}
+
+void recomp_d3d_blend_state(
+    const RecompD3dRenderStateModel *model,
+    RecompD3dBlendState *state)
+{
+    uint32_t value;
+
+    if (state == NULL) {
+        return;
+    }
+
+    state->blend_enable = false;
+    state->src_factor = RECOMP_D3D_BLEND_ONE;
+    state->dst_factor = RECOMP_D3D_BLEND_ZERO;
+    state->op = RECOMP_D3D_BLEND_OP_ADD;
+
+    if (model == NULL) {
+        return;
+    }
+
+    if (simple_or_absent(model, D3D_METHOD_BLEND_ENABLE, &value)) {
+        state->blend_enable = value != 0u;
+    }
+    if (simple_or_absent(model, D3D_METHOD_BLEND_SRC, &value)) {
+        recomp_d3d_blend_factor_from_nv(value, &state->src_factor);
+    }
+    if (simple_or_absent(model, D3D_METHOD_BLEND_DST, &value)) {
+        recomp_d3d_blend_factor_from_nv(value, &state->dst_factor);
+    }
+    if (simple_or_absent(model, D3D_METHOD_BLEND_EQUATION, &value)) {
+        recomp_d3d_blend_op_from_nv(value, &state->op);
+    }
 }

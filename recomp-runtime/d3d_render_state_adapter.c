@@ -41,6 +41,44 @@ const RecompD3dRenderStateModel *recomp_d3d_render_state_adapter_model(void)
     return &d3d_render_state_model;
 }
 
+void recomp_d3d_render_state_adapter_report(void)
+{
+    const RecompD3dRenderStateModel *model = &d3d_render_state_model;
+
+    fprintf(
+        stderr,
+        "recomp d3d state: cull=0x%08" PRIx32 "/%" PRIu32
+        " zenable=%" PRIu32 "/%" PRIu32
+        " fill=0x%08" PRIx32 "/%" PRIu32
+        " stencil=%" PRIu32 "/%" PRIu32 "\n",
+        model->cull_mode, model->cull_mode_update_count,
+        model->z_enable, model->z_enable_update_count,
+        model->fill_mode, model->fill_mode_update_count,
+        model->stencil_enable, model->stencil_enable_update_count);
+
+    /* Simple states are stored by encoded NV2A method, so the method number
+       is the only identity available here; naming them is the consumer's
+       job. Reporting the set that is actually present shows which host
+       state this title needs. */
+    for (uint32_t index = 0u; index < RECOMP_D3D_SIMPLE_METHOD_COUNT;
+         ++index) {
+        if ((model->simple_present[index / 32u] &
+             (1u << (index % 32u))) == 0u) {
+            continue;
+        }
+        fprintf(
+            stderr,
+            "recomp d3d state: simple method=0x%08" PRIx32
+            " value=0x%08" PRIx32 "\n",
+            0x00040000u | (index * 4u),
+            model->simple_values[index]);
+    }
+    fprintf(
+        stderr,
+        "recomp d3d state: simple updates=%" PRIu32 "\n",
+        model->simple_update_count);
+}
+
 static uint32_t stack_argument(uint32_t entry_esp, uint32_t index)
 {
     return *recomp_memory_u32(entry_esp + 4u + index * 4u);

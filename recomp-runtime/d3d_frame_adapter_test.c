@@ -14,6 +14,9 @@ enum {
     TEST_CALL_SIZE = 0x00001000u,
     TEST_ENTRY_ESP = TEST_CALL_BASE + 0x100u,
     TEST_DEVICE = 0x001f3120u,
+    TEST_KERNEL_DATA_BASE = 0x00740000u,
+    TEST_KERNEL_DATA_SIZE = 0x00001000u,
+    TEST_KE_TICK_COUNT = TEST_KERNEL_DATA_BASE + 0x40u,
 };
 
 static int expect_u32(
@@ -50,6 +53,7 @@ int recomp_d3d_frame_adapter_test(void)
 {
     static uint8_t device_memory[TEST_DEVICE_SIZE];
     static uint8_t call_memory[TEST_CALL_SIZE];
+    static uint8_t kernel_data_memory[TEST_KERNEL_DATA_SIZE];
     const RecompMemoryRegion regions[] = {
         {
             .address = TEST_DEVICE_BASE,
@@ -60,6 +64,11 @@ int recomp_d3d_frame_adapter_test(void)
             .address = TEST_CALL_BASE,
             .size = sizeof call_memory,
             .data = call_memory,
+        },
+        {
+            .address = TEST_KERNEL_DATA_BASE,
+            .size = sizeof kernel_data_memory,
+            .data = kernel_data_memory,
         },
     };
     const uint32_t clear_args[] = {
@@ -84,7 +93,8 @@ int recomp_d3d_frame_adapter_test(void)
     int passed = 1;
 
     memset(device_memory, 0, sizeof device_memory);
-    recomp_runtime_init(regions, 2u, NULL, 0u, NULL, 0u);
+    memset(kernel_data_memory, 0, sizeof kernel_data_memory);
+    recomp_runtime_init(regions, 3u, NULL, 0u, NULL, 0u);
     recomp_d3d_frame_adapter_reset();
     recomp_d3d_frame_adapter_initialize(&config, TEST_DEVICE);
 
@@ -146,6 +156,10 @@ int recomp_d3d_frame_adapter_test(void)
         "guest swap counter",
         *recomp_memory_u32(TEST_DEVICE + 0x2c10u),
         1u);
+    passed &= expect_u32(
+        "KeTickCount",
+        *recomp_memory_u32(TEST_KE_TICK_COUNT),
+        16u);
     if (!recomp_d3d_presenter_memory_snapshot(&snapshot)) {
         fprintf(stderr, "D3D frame adapter: Swap snapshot unavailable\n");
         passed = 0;

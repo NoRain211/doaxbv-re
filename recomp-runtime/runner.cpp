@@ -1,6 +1,7 @@
 #include "host_diagnostics.h"
 #ifdef RECOMP_FULL_PROGRAM
 #include "cri_service_adapter.h"
+#include "d3d_presenter.h"
 #include "fiber_adapter.h"
 #include "input_adapter.h"
 #include "input_host_win32.h"
@@ -281,12 +282,23 @@ int main(int argc, char **argv)
     std::string stopAt;
     std::string milestoneLog;
     bool inputStartPulseEnabled = false;
+    bool vsyncPresent = false;
     std::vector<std::uint64_t> inputStartPulsePolls;
+    std::vector<std::uint64_t> inputAPulsePolls;
+std::vector<std::pair<std::uint64_t, std::uint16_t>> inputButtonsPulses;
+struct AnalogPulse {
+    std::uint64_t poll;
+    std::uint8_t index;
+    std::uint8_t value;
+};
+std::vector<AnalogPulse> inputAnalogPulses;
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
         const bool wantsValue = arg == "--xbe" || arg == "--expect-stop" ||
             arg == "--stop-at" || arg == "--milestone-log" ||
-            arg == "--input-start-pulse-at";
+            arg == "--input-start-pulse-at" ||
+            arg == "--input-a-pulse-at" || arg == "--input-buttons-at" ||
+            arg == "--input-analog-at";
 
         if (wantsValue && i + 1 >= argc) {
             std::cerr << "recomp runner: " << arg << " needs a value\n";
@@ -294,6 +306,8 @@ int main(int argc, char **argv)
         }
         if (arg == "--xbe") {
             xbePath = argv[++i];
+        } else if (arg == "--vsync") {
+            vsyncPresent = true;
         } else if (arg == "--expect-stop") {
             expectStop = argv[++i];
         } else if (arg == "--stop-at") {
@@ -317,11 +331,143 @@ int main(int argc, char **argv)
             }
             inputStartPulsePolls.push_back(parsedPoll);
             inputStartPulseEnabled = true;
+        } else if (arg == "--input-a-pulse-at") {
+            const std::string value = argv[++i];
+            std::uint64_t parsedPoll = 0u;
+            if (!parsePositiveU64(value, parsedPoll)) {
+                std::cerr << "recomp runner: invalid A pulse poll '"
+                          << value << "'\n";
+                return 64;
+            }
+            if (inputAPulsePolls.size() >=
+                    RECOMP_INPUT_A_PULSE_POLL_CAPACITY) {
+                std::cerr << "recomp runner: at most "
+                          << RECOMP_INPUT_A_PULSE_POLL_CAPACITY
+                          << " A pulse polls\n";
+                return 64;
+            }
+            inputAPulsePolls.push_back(parsedPoll);
+            inputStartPulseEnabled = true;
+        } else if (arg == "--input-buttons-at") {
+            const std::string value = argv[++i];
+            const std::size_t separator = value.find(':');
+            if (separator == std::string::npos) {
+                std::cerr << "recomp runner: invalid button pulse '"
+                          << value << "' (expected <poll>:<hexmask>)\n";
+                return 64;
+            }
+            std::uint64_t parsedPoll = 0u;
+            if (!parsePositiveU64(value.substr(0u, separator), parsedPoll)) {
+                std::cerr << "recomp runner: invalid button pulse poll '"
+                          << value.substr(0u, separator) << "'\n";
+                return 64;
+            }
+            std::uint16_t parsedMask = 0u;
+            try {
+                const unsigned long mask =
+                    std::stoul(value.substr(separator + 1u), nullptr, 16);
+                if (mask == 0u || mask > 0xfffful) {
+                    std::cerr << "recomp runner: invalid button pulse mask '"
+                              << value.substr(separator + 1u) << "'\n";
+                    return 64;
+                }
+                /* The Xbox digital word has eight bits, 0x0001-0x0080. The
+                   face buttons, Black/White and the triggers are analog and
+                   travel in a separate byte array, so a high bit here is set,
+                   copied to the guest, and correctly ignored -- silently. Six
+                   rounds of mask sweeps were partly measuring nothing before
+                   this was caught. Fail closed instead. */
+                if ((mask & ~0x00fful) != 0u) {
+                    std::cerr << "recomp runner: button mask '"
+                              << value.substr(separator + 1u)
+                              << "' has bits above 0x00ff, which the digital"
+                                 " button word cannot carry.\n"
+                              << "  legal: 0x0001-0x0008 dpad, 0x0010 START,"
+                                 " 0x0020 BACK, 0x0040/0x0080 thumb clicks\n"
+                              << "  for A/B/X/Y, Black/White and the triggers"
+                                 " use --input-analog-at <poll>:<index>:<value>"
+                                 "\n";
+                    return 64;
+                }
+                parsedMask = static_cast<std::uint16_t>(mask);
+            } catch (const std::exception&) {
+                std::cerr << "recomp runner: invalid button pulse mask '"
+                          << value.substr(separator + 1u) << "'\n";
+                return 64;
+            }
+            if (inputButtonsPulses.size() >=
+                    RECOMP_INPUT_BUTTONS_PULSE_CAPACITY) {
+                std::cerr << "recomp runner: at most "
+                          << RECOMP_INPUT_BUTTONS_PULSE_CAPACITY
+                          << " button pulses\n";
+                return 64;
+            }
+            inputButtonsPulses.emplace_back(parsedPoll, parsedMask);
+            inputStartPulseEnabled = true;
+        } else if (arg == "--input-analog-at") {
+            /* <poll>:<index>:<value>. Index is the guest analog ordering from
+               xinput_xbox.h: 0=A 1=B 2=X 3=Y 4=Black 5=White 6=LTrig 7=RTrig.
+               Value is 0-255; the guest threshold is 30. */
+            const std::string value = argv[++i];
+            const std::size_t first = value.find(':');
+            const std::size_t second =
+                first == std::string::npos ? std::string::npos
+                                           : value.find(':', first + 1u);
+            if (first == std::string::npos || second == std::string::npos) {
+                std::cerr << "recomp runner: invalid analog pulse '" << value
+                          << "' (expected <poll>:<index>:<value>)\n";
+                return 64;
+            }
+            std::uint64_t parsedPoll = 0u;
+            if (!parsePositiveU64(value.substr(0u, first), parsedPoll)) {
+                std::cerr << "recomp runner: invalid analog pulse poll '"
+                          << value.substr(0u, first) << "'\n";
+                return 64;
+            }
+            std::uint8_t parsedIndex = 0u;
+            std::uint8_t parsedValue = 0u;
+            try {
+                const unsigned long index = std::stoul(
+                    value.substr(first + 1u, second - first - 1u), nullptr, 10);
+                const unsigned long level =
+                    std::stoul(value.substr(second + 1u), nullptr, 10);
+                if (index >= RECOMP_INPUT_ANALOG_BUTTON_COUNT) {
+                    std::cerr << "recomp runner: analog index " << index
+                              << " out of range, expected 0-7"
+                                 " (0=A 1=B 2=X 3=Y 4=Black 5=White"
+                                 " 6=LTrig 7=RTrig)\n";
+                    return 64;
+                }
+                if (level > 0xfful) {
+                    std::cerr << "recomp runner: analog value " << level
+                              << " out of range, expected 0-255\n";
+                    return 64;
+                }
+                parsedIndex = static_cast<std::uint8_t>(index);
+                parsedValue = static_cast<std::uint8_t>(level);
+            } catch (const std::exception&) {
+                std::cerr << "recomp runner: invalid analog pulse '" << value
+                          << "'\n";
+                return 64;
+            }
+            if (inputAnalogPulses.size() >=
+                    RECOMP_INPUT_ANALOG_PULSE_CAPACITY) {
+                std::cerr << "recomp runner: at most "
+                          << RECOMP_INPUT_ANALOG_PULSE_CAPACITY
+                          << " analog pulses\n";
+                return 64;
+            }
+            inputAnalogPulses.push_back(
+                AnalogPulse{parsedPoll, parsedIndex, parsedValue});
+            inputStartPulseEnabled = true;
         } else {
             std::cerr << "usage: recomp_runner --xbe <path>"
                          " [--expect-stop <id>] [--stop-at <id>]"
                          " [--milestone-log <path>]"
-                         " [--input-start-pulse-at <poll>]\n";
+                         " [--vsync]"
+                         " [--input-start-pulse-at <poll>]"
+                         " [--input-buttons-at <poll>:<hexmask>]"
+                         " [--input-analog-at <poll>:<index>:<value>]\n";
             return 64;
         }
     }
@@ -329,7 +475,9 @@ int main(int argc, char **argv)
         std::cerr << "usage: recomp_runner --xbe <path>"
                      " [--expect-stop <id>] [--stop-at <id>]"
                      " [--milestone-log <path>]"
-                     " [--input-start-pulse-at <poll>]\n";
+                     " [--input-start-pulse-at <poll>]"
+                     " [--input-buttons-at <poll>:<hexmask>]"
+                     " [--input-analog-at <poll>:<index>:<value>]\n";
         return 64;
     }
     recomp_stop_configure(
@@ -394,19 +542,62 @@ int main(int argc, char **argv)
     recomp_cri_service_adapter_reset();
     recomp_fiber_adapter_reset();
     recomp_input_adapter_reset();
+    /* The guest frame loop does not depend on wall-clock time (kernel waits
+       are immediate), so DXGI vsync is unintended host pacing. Run presents
+       unthrottled so natural frame-driven transitions are reachable inside
+       the gate budget. This removes pacing; it does not force guest state.
+
+       Unthrottled presenting is correct for a gate and wrong for watching.
+       The guest presents as fast as the host will retire frames -- measured
+       at 255 presents/sec -- into a windowed DXGI_SWAP_EFFECT_DISCARD chain
+       on a 60 Hz output. Four or more presents land inside one scanout, so
+       the display shows bands from different frames and the image appears to
+       roll vertically. --vsync paces Present() to the output refresh for a
+       human observer; it changes host pacing only, never guest state. */
+    recomp_d3d_presenter_set_immediate_present(!vsyncPresent);
     if (inputStartPulseEnabled) {
         recomp_input_pulse_source_init(
             &inputPulseSource,
             nullptr,
-            inputStartPulsePolls.front());
+            inputStartPulsePolls.empty() ? 0u : inputStartPulsePolls.front());
         for (std::size_t i = 1u; i < inputStartPulsePolls.size(); ++i) {
             recomp_input_pulse_source_add_poll(
                 &inputPulseSource, inputStartPulsePolls[i]);
+        }
+        for (std::uint64_t poll : inputAPulsePolls) {
+            recomp_input_pulse_source_add_a_poll(&inputPulseSource, poll);
+        }
+        for (const auto& buttonsPulse : inputButtonsPulses) {
+            recomp_input_pulse_source_add_buttons_poll(
+                &inputPulseSource, buttonsPulse.first, buttonsPulse.second);
+        }
+        for (const auto& analogPulse : inputAnalogPulses) {
+            recomp_input_pulse_source_add_analog_poll(
+                &inputPulseSource, analogPulse.poll, analogPulse.index,
+                analogPulse.value);
         }
         recomp_input_adapter_set_source(sampleInputPulse);
         std::cerr << "recomp input: deterministic START pulse poll=";
         for (std::size_t i = 0u; i < inputStartPulsePolls.size(); ++i) {
             std::cerr << (i == 0u ? "" : ",") << inputStartPulsePolls[i];
+        }
+        std::cerr << " A pulse poll=";
+        for (std::size_t i = 0u; i < inputAPulsePolls.size(); ++i) {
+            std::cerr << (i == 0u ? "" : ",") << inputAPulsePolls[i];
+        }
+        std::cerr << " button pulses=";
+        for (std::size_t i = 0u; i < inputButtonsPulses.size(); ++i) {
+            std::cerr << (i == 0u ? "" : ",") << std::hex
+                      << inputButtonsPulses[i].first << ":"
+                      << inputButtonsPulses[i].second;
+        }
+        std::cerr << std::dec;
+        std::cerr << " analog pulses=";
+        for (std::size_t i = 0u; i < inputAnalogPulses.size(); ++i) {
+            std::cerr << (i == 0u ? "" : ",") << inputAnalogPulses[i].poll
+                      << ":" << static_cast<unsigned>(inputAnalogPulses[i].index)
+                      << ":"
+                      << static_cast<unsigned>(inputAnalogPulses[i].value);
         }
         std::cerr << '\n';
     } else {

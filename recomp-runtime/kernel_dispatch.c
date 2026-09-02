@@ -42,6 +42,9 @@ RecompFunction recomp_lookup_kernel(uint32_t guest_address)
     if (function == NULL) {
         function = recomp_kernel_file(ordinal);
     }
+    if (function == NULL) {
+        function = recomp_kernel_crypto(ordinal);
+    }
     if (function != NULL) {
         recomp_stop_note_kernel_call();
     }

@@ -53,7 +53,8 @@ static inline void kernel_call_guest(
     }
     recomp_runtime.registers.esp -= 4u;
     *recomp_memory_u32(recomp_runtime.registers.esp) = 0u;
-    recomp_dispatch_indirect(guest_address, saved_esp);
+    recomp_dispatch_indirect_site(
+        guest_address, saved_esp, __FILE__, __LINE__);
     recomp_runtime.registers.esp = saved_esp;
 }
 
@@ -67,6 +68,7 @@ extern const char *recomp_disc_root_path;
 
 /* Each subsystem exposes one of these; kernel_dispatch.c chains them. */
 RecompFunction recomp_kernel_config(uint32_t ordinal);
+RecompFunction recomp_kernel_crypto(uint32_t ordinal);
 RecompFunction recomp_kernel_debug(uint32_t ordinal);
 RecompFunction recomp_kernel_device(uint32_t ordinal);
 RecompFunction recomp_kernel_interrupt(uint32_t ordinal);
@@ -87,6 +89,32 @@ uint32_t recomp_kernel_query_nonvolatile_setting(
 
 /* Plain RTL models used by their import adapters. */
 uint32_t recomp_kernel_ntstatus_to_dos_error(uint32_t status);
+
+/* An NT TIME_FIELDS is eight CSHORTs: year, month, day, hour, minute,
+   second, millisecond, weekday. */
+#define RECOMP_TIME_FIELD_COUNT 8u
+
+/* Convert between an NT time - 100ns ticks since 1601-01-01 UTC - and the
+   broken-down calendar fields. Both return zero and leave their output
+   untouched when the value is outside the range the guest can represent. */
+int recomp_kernel_time_to_time_fields(uint64_t time, uint16_t *fields);
+int recomp_kernel_time_fields_to_time(const uint16_t *fields, uint64_t *time);
+
+/* Plain SHA-1 model used by the XcSHA* import adapters. The Xbox exports
+   ordinary FIPS 180-1 SHA-1, so this is testable against published vectors
+   without any guest involvement. */
+#define RECOMP_SHA_DIGEST_BYTES 20u
+
+typedef struct RecompShaContext {
+    uint32_t state[5];
+    uint64_t bit_count;
+    uint8_t buffer[64];
+} RecompShaContext;
+
+void recomp_kernel_sha_init(RecompShaContext *context);
+void recomp_kernel_sha_update(
+    RecompShaContext *context, const uint8_t *input, uint32_t length);
+void recomp_kernel_sha_final(RecompShaContext *context, uint8_t *digest);
 
 /* Plain image-section model used by its import adapter. */
 uint32_t recomp_kernel_load_section(uint32_t section);

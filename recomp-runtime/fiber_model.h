@@ -18,6 +18,14 @@ typedef struct RecompFiber {
     uint32_t parameter;
     uint32_t exception_list;
     RecompRegisters registers;
+    /* Each hardware thread owns a full x87 and SSE context, and the Xbox
+       saves it across a context switch. The runtime keeps that state outside
+       RecompRegisters so a value can straddle the several C bodies one guest
+       routine is split into, which makes it global - and therefore shared by
+       every fiber unless it is saved here. Measured: the x87 stack was
+       non-empty at 240 of 240 switches, so live floating point does cross
+       fiber boundaries in this program. */
+    RecompFpuContext fpu;
 } RecompFiber;
 
 typedef struct RecompFiberModel {

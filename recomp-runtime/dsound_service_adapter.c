@@ -16,6 +16,25 @@ enum {
     DIRECT_SOUND_MANAGER_GLOBAL = 0x00214708u,
     DIRECT_SOUND_MANAGER_VTABLE = 0x00239decu,
     DIRECT_SOUND_DEVICE_VTABLE = 0x00239e1cu,
+    DIRECT_SOUND_APU_VTABLE = 0x00239e44u,
+    DIRECT_SOUND_APU_INNER_VTABLE = 0x00239e40u,
+    DIRECT_SOUND_APU_PAGE_POOL_VTABLE = 0x00239e98u,
+    /* sub_001FB4C2 publishes the addresses of these two counters at APU+0x2F8
+       and APU+0x2FC and seeds them. Nothing in this image reads them directly;
+       generated code reaches them through the published pointers, so the seed
+       values matter even though their meaning is unresolved. */
+    DIRECT_SOUND_APU_COUNTER_A_GLOBAL = 0x0021406cu,
+    DIRECT_SOUND_APU_COUNTER_B_GLOBAL = 0x00214070u,
+    DIRECT_SOUND_APU_COUNTER_A_SEED = 0xc0u,
+    DIRECT_SOUND_APU_COUNTER_B_SEED = 0x40u,
+    DIRECT_SOUND_APU_PAGE_POOL_TAG = 0x00214074u,
+    DIRECT_SOUND_APU_MIXER_DEVICE_FIELD = 0x34u,
+    DIRECT_SOUND_APU_DEVICE_TAIL_FIELD = 0x74u,
+    DIRECT_SOUND_APU_PAGE_POOL_BLOCK_LIST = 0x04u,
+    DIRECT_SOUND_APU_PAGE_POOL_SECOND_LIST = 0x0cu,
+    DIRECT_SOUND_APU_PAGE_POOL_TAG_OFFSET = 0x1cu,
+    DIRECT_SOUND_APU_TAIL_LIST_FIRST = 0x728u,
+    DIRECT_SOUND_APU_TAIL_LIST_LAST = 0x750u,
 };
 
 static RecompDsoundServiceModel dsound_service_model;
@@ -34,6 +53,65 @@ static float stack_float(uint32_t entry_esp, uint32_t index)
     return value;
 }
 
+/* A list the constructors leave empty: both links point at the entry itself,
+   which is how the generated walkers recognise the end. */
+static void write_empty_list(uint32_t entry)
+{
+    *recomp_memory_u32(entry) = entry;
+    *recomp_memory_u32(entry + 4u) = entry;
+}
+
+/* The 0x7E0-byte CMcpxAPU that sub_001FB4C2 builds and sub_001FA0E6 links at
+   manager+0xC. Without it a sound buffer's APU pointer is zero, and the page
+   walk in CMcpxBuffer_Play starts from 0x300 and runs off into unmapped
+   memory. Only the constructor's own writes are reproduced, including the
+   page pool sub_001FE73B builds at APU+0x300. The sub-objects that need
+   their own allocations (APU+0x58) and the hardware bring-up in
+   sub_001FBF1C are deliberately absent. */
+static void write_apu_object(const RecompDsoundServiceModel *model)
+{
+    uint32_t apu = model->apu;
+    uint32_t page_pool = apu + RECOMP_DSOUND_APU_PAGE_POOL_OFFSET;
+    uint32_t offset;
+
+    recomp_guest_memset(apu, 0, RECOMP_DSOUND_APU_SIZE);
+    *recomp_memory_u32(apu) = DIRECT_SOUND_APU_VTABLE;
+    *recomp_memory_u32(apu + 4u) = 1u;
+    *recomp_memory_u32(apu + RECOMP_DSOUND_APU_INNER_OFFSET) =
+        DIRECT_SOUND_APU_INNER_VTABLE;
+    *recomp_memory_u32(apu + RECOMP_DSOUND_APU_DEVICE_OFFSET) = model->device;
+    *recomp_memory_u32(apu + RECOMP_DSOUND_APU_MIXER_DEVICE_OFFSET) =
+        model->device + DIRECT_SOUND_APU_MIXER_DEVICE_FIELD;
+    *recomp_memory_u32(apu + RECOMP_DSOUND_APU_DEVICE_TAIL_OFFSET) =
+        model->device + DIRECT_SOUND_APU_DEVICE_TAIL_FIELD;
+    *recomp_memory_u32(apu + RECOMP_DSOUND_APU_COUNTER_A_POINTER_OFFSET) =
+        DIRECT_SOUND_APU_COUNTER_A_GLOBAL;
+    *recomp_memory_u32(apu + RECOMP_DSOUND_APU_COUNTER_B_POINTER_OFFSET) =
+        DIRECT_SOUND_APU_COUNTER_B_GLOBAL;
+    *recomp_memory_u32(DIRECT_SOUND_APU_COUNTER_A_GLOBAL) =
+        DIRECT_SOUND_APU_COUNTER_A_SEED;
+    *recomp_memory_u32(DIRECT_SOUND_APU_COUNTER_B_GLOBAL) =
+        DIRECT_SOUND_APU_COUNTER_B_SEED;
+
+    /* sub_001FE73B. The largest-free-block cache at pool+0x18 stays zero, as
+       the constructor leaves it, so sub_001FE808 finds no pages and returns
+       null rather than mapping anything. Play then fails with
+       DSERR_OUTOFMEMORY instead of faulting. */
+    *recomp_memory_u32(page_pool) = DIRECT_SOUND_APU_PAGE_POOL_VTABLE;
+    write_empty_list(page_pool + DIRECT_SOUND_APU_PAGE_POOL_BLOCK_LIST);
+    write_empty_list(page_pool + DIRECT_SOUND_APU_PAGE_POOL_SECOND_LIST);
+    *recomp_memory_u32(page_pool + DIRECT_SOUND_APU_PAGE_POOL_TAG_OFFSET) =
+        DIRECT_SOUND_APU_PAGE_POOL_TAG;
+
+    /* Six consecutive empty lists; the original writes three in a loop and
+       the remaining three one at a time. */
+    for (offset = DIRECT_SOUND_APU_TAIL_LIST_FIRST;
+         offset <= DIRECT_SOUND_APU_TAIL_LIST_LAST;
+         offset += 8u) {
+        write_empty_list(apu + offset);
+    }
+}
+
 static void write_created_objects(const RecompDsoundServiceModel *model)
 {
     uint32_t list_head =
@@ -50,6 +128,8 @@ static void write_created_objects(const RecompDsoundServiceModel *model)
     *recomp_memory_u32(
         model->manager + RECOMP_DSOUND_MANAGER_DEVICE_OFFSET) = model->device;
     *recomp_memory_u32(
+        model->manager + RECOMP_DSOUND_MANAGER_APU_OFFSET) = model->apu;
+    *recomp_memory_u32(
         model->manager + RECOMP_DSOUND_MANAGER_LIST_FORWARD_OFFSET) =
         list_head;
     *recomp_memory_u32(
@@ -57,6 +137,14 @@ static void write_created_objects(const RecompDsoundServiceModel *model)
     *recomp_memory_u32(model->device) = DIRECT_SOUND_DEVICE_VTABLE;
     *recomp_memory_u32(model->device + 4u) =
         model->device_reference_count;
+    /* sub_001FB8A7 tests device+0xC against 0xFFFFFFFF before it uses the
+       effects path. The guest writes that sentinel when no effects image is
+       loaded (sub_001E47A4); a memset leaves 0, which reads as a live handle
+       and sends sub_001FB36B chasing the null object at apu+0x14. */
+    *recomp_memory_u32(
+        model->device + RECOMP_DSOUND_DEVICE_EFFECTS_HANDLE_OFFSET) =
+        RECOMP_DSOUND_DEVICE_EFFECTS_HANDLE_NONE;
+    write_apu_object(model);
     *recomp_memory_u32(DIRECT_SOUND_MANAGER_GLOBAL) = model->manager;
 }
 
@@ -73,6 +161,7 @@ static void recomp_dsound_create_adapter(void)
         *recomp_memory_u32(output_address) = 0u;
         resources.manager = xbox_HeapAlloc(RECOMP_DSOUND_MANAGER_SIZE, 16u);
         resources.device = xbox_HeapAlloc(RECOMP_DSOUND_DEVICE_SIZE, 16u);
+        resources.apu = xbox_HeapAlloc(RECOMP_DSOUND_APU_SIZE, 16u);
         result = recomp_dsound_create(
             &dsound_service_model, &resources, &public_device);
     }
@@ -87,9 +176,10 @@ static void recomp_dsound_create_adapter(void)
     fprintf(
         stderr,
         "recomp dsound: DirectSoundCreate policy=no-audio result=0x%08"
-        PRIx32 " device=0x%08" PRIx32 "\n",
+        PRIx32 " device=0x%08" PRIx32 " apu=0x%08" PRIx32 "\n",
         result,
-        public_device);
+        public_device,
+        dsound_service_model.apu);
     recomp_runtime.registers.eax = result;
     recomp_runtime.registers.esp = entry_esp + 16u;
 }
