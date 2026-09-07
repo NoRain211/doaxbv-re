@@ -7,7 +7,7 @@ void recomp_d3d_creation_reset(RecompD3dCreationModel *model)
     }
 }
 
-static bool presentation_matches_observed_base(
+static bool presentation_matches_observed_mode(
     const RecompD3dPresentationParameters *presentation)
 {
     return presentation != NULL &&
@@ -15,13 +15,19 @@ static bool presentation_matches_observed_base(
         presentation->back_buffer_height == 0x000001e0u &&
         presentation->back_buffer_format == 0x00000012u &&
         presentation->back_buffer_count == 0x00000001u &&
-        presentation->multi_sample_type == 0x00000011u &&
         presentation->swap_effect == 0x00000001u &&
         presentation->device_window == 0u &&
         presentation->windowed == 0u &&
         presentation->enable_auto_depth_stencil == 1u &&
         presentation->auto_depth_stencil_format == 0x0000002eu &&
-        presentation->full_screen_refresh_rate == 0u &&
+        presentation->full_screen_refresh_rate == 0u;
+}
+
+static bool presentation_matches_observed_base(
+    const RecompD3dPresentationParameters *presentation)
+{
+    return presentation_matches_observed_mode(presentation) &&
+        presentation->multi_sample_type == 0x00000011u &&
         presentation->buffer_surfaces[0] == 0x00a23ab0u &&
         presentation->buffer_surfaces[1] == 0x00a23ac8u &&
         presentation->buffer_surfaces[2] == 0u &&
@@ -46,7 +52,13 @@ bool recomp_d3d_create_request_supported(
 bool recomp_d3d_reset_request_supported(
     const RecompD3dPresentationParameters *presentation)
 {
-    return presentation_matches_observed_base(presentation) &&
+    return presentation_matches_observed_mode(presentation) &&
+        (presentation->multi_sample_type == 0x00000011u ||
+         presentation->multi_sample_type == 0x00002021u) &&
+        presentation->buffer_surfaces[0] != 0u &&
+        presentation->buffer_surfaces[1] != 0u &&
+        presentation->buffer_surfaces[2] == 0u &&
+        presentation->depth_stencil_surface != 0u &&
         presentation->flags == 0x00000010u &&
         (presentation->full_screen_presentation_interval == 1u ||
          presentation->full_screen_presentation_interval == 0x80000001u);
@@ -149,6 +161,20 @@ uint32_t recomp_d3d_reset_device(
     model->device.back_buffer_surface_count =
         count_back_buffer_surfaces(presentation);
     return RECOMP_D3D_OK;
+}
+
+bool recomp_d3d_persist_display(
+    const RecompD3dCreationModel *model,
+    uint32_t *saved_surface)
+{
+    if (model == NULL || saved_surface == NULL || !model->device.created ||
+        model->device.back_buffer_surface_count < 2u ||
+        model->device.buffer_surfaces[1] == 0u) {
+        return false;
+    }
+
+    *saved_surface = model->device.buffer_surfaces[1];
+    return true;
 }
 
 bool recomp_d3d_make_push_space(

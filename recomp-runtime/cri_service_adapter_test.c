@@ -7,7 +7,7 @@
 
 enum {
     TEST_STATIC_BASE = 0x003b7000u,
-    TEST_STATIC_SIZE = 0x00001000u,
+    TEST_STATIC_SIZE = 0x00004000u,
     TEST_STACK_BASE = 0x25000000u,
     TEST_STACK_SIZE = 0x00001000u,
     TEST_ENTRY_ESP = TEST_STACK_BASE + 0x100u,
@@ -240,7 +240,7 @@ int recomp_cri_service_adapter_test(void)
     };
     adapter = recomp_cri_service_lookup_manual(0x00198320u);
     adapter();
-    passed &= expect_u32("movie status order", call_order, 2496u);
+    passed &= expect_u32("movie status order", call_order, 24956u);
     passed &= expect_u32(
         "movie file worker I/O entry ESP",
         file_worker_io_entry_esp,
@@ -267,7 +267,7 @@ int recomp_cri_service_adapter_test(void)
         0x33333333u);
     passed &= expect_u32("movie status batches", model->lane2_batches, 3u);
     passed &= expect_u32(
-        "movie status lane 5 batches", model->lane5_handoffs, 0u);
+        "movie status lane 5 batches", model->lane5_handoffs, 1u);
 
     call_order = 0u;
     *recomp_memory_u32(TEST_ENTRY_ESP) = 0x0010abcdu;
@@ -303,7 +303,7 @@ int recomp_cri_service_adapter_test(void)
         0x33333333u);
     passed &= expect_u32("ADXF open batches", model->lane2_batches, 4u);
     passed &= expect_u32(
-        "ADXF open lane 5 batches", model->lane5_handoffs, 0u);
+        "ADXF open lane 5 batches", model->lane5_handoffs, 1u);
 
     call_order = 0u;
     *recomp_memory_u32(TEST_SYNC_FLAG) = 0u;
@@ -323,7 +323,7 @@ int recomp_cri_service_adapter_test(void)
         "sync return ESP", recomp_runtime.registers.esp,
         TEST_ENTRY_ESP + 4u);
     passed &= expect_u32("sync return EAX", recomp_runtime.registers.eax, 1u);
-    passed &= expect_u32("lane 5 handoffs", model->lane5_handoffs, 1u);
+    passed &= expect_u32("lane 5 handoffs", model->lane5_handoffs, 2u);
 
     call_order = 0u;
     recomp_runtime.registers = (RecompRegisters){
@@ -342,6 +342,41 @@ int recomp_cri_service_adapter_test(void)
         recomp_runtime.registers.ecx, 0x33333333u);
     passed &= expect_u32("ADXT worker batches", model->lane2_batches, 5u);
 
+    /* Exercise the real guest descriptors, padded output, and cdecl return. */
+    const uint32_t source_desc = TEST_STACK_BASE + 0x200u;
+    const uint32_t destination_desc = TEST_STACK_BASE + 0x240u;
+    const uint32_t y = TEST_STATIC_BASE + 0x1000u;
+    const uint32_t u = TEST_STATIC_BASE + 0x1100u;
+    const uint32_t v = TEST_STATIC_BASE + 0x1200u;
+    const uint32_t output = TEST_STATIC_BASE + 0x1400u;
+    const uint32_t table = TEST_STATIC_BASE + 0x2000u;
+    const uint32_t source_fields[] = {y, u + 0x80000000u, v, 2u, 1u, 1u};
+    const uint32_t destination_fields[] = {output, 2u, 2u, 12u, 12u, 24u};
+    recomp_guest_store(source_desc, source_fields, sizeof source_fields);
+    recomp_guest_store(destination_desc, destination_fields, sizeof destination_fields);
+    recomp_guest_memset(y, 3, 4u);
+    recomp_guest_memset(output, 0xa5, 24u);
+    for (unsigned channel = 0u; channel < 4u; ++channel) {
+        *recomp_memory_u16(table + (3u * 4u + channel) * 2u) =
+            (uint16_t)((channel == 3u ? 255u : 16u * (channel + 1u)) * 64u);
+    }
+    *recomp_memory_u32(TEST_ENTRY_ESP + 4u) = source_desc;
+    *recomp_memory_u32(TEST_ENTRY_ESP + 8u) = destination_desc;
+    *recomp_memory_u32(TEST_ENTRY_ESP + 12u) = table;
+    recomp_runtime.registers.esp = TEST_ENTRY_ESP;
+    adapter = recomp_cri_service_lookup_manual(0x001a8a70u);
+    passed &= expect_lookup(0x001a8a70u);
+    adapter();
+    passed &= expect_u32("movie color return ESP",
+        recomp_runtime.registers.esp, TEST_ENTRY_ESP + 4u);
+    for (unsigned row = 0u; row < 2u; ++row) {
+        passed &= expect_u32("movie BGRA first pixel",
+            *recomp_memory_u32(output + row * 12u), 0xff302010u);
+        passed &= expect_u32("movie BGRA second pixel",
+            *recomp_memory_u32(output + row * 12u + 4u), 0xff302010u);
+        passed &= expect_u32("movie row padding",
+            *recomp_memory_u32(output + row * 12u + 8u), 0xa5a5a5a5u);
+    }
     recomp_cri_service_adapter_reset();
     return passed;
 }

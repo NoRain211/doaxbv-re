@@ -122,7 +122,7 @@ int recomp_input_model_test(void)
         "Capabilities tail", *recomp_memory_i8(TEST_OUTPUT + 24u), 0u);
 
     sampled_gamepad.buttons = 0x10u;
-    sampled_gamepad.analog_buttons[2] = 0xffu;
+    sampled_gamepad.analog_buttons[0] = 0xffu;
     prepare_call(2u, args);
     recomp_input_lookup_manual(0x0023308fu)();
     passed &= expect_u32("State status", recomp_runtime.registers.eax, 0u);
@@ -131,7 +131,7 @@ int recomp_input_model_test(void)
         "State buttons", *recomp_memory_u16(TEST_OUTPUT + 4u), 0x10u);
     passed &= expect_u32(
         "State analog A",
-        (uint8_t)*recomp_memory_i8(TEST_OUTPUT + 8u),
+        (uint8_t)*recomp_memory_i8(TEST_OUTPUT + 6u),
         0xffu);
     passed &= expect_u32(
         "State ESP", recomp_runtime.registers.esp, TEST_ENTRY_ESP + 12u);

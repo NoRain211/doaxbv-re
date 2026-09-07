@@ -84,15 +84,17 @@ uint32_t recomp_d3d_fvf_stride(uint32_t fvf);
 
 /* Byte offset of one FVF component within a vertex, or
    RECOMP_D3D_FVF_ABSENT when the FVF does not carry it. Components are laid
-   out in a fixed order - position, normal, diffuse, specular, then texture
-   coordinates - so a component's offset depends on which earlier components
-   are present. A consumer that assumes fixed offsets reads the wrong bytes
-   for any FVF whose earlier components differ. */
+   out in a fixed order - position, blend weights, normal, diffuse, specular,
+   then texture coordinates - so a component's offset depends on which earlier
+   components are present. A consumer that assumes fixed offsets reads the
+   wrong bytes for any FVF whose earlier components differ. */
 enum { RECOMP_D3D_FVF_ABSENT = 0xffffffffu };
 
 typedef struct RecompD3dVertexLayout {
     uint32_t stride;
     uint32_t position_offset;
+    bool pretransformed; /* Position is screen XYZ followed by reciprocal W. */
+    uint32_t blend_weight_count; /* Explicit float weights start at byte 12. */
     uint32_t normal_offset;
     uint32_t diffuse_offset;
     uint32_t specular_offset;

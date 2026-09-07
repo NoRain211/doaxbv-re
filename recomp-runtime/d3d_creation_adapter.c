@@ -1,8 +1,10 @@
 #include "d3d_creation_adapter.h"
 #include "d3d_creation_model.h"
+#include "d3d_render_state_adapter.h"
 #ifdef RECOMP_D3D_FRAME_ENABLED
 #include "d3d_frame_adapter.h"
 #endif
+#include "kernel_abi.h"
 #include "runtime.h"
 #include "stop_report.h"
 #include "xbox_memory_layout.h"
@@ -13,6 +15,7 @@
 enum {
     DIRECT3D_CREATE_DEVICE_ADDRESS = 0x001e9100u,
     D3D_DEVICE_RESET_ADDRESS = 0x001e3b00u,
+    D3D_DEVICE_PERSIST_DISPLAY_ADDRESS = 0x001e4ae0u,
     D3D_DEVICE_KICK_OFF_ADDRESS = 0x001e9eb0u,
     D3D_MAKE_REQUESTED_SPACE_ADDRESS = 0x001ea190u,
     D3D_DEVICE_GLOBAL = 0x001f2978u,
@@ -33,6 +36,7 @@ void recomp_d3d_creation_adapter_reset(void)
     recomp_d3d_frame_adapter_reset();
 #endif
     recomp_d3d_creation_reset(&d3d_creation_model);
+    recomp_kernel_av_set_saved_data_address(0u);
     d3d_kick_off_calls = 0u;
 }
 
@@ -204,6 +208,7 @@ void recomp_d3d_create_device_adapter(void)
 
     if (result == RECOMP_D3D_OK) {
         write_device_state(&d3d_creation_model.device);
+        recomp_d3d_render_state_adapter_initialize();
 #ifdef RECOMP_D3D_FRAME_ENABLED
         recomp_d3d_frame_adapter_initialize(
             &d3d_creation_model.device.presenter_config,
@@ -280,6 +285,28 @@ void recomp_d3d_reset_device_adapter(void)
         result);
     recomp_runtime.registers.eax = result;
     recomp_runtime.registers.esp = entry_esp + 8u;
+}
+
+void recomp_d3d_persist_display_adapter(void)
+{
+    uint32_t entry_esp = recomp_runtime.registers.esp;
+    uint32_t saved_surface = 0u;
+    uint32_t result = RECOMP_D3D_FAIL;
+
+    if (recomp_d3d_persist_display(
+            &d3d_creation_model, &saved_surface)) {
+        recomp_kernel_av_set_saved_data_address(saved_surface);
+        result = RECOMP_D3D_OK;
+    }
+
+    fprintf(
+        stderr,
+        "recomp d3d: D3DDevice_PersistDisplay result=0x%08" PRIx32
+        " surface=0x%08" PRIx32 "\n",
+        result,
+        saved_surface);
+    recomp_runtime.registers.eax = result;
+    recomp_runtime.registers.esp = entry_esp + 4u;
 }
 
 void recomp_d3d_make_requested_space_adapter(void)
@@ -395,6 +422,8 @@ RecompFunction recomp_d3d_lookup_manual(uint32_t guest_address)
         return recomp_d3d_make_requested_space_adapter;
     case D3D_DEVICE_RESET_ADDRESS:
         return recomp_d3d_reset_device_adapter;
+    case D3D_DEVICE_PERSIST_DISPLAY_ADDRESS:
+        return recomp_d3d_persist_display_adapter;
     case DIRECT3D_CREATE_DEVICE_ADDRESS:
         return recomp_d3d_create_device_adapter;
     default:

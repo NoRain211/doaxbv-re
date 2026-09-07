@@ -4,6 +4,7 @@
 #include "runtime.h"
 
 #include <stdint.h>
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -23,6 +24,7 @@ enum {
     TEST_Z_ENABLE_SHADOW = 0x001f2dc4u,
     TEST_CULL_SHADOW = 0x001f2dd4u,
     TEST_STENCIL_ENABLE_SHADOW = 0x001f2dc8u,
+    TEST_STENCIL_FAIL_SHADOW = 0x001f2dccu,
     TEST_MULTISAMPLE_ANTIALIAS_SHADOW = 0x001f2de8u,
     TEST_DIRTY_BIT = 0x00000200u,
 };
@@ -119,6 +121,201 @@ static int depth_state_test(void)
     return passed;
 }
 
+static int stencil_state_test(void)
+{
+    static const struct {
+        uint32_t raw;
+        RecompD3dStencilOp expected;
+    } operations[] = {
+        {0x1e00u, RECOMP_D3D_STENCIL_KEEP},
+        {0x0000u, RECOMP_D3D_STENCIL_ZERO},
+        {0x1e01u, RECOMP_D3D_STENCIL_REPLACE},
+        {0x1e02u, RECOMP_D3D_STENCIL_INCRSAT},
+        {0x1e03u, RECOMP_D3D_STENCIL_DECRSAT},
+        {0x150au, RECOMP_D3D_STENCIL_INVERT},
+        {0x8507u, RECOMP_D3D_STENCIL_INCRWRAP},
+        {0x8508u, RECOMP_D3D_STENCIL_DECRWRAP},
+    };
+    RecompD3dRenderStateModel model;
+    RecompD3dDepthState state;
+    int passed = 1;
+
+    recomp_d3d_render_state_reset(&model);
+    for (uint32_t null_model = 0u; null_model < 2u; ++null_model) {
+        memset(&state, 0xa5, sizeof state);
+        recomp_d3d_depth_state(null_model ? NULL : &model, &state);
+        passed &= expect_u32("default stencil enable", state.stencil_enable, 0u);
+        passed &= expect_u32(
+            "default stencil func", state.stencil_func, RECOMP_D3D_COMPARE_ALWAYS);
+        passed &= expect_u32("default stencil ref", state.stencil_ref, 0u);
+        passed &= expect_u32("default stencil read mask", state.stencil_read_mask, 0xffu);
+        passed &= expect_u32("default stencil write mask", state.stencil_write_mask, 0xffu);
+        passed &= expect_u32("default stencil fail", state.stencil_fail, RECOMP_D3D_STENCIL_KEEP);
+        passed &= expect_u32("default stencil zfail", state.stencil_zfail, RECOMP_D3D_STENCIL_KEEP);
+        passed &= expect_u32("default stencil pass", state.stencil_pass, RECOMP_D3D_STENCIL_KEEP);
+    }
+
+    /* The paired shadow draws first invert stencil, then test equality and
+       clear it; their reference and both masks remain 1/3/3. */
+    recomp_d3d_set_stencil_enable(&model, 1u);
+    recomp_d3d_set_simple_render_state(&model, 0x00040364u, 0x0203u);
+    recomp_d3d_set_simple_render_state(&model, 0x00040368u, 1u);
+    recomp_d3d_set_simple_render_state(&model, 0x0004036cu, 3u);
+    recomp_d3d_set_simple_render_state(&model, 0x00040360u, 3u);
+    recomp_d3d_set_simple_render_state(&model, 0x00040370u, 0x1e00u);
+    recomp_d3d_set_simple_render_state(&model, 0x00040374u, 0x1e00u);
+    recomp_d3d_set_simple_render_state(&model, 0x00040378u, 0x150au);
+    recomp_d3d_depth_state(&model, &state);
+    passed &= expect_u32("shadow stencil enable", state.stencil_enable, 1u);
+    passed &= expect_u32("shadow stencil func", state.stencil_func, RECOMP_D3D_COMPARE_LESS_EQUAL);
+    passed &= expect_u32("shadow stencil ref", state.stencil_ref, 1u);
+    passed &= expect_u32("shadow stencil read mask", state.stencil_read_mask, 3u);
+    passed &= expect_u32("shadow stencil write mask", state.stencil_write_mask, 3u);
+    passed &= expect_u32("shadow stencil fail", state.stencil_fail, RECOMP_D3D_STENCIL_KEEP);
+    passed &= expect_u32("shadow stencil zfail", state.stencil_zfail, RECOMP_D3D_STENCIL_KEEP);
+    passed &= expect_u32("shadow stencil pass", state.stencil_pass, RECOMP_D3D_STENCIL_INVERT);
+    recomp_d3d_set_simple_render_state(&model, 0x00040364u, 0x0202u);
+    recomp_d3d_set_simple_render_state(&model, 0x00040378u, 0u);
+    recomp_d3d_depth_state(&model, &state);
+    passed &= expect_u32("second shadow stencil func", state.stencil_func, RECOMP_D3D_COMPARE_EQUAL);
+    passed &= expect_u32("second shadow stencil pass", state.stencil_pass, RECOMP_D3D_STENCIL_ZERO);
+
+    for (size_t i = 0u; i < sizeof operations / sizeof operations[0]; ++i) {
+        size_t next = (i + 1u) % (sizeof operations / sizeof operations[0]);
+        size_t last = (i + 2u) % (sizeof operations / sizeof operations[0]);
+        recomp_d3d_set_simple_render_state(&model, 0x00040370u, operations[i].raw);
+        recomp_d3d_set_simple_render_state(&model, 0x00040374u, operations[next].raw);
+        recomp_d3d_set_simple_render_state(&model, 0x00040378u, operations[last].raw);
+        recomp_d3d_depth_state(&model, &state);
+        passed &= expect_u32("stencil fail decode", state.stencil_fail, operations[i].expected);
+        passed &= expect_u32("stencil zfail decode", state.stencil_zfail, operations[next].expected);
+        passed &= expect_u32("stencil pass decode", state.stencil_pass, operations[last].expected);
+    }
+
+    recomp_d3d_set_simple_render_state(&model, 0x00040368u, 0x123401u);
+    recomp_d3d_set_simple_render_state(&model, 0x0004036cu, 0x123403u);
+    recomp_d3d_set_simple_render_state(&model, 0x00040360u, 0xffffffu);
+    recomp_d3d_depth_state(&model, &state);
+    passed &= expect_u32("stencil ref low byte", state.stencil_ref, 1u);
+    passed &= expect_u32("stencil read mask low byte", state.stencil_read_mask, 3u);
+    passed &= expect_u32("stencil write mask low byte", state.stencil_write_mask, 0xffu);
+    recomp_d3d_set_stencil_enable(&model, 0u);
+    recomp_d3d_set_simple_render_state(&model, 0x00040368u, 0u);
+    recomp_d3d_set_simple_render_state(&model, 0x0004036cu, 0u);
+    recomp_d3d_set_simple_render_state(&model, 0x00040360u, 0u);
+    recomp_d3d_depth_state(&model, &state);
+    passed &= expect_u32("stencil disable", state.stencil_enable, 0u);
+    passed &= expect_u32("zero stencil ref", state.stencil_ref, 0u);
+    passed &= expect_u32("zero stencil read mask", state.stencil_read_mask, 0u);
+    passed &= expect_u32("zero stencil write mask", state.stencil_write_mask, 0u);
+    {
+        RecompD3dStencilOp op = RECOMP_D3D_STENCIL_INVERT;
+        passed &= expect_u32("invalid stencil operation", recomp_d3d_stencil_op_from_nv(0x1e04u, &op), 0u);
+        passed &= expect_u32("invalid stencil output unchanged", op, RECOMP_D3D_STENCIL_INVERT);
+        passed &= expect_u32("null stencil operation", recomp_d3d_stencil_op_from_nv(0x1e00u, NULL), 0u);
+    }
+    return passed;
+}
+
+static int texture_factor_selector_test(void)
+{
+    static const uint32_t cases[][5] = {
+        {2u, 3u, 2u, 3u, 1u},
+        {3u, 3u, 2u, 3u, 0u},
+        {2u, 2u, 2u, 3u, 0u},
+        {2u, 3u, 3u, 3u, 0u},
+        {2u, 3u, 2u, 2u, 0u},
+        {2u, 0x13u, 2u, 3u, 0u},
+        {2u, 3u, 2u, 0x13u, 0u},
+        {0u, 0u, 0u, 0u, 0u},
+    };
+    int passed = 1;
+
+    for (size_t i = 0u; i < sizeof cases / sizeof cases[0]; ++i) {
+        passed &= expect_u32(
+            "texture factor selector",
+            recomp_d3d_texture_factor_selected(
+                cases[i][0], cases[i][1], cases[i][2], cases[i][3]),
+            cases[i][4]);
+    }
+    return passed;
+}
+
+static int texture_factor_modulate_selector_test(void)
+{
+    static const uint32_t cases[][8] = {
+        {4u, 3u, 1u, 4u, 3u, 1u, 1u, 1u},
+        {1u, 3u, 1u, 4u, 3u, 1u, 1u, 0u}, /* Disabled color stage. */
+        {4u, 1u, 3u, 4u, 3u, 1u, 1u, 0u}, /* Different argument order. */
+        {4u, 3u, 1u, 4u, 0x13u, 1u, 1u, 0u}, /* Complemented factor. */
+        {4u, 3u, 1u, 4u, 3u, 1u, 4u, 0u}, /* Another active stage. */
+    };
+    int passed = expect_u32(
+        "null factor modulation stage",
+        recomp_d3d_texture_factor_modulate_selected(NULL, 1u), 0u);
+
+    for (size_t i = 0u; i < sizeof cases / sizeof cases[0]; ++i) {
+        passed &= expect_u32(
+            "texture factor modulation selector",
+            recomp_d3d_texture_factor_modulate_selected(cases[i], cases[i][6]),
+            cases[i][7]);
+    }
+    return passed;
+}
+
+static int zero_diffuse_rgb_test(void)
+{
+    static const struct {
+        uint32_t ambient, active_light_head;
+        float emissive[3];
+        bool expected;
+    } cases[] = {
+        {0xff000000u, 0u, {0.0f, 0.0f, 0.0f}, true},
+        {0u, 0u, {-0.0f, 0.0f, 0.0f}, true},
+        {0xff000001u, 0u, {0.0f, 0.0f, 0.0f}, false},
+        {0xff000000u, 0x001f5000u, {0.0f, 0.0f, 0.0f}, false},
+        {0xff000000u, 0u, {0.25f, 0.0f, 0.0f}, false},
+        {0xff000000u, 0u, {0.0f, 0.25f, 0.0f}, false},
+        {0xff000000u, 0u, {0.0f, 0.0f, 0.25f}, false},
+        {0xff000000u, 0u, {NAN, 0.0f, 0.0f}, false},
+        {0xff000000u, 0u, {0.0f, INFINITY, 0.0f}, false},
+    };
+    int passed = expect_u32("zero diffuse missing emissive",
+        recomp_d3d_diffuse_rgb_is_zero(0u, 0u, NULL), false);
+
+    for (size_t i = 0u; i < sizeof cases / sizeof cases[0]; ++i) {
+        passed &= expect_u32("zero diffuse RGB",
+            recomp_d3d_diffuse_rgb_is_zero(
+                cases[i].ambient, cases[i].active_light_head, cases[i].emissive),
+            cases[i].expected);
+    }
+    return passed;
+}
+
+static int texture_material_alpha_mode_test(void)
+{
+    static const uint32_t cases[][7] = {
+        {2u, 2u, 1u, 4u, 2u, 0u, RECOMP_D3D_MATERIAL_ALPHA_MODULATE_TEXTURE},
+        {4u, 2u, 0u, 2u, 0u, 1u, RECOMP_D3D_MATERIAL_ALPHA_SELECT_DIFFUSE},
+        {4u, 2u, 0u, 4u, 2u, 0u, RECOMP_D3D_MATERIAL_ALPHA_NONE}, /* Mode 1. */
+        {2u, 2u, 1u, 2u, 0u, 1u, RECOMP_D3D_MATERIAL_ALPHA_NONE}, /* Mode 2. */
+        {2u, 3u, 1u, 2u, 3u, 1u, RECOMP_D3D_MATERIAL_ALPHA_NONE}, /* TFACTOR. */
+        {2u, 2u, 1u, 4u, 2u, 0x10u, RECOMP_D3D_MATERIAL_ALPHA_NONE}, /* Complement. */
+        {2u, 2u, 0u, 4u, 2u, 0u, RECOMP_D3D_MATERIAL_ALPHA_NONE}, /* Wrong color arg2. */
+    };
+    int passed = 1;
+
+    for (size_t i = 0u; i < sizeof cases / sizeof cases[0]; ++i) {
+        passed &= expect_u32(
+            "texture material alpha mode",
+            recomp_d3d_texture_material_alpha_mode(
+                cases[i][0], cases[i][1], cases[i][2],
+                cases[i][3], cases[i][4], cases[i][5]),
+            cases[i][6]);
+    }
+    return passed;
+}
+
 /* Blend values observed live: BLEND_ENABLE 0x0304 = 1, SRC 0x0344 = 0x302
    (SRC_ALPHA), DST 0x0348 = 0x303 (INV_SRC_ALPHA), EQUATION 0x0350 = 0x8006
    (ADD) - the standard translucency setup. */
@@ -132,6 +329,12 @@ static int blend_state_test(void)
     recomp_d3d_blend_state(&model, &state);
     passed &= expect_u32(
         "default blend enable", state.blend_enable ? 1u : 0u, 0u);
+    passed &= expect_u32(
+        "absent color write mask", state.color_write_mask, 0x0fu);
+    state.color_write_mask = 0u;
+    recomp_d3d_blend_state(NULL, &state);
+    passed &= expect_u32(
+        "null model color write mask", state.color_write_mask, 0x0fu);
 
     recomp_d3d_set_simple_render_state(&model, 0x00040304u, 1u);
     recomp_d3d_set_simple_render_state(&model, 0x00040344u, 0x00000302u);
@@ -144,6 +347,31 @@ static int blend_state_test(void)
     passed &= expect_u32(
         "blend dst", state.dst_factor, RECOMP_D3D_BLEND_INV_SRC_ALPHA);
     passed &= expect_u32("blend op", state.op, RECOMP_D3D_BLEND_OP_ADD);
+
+    {
+        static const struct {
+            const char *name;
+            uint32_t raw;
+            uint8_t expected;
+        } cases[] = {
+            {"zero color write mask", 0x00000000u, 0x00u},
+            {"red color write mask", 0x00010000u, 0x01u},
+            {"green color write mask", 0x00000100u, 0x02u},
+            {"blue color write mask", 0x00000001u, 0x04u},
+            {"alpha color write mask", 0x01000000u, 0x08u},
+            {"RGB color write mask", 0x00010101u, 0x07u},
+            {"RGBA color write mask", 0x01010101u, 0x0fu},
+            {"reserved color write bits", 0xfefefefeu, 0x00u},
+            {"all color write bits", 0xffffffffu, 0x0fu},
+        };
+        for (size_t i = 0u; i < sizeof cases / sizeof cases[0]; ++i) {
+            recomp_d3d_set_simple_render_state(
+                &model, 0x00040358u, cases[i].raw);
+            recomp_d3d_blend_state(&model, &state);
+            passed &= expect_u32(
+                cases[i].name, state.color_write_mask, cases[i].expected);
+        }
+    }
 
     {
         RecompD3dBlendFactor factor = RECOMP_D3D_BLEND_ZERO;
@@ -679,12 +907,52 @@ int recomp_d3d_render_state_model_test(void)
             TEST_ENTRY_ESP + 8u);
     }
 
+    adapter = recomp_lookup_manual(0x001e62b0u);
+    if (adapter != recomp_d3d_set_stencil_fail_adapter ||
+        recomp_lookup_manual(0x001e62afu) != NULL ||
+        recomp_lookup_manual(0x001e62b1u) != NULL) {
+        fprintf(stderr, "D3D stencil fail: lookup was not exact\n");
+        passed = 0;
+    } else {
+        uint32_t value = 0u;
+        uint32_t updates = model->simple_update_count;
+        uint32_t neighbor = *recomp_memory_u32(TEST_STENCIL_FAIL_SHADOW + 4u);
+        RecompD3dDepthState depth;
+
+        prepare_call(call_memory, 0x150au, 0x0010abcdu);
+        recomp_runtime.registers.esi = 0x12345678u;
+        adapter();
+        passed &= expect_u32("stencil fail method present",
+            recomp_d3d_get_simple_render_state(model, 0x40370u, &value), 1u);
+        passed &= expect_u32("stencil fail method value", value, 0x150au);
+        passed &= expect_u32("stencil fail update count",
+            model->simple_update_count, updates + 1u);
+        passed &= expect_u32("stencil fail shadow",
+            *recomp_memory_u32(TEST_STENCIL_FAIL_SHADOW), 0x150au);
+        passed &= expect_u32("stencil fail following word",
+            *recomp_memory_u32(TEST_STENCIL_FAIL_SHADOW + 4u), neighbor);
+        passed &= expect_u32("stencil fail ESP",
+            recomp_runtime.registers.esp, TEST_ENTRY_ESP + 8u);
+        passed &= expect_u32("stencil fail argument preserved",
+            *recomp_memory_u32(TEST_ENTRY_ESP + 4u), 0x150au);
+        passed &= expect_u32("stencil fail ESI preserved",
+            recomp_runtime.registers.esi, 0x12345678u);
+        recomp_d3d_depth_state(model, &depth);
+        passed &= expect_u32("stencil fail decoded",
+            depth.stencil_fail, RECOMP_D3D_STENCIL_INVERT);
+    }
+
     recomp_d3d_render_state_adapter_reset();
     passed &= expect_u32("adapter reset value", model->normalize_normals, 0u);
     passed &= expect_u32(
         "adapter reset count", model->normalize_normals_update_count, 0u);
 
     passed &= depth_state_test();
+    passed &= stencil_state_test();
+    passed &= texture_factor_selector_test();
+    passed &= texture_factor_modulate_selector_test();
+    passed &= texture_material_alpha_mode_test();
+    passed &= zero_diffuse_rgb_test();
     passed &= blend_state_test();
 
     return passed;

@@ -13,6 +13,11 @@ The public test target uses a small hand-written leaf fixture at the same
 dispatch seam as an authenticated generated function. It tests guest register,
 memory, and dispatch behavior without containing generated game code.
 
+The runtime also includes transactional save recovery, host input handover,
+native audio output, movie timing/color conversion and D3D11 texture/render
+target support. Use `--vsync` for flip presentation and set
+`RECOMP_AUDIO_GAIN=0.2` for 20% game volume. The default audio gain is muted.
+
 To test an authenticated generated function instead, supply its source and
 receipt hash:
 

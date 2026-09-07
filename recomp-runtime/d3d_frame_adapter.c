@@ -9,11 +9,15 @@
 #include "fiber_adapter.h"
 #endif
 #include "stop_report.h"
+#include "save_transaction.h"
 
 #include <stdio.h>
 #include <inttypes.h>
 #include <string.h>
 #include <stdlib.h>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 enum {
     D3D_DEVICE_CLEAR_ADDRESS = 0x001e72d0u,
@@ -23,6 +27,14 @@ enum {
 static RecompD3dFrameState frame_state;
 static RecompD3dPresenter *presenter;
 static uint32_t frame_device_address;
+#ifdef _WIN32
+static volatile LONG console_break_requested;
+
+void recomp_d3d_frame_adapter_request_console_break(void)
+{
+    InterlockedExchange(&console_break_requested, 1);
+}
+#endif
 
 static uint32_t stack_argument(uint32_t entry_esp, uint32_t index)
 {
@@ -82,6 +94,76 @@ RecompD3dPresenter *recomp_d3d_frame_adapter_presenter(void)
     return presenter;
 }
 
+bool recomp_d3d_frame_adapter_target(RecompD3dPresenterTarget *target)
+{
+    uint32_t color;
+    uint32_t back;
+    uint32_t depth;
+    uint32_t default_depth;
+
+    if (target == NULL || frame_device_address == 0u) {
+        return false;
+    }
+    *target = (RecompD3dPresenterTarget){0};
+    color = *recomp_memory_u32(frame_device_address + 0x21b4u);
+    back = *recomp_memory_u32(frame_device_address + 0x21c0u);
+    depth = *recomp_memory_u32(frame_device_address + 0x21b8u);
+    default_depth = *recomp_memory_u32(frame_device_address + 0x21ccu);
+    if (color == 0u || back == 0u) {
+        goto reject;
+    }
+    target->offscreen = color != back;
+    target->no_depth = depth == 0u;
+    target->custom_depth = depth != 0u && depth != default_depth;
+    if (target->offscreen &&
+        (!recomp_d3d_texture_adapter_describe(color, &target->color) ||
+         target->color.data == 0u || !target->color.render_target ||
+         target->color.depth)) {
+        goto reject;
+    }
+    if (target->custom_depth) {
+        RecompD3dTextureDesc original = {0};
+
+        if (!recomp_d3d_texture_adapter_describe(depth, &target->depth) ||
+            target->depth.data == 0u || !target->depth.depth) {
+            goto reject;
+        }
+        /* A surface wrapper can alias the default depth's pixel storage. */
+        if (recomp_d3d_texture_adapter_describe(default_depth, &original) &&
+            original.depth && original.data == target->depth.data &&
+            original.format_byte == target->depth.format_byte &&
+            original.width == target->depth.width &&
+            original.height == target->depth.height &&
+            original.linear == target->depth.linear &&
+            original.pitch == target->depth.pitch) {
+            target->custom_depth = false;
+        }
+    }
+    return true;
+
+reject:
+    {
+        static uint32_t reported;
+
+        if (reported < 8u) {
+            ++reported;
+            fprintf(
+                stderr,
+                "recomp d3d target: rejected color=%08" PRIx32
+                " back=%08" PRIx32 " data=%08" PRIx32
+                " fmt=%02" PRIx32 " %ux%u depth=%08" PRIx32
+                " default=%08" PRIx32 " data=%08" PRIx32
+                " fmt=%02" PRIx32 " %ux%u\n",
+                color, back, target->color.data, target->color.format_byte,
+                target->color.width, target->color.height,
+                depth, default_depth, target->depth.data,
+                target->depth.format_byte,
+                target->depth.width, target->depth.height);
+        }
+    }
+    return false;
+}
+
 void recomp_d3d_frame_adapter_reset_buffers(void)
 {
     RecompD3dFrameResult result =
@@ -124,6 +206,9 @@ void recomp_d3d_clear_adapter(void)
             "recomp d3d: Clear model rejected arguments (%u)\n",
             (unsigned)result.error);
         recomp_stop(2, "d3d-clear:model:%u", (unsigned)result.error);
+    }
+    if (!recomp_d3d_frame_adapter_target(&result.command.data.clear.target)) {
+        recomp_stop(2, "d3d-clear:render-target");
     }
     presenter_error = recomp_d3d_presenter_submit(
         presenter, &result.command);
@@ -264,6 +349,13 @@ void recomp_d3d_swap_adapter(void)
     }
     presenter_error = recomp_d3d_presenter_submit(
         presenter, &result.command);
+    recomp_d3d_draw_adapter_capture_present(
+        result.command.data.present.swap_counter, (uint32_t)presenter_error);
+    if (presenter_error == RECOMP_D3D_PRESENTER_CLOSED) {
+        recomp_d3d_frame_adapter_reset();
+        fprintf(stderr, "recomp runner: window closed; exiting normally\n");
+        recomp_stop(0, "host-window-close");
+    }
     if (presenter_error != RECOMP_D3D_PRESENTER_OK) {
         fprintf(
             stderr,
@@ -274,6 +366,15 @@ void recomp_d3d_swap_adapter(void)
             "d3d-swap:presenter:%u",
             (unsigned)presenter_error);
     }
+
+#ifdef _WIN32
+    if (InterlockedCompareExchange(&console_break_requested, 0, 0) != 0 &&
+        !recomp_save_pending()) {
+        recomp_d3d_frame_adapter_reset();
+        fprintf(stderr, "recomp runner: console break; exiting normally\n");
+        recomp_stop(0, "host-console-break");
+    }
+#endif
 
     *recomp_memory_u32(frame_device_address + 0x2c10u) =
         result.command.data.present.swap_counter;

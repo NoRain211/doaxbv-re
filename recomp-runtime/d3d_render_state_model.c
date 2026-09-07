@@ -12,7 +12,15 @@ enum {
     D3D_METHOD_BLEND_DST = D3D_SIMPLE_COMMAND_BASE | 0x0348u,
     D3D_METHOD_BLEND_EQUATION = D3D_SIMPLE_COMMAND_BASE | 0x0350u,
     D3D_METHOD_DEPTH_FUNC = D3D_SIMPLE_COMMAND_BASE | 0x0354u,
+    D3D_METHOD_COLOR_MASK = D3D_SIMPLE_COMMAND_BASE | 0x0358u,
     D3D_METHOD_DEPTH_MASK = D3D_SIMPLE_COMMAND_BASE | 0x035cu,
+    D3D_METHOD_STENCIL_WRITE_MASK = D3D_SIMPLE_COMMAND_BASE | 0x0360u,
+    D3D_METHOD_STENCIL_FUNC = D3D_SIMPLE_COMMAND_BASE | 0x0364u,
+    D3D_METHOD_STENCIL_REF = D3D_SIMPLE_COMMAND_BASE | 0x0368u,
+    D3D_METHOD_STENCIL_READ_MASK = D3D_SIMPLE_COMMAND_BASE | 0x036cu,
+    D3D_METHOD_STENCIL_FAIL = D3D_SIMPLE_COMMAND_BASE | 0x0370u,
+    D3D_METHOD_STENCIL_ZFAIL = D3D_SIMPLE_COMMAND_BASE | 0x0374u,
+    D3D_METHOD_STENCIL_PASS = D3D_SIMPLE_COMMAND_BASE | 0x0378u,
     /* Comparisons arrive as GL enums, NEVER through ALWAYS. */
     D3D_NV_COMPARE_BASE = 0x00000200u,
     D3D_NV_COMPARE_LAST = 0x00000207u,
@@ -198,6 +206,41 @@ bool recomp_d3d_compare_func_from_nv(
     return true;
 }
 
+bool recomp_d3d_stencil_op_from_nv(uint32_t value, RecompD3dStencilOp *op)
+{
+    if (op == NULL) {
+        return false;
+    }
+    switch (value) {
+    case 0x1e00u:
+        *op = RECOMP_D3D_STENCIL_KEEP;
+        return true;
+    case 0x0000u:
+        *op = RECOMP_D3D_STENCIL_ZERO;
+        return true;
+    case 0x1e01u:
+        *op = RECOMP_D3D_STENCIL_REPLACE;
+        return true;
+    case 0x1e02u:
+        *op = RECOMP_D3D_STENCIL_INCRSAT;
+        return true;
+    case 0x1e03u:
+        *op = RECOMP_D3D_STENCIL_DECRSAT;
+        return true;
+    case 0x150au:
+        *op = RECOMP_D3D_STENCIL_INVERT;
+        return true;
+    case 0x8507u:
+        *op = RECOMP_D3D_STENCIL_INCRWRAP;
+        return true;
+    case 0x8508u:
+        *op = RECOMP_D3D_STENCIL_DECRWRAP;
+        return true;
+    default:
+        return false;
+    }
+}
+
 /* Reads one simple state, or reports absence so the caller can apply the
    guest-side default rather than the host's. */
 static bool simple_or_absent(
@@ -225,6 +268,14 @@ void recomp_d3d_depth_state(
     state->alpha_test_enable = false;
     state->alpha_func = RECOMP_D3D_COMPARE_ALWAYS;
     state->alpha_ref = 0u;
+    state->stencil_enable = false;
+    state->stencil_func = RECOMP_D3D_COMPARE_ALWAYS;
+    state->stencil_ref = 0u;
+    state->stencil_read_mask = 0xffu;
+    state->stencil_write_mask = 0xffu;
+    state->stencil_fail = RECOMP_D3D_STENCIL_KEEP;
+    state->stencil_zfail = RECOMP_D3D_STENCIL_KEEP;
+    state->stencil_pass = RECOMP_D3D_STENCIL_KEEP;
 
     if (model == NULL) {
         return;
@@ -234,6 +285,7 @@ void recomp_d3d_depth_state(
        its third value (USEW) still tests depth, so anything non-zero enables
        the test. */
     state->depth_test_enable = model->z_enable != D3D_ZBUFFER_FALSE;
+    state->stencil_enable = model->stencil_enable != 0u;
 
     if (simple_or_absent(model, D3D_METHOD_DEPTH_MASK, &value)) {
         state->depth_write_enable = value != 0u;
@@ -249,6 +301,27 @@ void recomp_d3d_depth_state(
     }
     if (simple_or_absent(model, D3D_METHOD_ALPHA_REF, &value)) {
         state->alpha_ref = value & 0xffu;
+    }
+    if (simple_or_absent(model, D3D_METHOD_STENCIL_FUNC, &value)) {
+        recomp_d3d_compare_func_from_nv(value, &state->stencil_func);
+    }
+    if (simple_or_absent(model, D3D_METHOD_STENCIL_REF, &value)) {
+        state->stencil_ref = value & 0xffu;
+    }
+    if (simple_or_absent(model, D3D_METHOD_STENCIL_READ_MASK, &value)) {
+        state->stencil_read_mask = value & 0xffu;
+    }
+    if (simple_or_absent(model, D3D_METHOD_STENCIL_WRITE_MASK, &value)) {
+        state->stencil_write_mask = value & 0xffu;
+    }
+    if (simple_or_absent(model, D3D_METHOD_STENCIL_FAIL, &value)) {
+        recomp_d3d_stencil_op_from_nv(value, &state->stencil_fail);
+    }
+    if (simple_or_absent(model, D3D_METHOD_STENCIL_ZFAIL, &value)) {
+        recomp_d3d_stencil_op_from_nv(value, &state->stencil_zfail);
+    }
+    if (simple_or_absent(model, D3D_METHOD_STENCIL_PASS, &value)) {
+        recomp_d3d_stencil_op_from_nv(value, &state->stencil_pass);
     }
 }
 
@@ -337,6 +410,7 @@ void recomp_d3d_blend_state(
     }
 
     state->blend_enable = false;
+    state->color_write_mask = 0x0fu;
     state->src_factor = RECOMP_D3D_BLEND_ONE;
     state->dst_factor = RECOMP_D3D_BLEND_ZERO;
     state->op = RECOMP_D3D_BLEND_OP_ADD;
@@ -348,6 +422,14 @@ void recomp_d3d_blend_state(
     if (simple_or_absent(model, D3D_METHOD_BLEND_ENABLE, &value)) {
         state->blend_enable = value != 0u;
     }
+    if (simple_or_absent(model, D3D_METHOD_COLOR_MASK, &value)) {
+        /* NV2A stores B/G/R/A enables in bits 0/8/16/24. */
+        state->color_write_mask = (uint8_t)(
+            ((value & 0x00010000u) != 0u ? 1u : 0u) |
+            ((value & 0x00000100u) != 0u ? 2u : 0u) |
+            ((value & 0x00000001u) != 0u ? 4u : 0u) |
+            ((value & 0x01000000u) != 0u ? 8u : 0u));
+    }
     if (simple_or_absent(model, D3D_METHOD_BLEND_SRC, &value)) {
         recomp_d3d_blend_factor_from_nv(value, &state->src_factor);
     }
@@ -357,4 +439,53 @@ void recomp_d3d_blend_state(
     if (simple_or_absent(model, D3D_METHOD_BLEND_EQUATION, &value)) {
         recomp_d3d_blend_op_from_nv(value, &state->op);
     }
+}
+
+bool recomp_d3d_texture_factor_selected(
+    uint32_t color_op,
+    uint32_t color_arg1,
+    uint32_t alpha_op,
+    uint32_t alpha_arg1)
+{
+    return color_op == 2u && color_arg1 == 3u &&
+        alpha_op == 2u && alpha_arg1 == 3u;
+}
+
+bool recomp_d3d_texture_factor_modulate_selected(
+    const uint32_t stage[6],
+    uint32_t next_color_op)
+{
+    return stage != NULL && next_color_op == 1u &&
+        stage[0] == 4u && stage[1] == 3u && stage[2] == 1u &&
+        stage[3] == 4u && stage[4] == 3u && stage[5] == 1u;
+}
+
+bool recomp_d3d_diffuse_rgb_is_zero(
+    uint32_t ambient,
+    uint32_t active_light_head,
+    const float emissive[3])
+{
+    /* Equality with zero also rejects NaNs and infinities. */
+    return (ambient & 0x00ffffffu) == 0u && active_light_head == 0u &&
+        emissive != NULL && emissive[0] == 0.0f &&
+        emissive[1] == 0.0f && emissive[2] == 0.0f;
+}
+
+RecompD3dMaterialAlphaMode recomp_d3d_texture_material_alpha_mode(
+    uint32_t color_op,
+    uint32_t color_arg1,
+    uint32_t color_arg2,
+    uint32_t alpha_op,
+    uint32_t alpha_arg1,
+    uint32_t alpha_arg2)
+{
+    if (color_op == 2u && color_arg1 == 2u && color_arg2 == 1u &&
+        alpha_op == 4u && alpha_arg1 == 2u && alpha_arg2 == 0u) {
+        return RECOMP_D3D_MATERIAL_ALPHA_MODULATE_TEXTURE;
+    }
+    if (color_op == 4u && color_arg1 == 2u && color_arg2 == 0u &&
+        alpha_op == 2u && alpha_arg1 == 0u && alpha_arg2 == 1u) {
+        return RECOMP_D3D_MATERIAL_ALPHA_SELECT_DIFFUSE;
+    }
+    return RECOMP_D3D_MATERIAL_ALPHA_NONE;
 }

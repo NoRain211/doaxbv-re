@@ -1,4 +1,6 @@
 #include "fiber_adapter.h"
+#include "cri_service_adapter.h"
+#include "d3d_frame_adapter.h"
 #include "stop_report.h"
 #include "xbox_memory_layout.h"
 
@@ -21,6 +23,8 @@ enum {
 typedef struct RecompHostFiber {
     bool active;
     uint32_t guest_handle;
+    uint32_t guest_stack_base;
+    uint32_t guest_stack_size;
     uint32_t entry;
     uint64_t switch_count;
     LPVOID native_fiber;
@@ -227,10 +231,26 @@ static void create_fiber_adapter(void)
         stack_size = XAPI_MINIMUM_FIBER_STACK;
     }
     stack_size = (stack_size + 0xfffu) & 0xfffff000u;
-    stack_base = xbox_HeapAlloc(stack_size, 0x1000u);
+    host = NULL;
+    for (size_t i = 0u; i < RECOMP_FIBER_MAX_COUNT; ++i) {
+        if (!host_fibers[i].active) {
+            host = &host_fibers[i];
+            break;
+        }
+    }
+    if (host == NULL) {
+        fail_fiber("create-host-capacity", entry);
+    }
+    if (host->guest_stack_size >= stack_size) {
+        stack_base = host->guest_stack_base;
+        stack_size = host->guest_stack_size;
+    } else {
+        stack_base = xbox_HeapAlloc(stack_size, 0x1000u);
+    }
     if (stack_base == 0u || stack_base > UINT32_MAX - stack_size) {
         fail_fiber("guest-stack", entry);
     }
+    recomp_guest_memset(stack_base, 0, stack_size);
     stack_top = stack_base + stack_size;
     guest_handle = stack_top - 0x10u;
     initial_esp = guest_handle - 8u;
@@ -253,16 +273,6 @@ static void create_fiber_adapter(void)
     if (fiber == NULL) {
         fail_fiber("create-state", guest_handle);
     }
-    host = NULL;
-    for (size_t i = 0u; i < RECOMP_FIBER_MAX_COUNT; ++i) {
-        if (!host_fibers[i].active) {
-            host = &host_fibers[i];
-            break;
-        }
-    }
-    if (host == NULL) {
-        fail_fiber("create-host-capacity", guest_handle);
-    }
     native_fiber = CreateFiberEx(
         0u,
         NATIVE_FIBER_STACK_RESERVE,
@@ -275,6 +285,8 @@ static void create_fiber_adapter(void)
     *host = (RecompHostFiber){
         .active = true,
         .guest_handle = guest_handle,
+        .guest_stack_base = stack_base,
+        .guest_stack_size = stack_size,
         .entry = entry,
         .native_fiber = native_fiber,
     };
@@ -301,6 +313,244 @@ static void switch_to_fiber_adapter(void)
     if (outgoing == NULL || target == NULL || outgoing_host == NULL ||
         target_host == NULL) {
         fail_fiber("unknown-switch", target_handle);
+    }
+    /* Round 119 probe. Screen 7 (the island map) reaches a cooperative wait in
+       guest sub_000DEC50 at loc_000DED70 that yields here every iteration and
+       never exits: measured 99% of one core on this fiber with every other
+       thread idle. Three conditions could keep it there, and they are
+       distinguished entirely by state readable at this seam:
+         1. the yield is a self-switch, so no other fiber can ever run;
+         2. no entry in the 256-entry table at 0x5DDE84 matches the waited key;
+         3. an entry matches but its completion word at +8 stays zero.
+       Opt-in via RECOMP_SPINPROBE so the default run is unchanged. */
+    {
+        static const char *spin_probe;
+        static bool spin_probe_read;
+        static uint32_t spin_lines;
+        static uint32_t spin_switches;
+        static uint32_t spin_self;
+
+        if (!spin_probe_read) {
+            spin_probe_read = true;
+            spin_probe = getenv("RECOMP_SPINPROBE");
+        }
+        if (spin_probe != NULL) {
+            ++spin_switches;
+            if (target_handle == outgoing->guest_handle) {
+                ++spin_self;
+            }
+            /* Report sparsely: the spin issues these continuously, so a line
+               per switch would bury the log. */
+            if (spin_lines < 400u && (spin_switches % 20000u) == 0u) {
+                uint32_t record_root = *recomp_memory_u32(0x00317764u);
+                uint32_t record = *recomp_memory_u32(record_root);
+                uint32_t want_handle = *recomp_memory_u32(record + 0x134u);
+                uint32_t sel_index = *recomp_memory_u16(0x0031E4FCu);
+                uint32_t sel_table = *recomp_memory_u32(0x0031E504u);
+                uint32_t want_key =
+                    *recomp_memory_u32(sel_table + sel_index * 4u) & 0xFFFFu;
+                uint32_t match_slot = 0xFFFFFFFFu;
+                uint32_t match_done = 0u;
+                uint32_t key_only_slot = 0xFFFFFFFFu;
+                uint32_t nonzero_done = 0u;
+                uint32_t free_slots = 0u;
+                uint32_t zero_handle_slots = 0u;
+                uint32_t i;
+                /* sub_000A2E99..sub_000A2ECE count the ADXF channels whose
+                   handle word (0x005DEC58 + ch*0x14 + 0x10) is non-NULL and
+                   refuse to start any new request once that count reaches the
+                   limit byte at 0x005DD882. One channel left open forever
+                   therefore starves every later load. Report all five. */
+                uint32_t chan_open = 0u;
+                uint32_t staged_slots = 0u;
+                uint32_t chan[5];
+
+                for (i = 0u; i < 5u; ++i) {
+                    chan[i] = *recomp_memory_u32(0x005DEC68u + i * 0x14u);
+                    if (chan[i] != 0u) {
+                        ++chan_open;
+                    }
+                }
+                /* Queue slots live at 0x005DD884 + n*0xC with the state byte
+                   at +1; 0xFE means staged and waiting for a channel. */
+                for (i = 0u; i < 0x80u; ++i) {
+                    if ((*recomp_memory_i8(0x005DD885u + i * 0xCu) & 0xFF) ==
+                        0xFE) {
+                        ++staged_slots;
+                    }
+                }
+
+                for (i = 0u; i < 0x100u; ++i) {
+                    uint32_t entry = 0x005DDE84u + i * 0xCu;
+                    uint32_t key = *recomp_memory_u16(entry);
+                    uint32_t handle = *recomp_memory_u32(entry + 4u);
+                    uint32_t done = *recomp_memory_u32(entry + 8u);
+
+                    if (done != 0u) {
+                        ++nonzero_done;
+                    }
+                    /* sub_000A3140 publishes into the first slot whose handle
+                       word is 0xFFFFFFFF and silently drops the request when
+                       none is free, so occupancy separates "never posted"
+                       from "posted but the table was full". */
+                    if (handle == 0xFFFFFFFFu) {
+                        ++free_slots;
+                    }
+                    if (handle == 0u) {
+                        ++zero_handle_slots;
+                    }
+                    if (key != want_key) {
+                        continue;
+                    }
+                    if (key_only_slot == 0xFFFFFFFFu) {
+                        key_only_slot = i;
+                    }
+                    if (handle == want_handle && match_slot == 0xFFFFFFFFu) {
+                        match_slot = i;
+                        match_done = done;
+                    }
+                }
+                ++spin_lines;
+                fprintf(
+                    stderr,
+                    "recomp spinprobe: switches=%" PRIu32
+                    " self=%" PRIu32 " from=%08" PRIx32
+                    " to=%08" PRIx32 " want_key=%04" PRIx32
+                    " want_handle=%08" PRIx32 " match_slot=%" PRId32
+                    " match_done=%08" PRIx32 " key_slot=%" PRId32
+                    " table_done_count=%" PRIu32 "\n",
+                    spin_switches,
+                    spin_self,
+                    outgoing->guest_handle,
+                    target_handle,
+                    want_key,
+                    want_handle,
+                    (int32_t)match_slot,
+                    match_done,
+                    (int32_t)key_only_slot,
+                    nonzero_done);
+                /* The request the spin waits on is posted into the mailbox at
+                   0x005DDE78 and drained by sub_000A2E00 into the 128-entry
+                   queue at 0x005DD885, which only publishes a table entry once
+                   sub_000A32F0 polls the owning ADXF channel. Report the
+                   mailbox and queue head next to the table result so a request
+                   that was never posted is distinguishable from one posted but
+                   never drained. */
+                fprintf(
+                    stderr,
+                    "recomp spinq: switches=%" PRIu32
+                    " staged=%02" PRIx32 " op=%02" PRIx32
+                    " mbkey=%04" PRIx32 " mbarg=%08" PRIx32
+                    " head=%02" PRIx32 " limit=%02" PRIx32
+                    " active=%02" PRIx32 " ch0=%08" PRIx32
+                    " ch1=%08" PRIx32 " stat=%" PRIu32
+                    " wsteps=%" PRIu32 " free=%" PRIu32
+                    " zerohnd=%" PRIu32 " chanopen=%" PRIu32
+                    " staged_q=%" PRIu32 " ch=%08" PRIx32
+                    ",%08" PRIx32 ",%08" PRIx32 ",%08" PRIx32
+                    ",%08" PRIx32 "\n",
+                    spin_switches,
+                    (uint32_t)(*recomp_memory_i8(0x005DDE79u) & 0xFF),
+                    (uint32_t)(*recomp_memory_i8(0x005DDE78u) & 0xFF),
+                    (uint32_t)*recomp_memory_u16(0x005DDE7Au),
+                    *recomp_memory_u32(0x005DDE7Cu),
+                    (uint32_t)(*recomp_memory_i8(0x005DD885u) & 0xFF),
+                    (uint32_t)(*recomp_memory_i8(0x005DD882u) & 0xFF),
+                    (uint32_t)(*recomp_memory_i8(0x005DD880u) & 0xFF),
+                    *recomp_memory_u32(0x005DEC68u),
+                    *recomp_memory_u32(0x005DEC7Cu),
+                    recomp_cri_service_adxf_get_stat_calls(),
+                    recomp_cri_service_file_worker_steps(),
+                    free_slots,
+                    zero_handle_slots,
+                    chan_open,
+                    staged_slots,
+                    chan[0], chan[1], chan[2], chan[3], chan[4]);
+            }
+        }
+    }
+    /* Round 121 bridge. At screen 7 the guest waits in sub_000DEC50's scan at
+       loc_000DED70 for a table entry matching (selector key, record handle).
+       The request that would produce that entry is posted once, above the
+       loop, and loc_000DED3C skips the post outright when the staging slot is
+       busy at that instant; the loop below has no re-post path. Round 120
+       measured the aftermath at the stall: nothing staged, no ADXF channel
+       open, 223 of 256 table slots free and no slot carrying the waited key,
+       so the scan can never be satisfied and the swap counter stops. Post the
+       same request the guest would have posted, into queue entry 0 (where the
+       insertion sort in sub_000A3060 would have placed it), and let the
+       guest's own loader run it. No completion is fabricated: if the file is
+       absent the entry still publishes with size zero and the wait stays put.
+       Opt-in via RECOMP_REPOST so the default run is unchanged. */
+    {
+        static const char *repost_env;
+        static bool repost_read;
+        static uint32_t repost_count;
+        static uint32_t switches_since_repost;
+
+        if (!repost_read) {
+            repost_read = true;
+            repost_env = getenv("RECOMP_REPOST");
+        }
+        if (repost_env != NULL && repost_count < 8u) {
+            static uint32_t last_swap;
+            static uint32_t switches_at_swap;
+            uint32_t swap_now = recomp_d3d_frame_adapter_swap_counter();
+
+            ++switches_since_repost;
+            /* Round 121 measured the first version of this gate firing during
+               ordinary loading at swap 6408, where a request really was in
+               flight, and that corrupted the walk. The stall is not "the wait
+               loop is hot" -- that loop is hot during every normal load. The
+               stall is the wait loop running while the swap counter has
+               stopped advancing entirely. Require that: at least 50,000 fiber
+               switches with no new frame presented. */
+            if (swap_now != last_swap) {
+                last_swap = swap_now;
+                switches_at_swap = switches_since_repost;
+            }
+            if (switches_since_repost - switches_at_swap >= 50000u) {
+                uint32_t record_root = *recomp_memory_u32(0x00317764u);
+                uint32_t record = *recomp_memory_u32(record_root);
+                uint32_t want_handle = *recomp_memory_u32(record + 0x134u);
+                uint32_t sel_index = *recomp_memory_u16(0x0031E4FCu);
+                uint32_t sel_table = *recomp_memory_u32(0x0031E504u);
+                uint32_t want_key =
+                    *recomp_memory_u32(sel_table + sel_index * 4u) & 0xFFFFu;
+                bool matched = false;
+                uint32_t i;
+
+                switches_at_swap = switches_since_repost;
+                for (i = 0u; i < 0x100u; ++i) {
+                    uint32_t entry = 0x005DDE84u + i * 0xCu;
+
+                    if ((uint32_t)*recomp_memory_u16(entry) == want_key &&
+                        *recomp_memory_u32(entry + 4u) == want_handle) {
+                        matched = true;
+                        break;
+                    }
+                }
+                /* Act only on the exact measured shape: a live wait with the
+                   whole pipeline idle. Any other state has a request in
+                   flight and must be left alone. */
+                if (!matched && want_key != 0u && want_key != 0xFFFFu &&
+                    (*recomp_memory_i8(0x005DDE79u) & 0xFF) != 0xFE &&
+                    (*recomp_memory_i8(0x005DD885u) & 0xFF) == 0xFF) {
+                    *recomp_memory_i8(0x005DD884u) = (int8_t)5;
+                    *recomp_memory_u16(0x005DD886u) = (uint16_t)want_key;
+                    *recomp_memory_u32(0x005DD888u) = want_handle;
+                    *recomp_memory_i8(0x005DD885u) = (int8_t)0xFE;
+                    ++repost_count;
+                    fprintf(
+                        stderr,
+                        "recomp repost: n=%" PRIu32 " key=%04" PRIx32
+                        " handle=%08" PRIx32 "\n",
+                        repost_count,
+                        want_key,
+                        want_handle);
+                }
+            }
+        }
     }
     if (target_handle == outgoing->guest_handle) {
         finish(entry_esp, 1u, result);
@@ -380,13 +630,21 @@ static void delete_fiber_adapter(void)
     uint32_t guest_handle = stack_argument(entry_esp, 0u);
     RecompFiber *fiber = recomp_fiber_find(&fiber_model, guest_handle);
     RecompHostFiber *host = host_fiber_find(guest_handle);
+    uint32_t stack_base;
+    uint32_t stack_size;
 
     if (fiber == NULL || host == NULL || host == current_host_fiber) {
         fail_fiber("invalid-delete", guest_handle);
     }
+    stack_base = host->guest_stack_base;
+    stack_size = host->guest_stack_size;
     DeleteFiber(host->native_fiber);
-    xbox_HeapFree(*recomp_memory_u32(guest_handle + 8u));
-    *host = (RecompHostFiber){0};
+    /* The guest allocator is monotonic. Keep one stack per host slot so a
+       delete/create cycle reuses its address instead of exhausting the heap. */
+    *host = (RecompHostFiber){
+        .guest_stack_base = stack_base,
+        .guest_stack_size = stack_size,
+    };
     if (!recomp_fiber_remove(&fiber_model, guest_handle)) {
         fail_fiber("delete-state", guest_handle);
     }

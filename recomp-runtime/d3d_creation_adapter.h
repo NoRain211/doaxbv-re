@@ -5,6 +5,7 @@
 
 void recomp_d3d_create_device_adapter(void);
 void recomp_d3d_reset_device_adapter(void);
+void recomp_d3d_persist_display_adapter(void);
 void recomp_d3d_make_requested_space_adapter(void);
 void recomp_d3d_kick_off_adapter(void);
 RecompFunction recomp_d3d_lookup_manual(uint32_t guest_address);

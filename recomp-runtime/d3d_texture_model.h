@@ -26,6 +26,7 @@ enum {
 /* Uncompressed swizzled format bytes this presenter can upload. */
 enum {
     RECOMP_D3D_TEXTURE_FORMAT_A8R8G8B8 = 0x06u,
+    RECOMP_D3D_TEXTURE_FORMAT_P8 = 0x0bu,
     RECOMP_D3D_TEXTURE_FORMAT_A8 = 0x19u,
 };
 

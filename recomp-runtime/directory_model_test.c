@@ -89,6 +89,57 @@ int recomp_directory_model_test(void)
         &entry, buffer, 0x40u + strlen(entry.name), &bytes_written);
     passed &= bytes_written == 0u;
 
+    /* A suffix filter must skip metadata and still return the payload. */
+    recomp_directory_reset(&model);
+    passed &= add_entry(&model, "metadata.xbx", 8u, 0x80u);
+    passed &= add_entry(&model, "profile.dat", 20u, 0x80u);
+    passed &= recomp_directory_next(&model, "*.dat", &entry) &&
+        strcmp(entry.name, "profile.dat") == 0 && entry.size == 20u;
+    passed &= !recomp_directory_next(&model, "*.dat", &entry);
+    passed &= !recomp_directory_next(&model, "*", &entry);
+    recomp_directory_restart(&model);
+    passed &= recomp_directory_next(&model, "*.DAT", &entry) &&
+        strcmp(entry.name, "profile.dat") == 0;
+    recomp_directory_restart(&model);
+    passed &= recomp_directory_next(&model, "meta*", &entry) &&
+        strcmp(entry.name, "metadata.xbx") == 0;
+    passed &= recomp_directory_next(&model, "*.dat", &entry) &&
+        strcmp(entry.name, "profile.dat") == 0;
+
+    {
+        static const struct {
+            const char *pattern;
+            const char *name;
+            bool matches;
+        } cases[] = {
+            {"*.dat", "PROFILE.DAT", true},
+            {"*.dat", "metadata.xbx", false},
+            {"*.dat", "profile.dat.bak", false},
+            {"profile*.dat", "profile.dat", true},
+            {"p**ro*file*.DAT", "profile.dat", true},
+            {"*file.dat", "profilefile.dat", true},
+            {"p*fi*z.dat", "profile.dat", false},
+            {"file*", "profile.dat", false},
+            {"profile.dat*", "profile.dat.bak", true},
+            {"profile.dat", "profile.dat.bak", false},
+            {"***", "Folder", true},
+            {"*.*", "Folder", true},
+            {NULL, "profile.dat", true},
+            {"", "profile.dat", true},
+        };
+        for (size_t i = 0u; i < sizeof cases / sizeof cases[0]; ++i) {
+            recomp_directory_reset(&model);
+            passed &= add_entry(&model, cases[i].name, 1u, 0x80u);
+            if (recomp_directory_next(&model, cases[i].pattern, &entry) !=
+                cases[i].matches) {
+                fprintf(stderr, "directory pattern '%s' for '%s' failed\n",
+                    cases[i].pattern != NULL ? cases[i].pattern : "(null)",
+                    cases[i].name);
+                passed = 0;
+            }
+        }
+    }
+
     if (!passed) {
         fprintf(stderr, "directory model test failed\n");
     }

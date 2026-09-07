@@ -97,6 +97,10 @@ int recomp_d3d_frame_adapter_test(void)
     recomp_runtime_init(regions, 3u, NULL, 0u, NULL, 0u);
     recomp_d3d_frame_adapter_reset();
     recomp_d3d_frame_adapter_initialize(&config, TEST_DEVICE);
+    *recomp_memory_u32(TEST_DEVICE + 0x21b4u) = TEST_DEVICE_BASE + 0x6000u;
+    *recomp_memory_u32(TEST_DEVICE + 0x21c0u) = TEST_DEVICE_BASE + 0x6000u;
+    *recomp_memory_u32(TEST_DEVICE + 0x21b8u) = TEST_DEVICE_BASE + 0x6020u;
+    *recomp_memory_u32(TEST_DEVICE + 0x21ccu) = TEST_DEVICE_BASE + 0x6020u;
 
     clear = recomp_d3d_frame_lookup_manual(0x001e72d0u);
     swap = recomp_d3d_frame_lookup_manual(0x001e8f30u);
@@ -144,6 +148,12 @@ int recomp_d3d_frame_adapter_test(void)
         passed &= expect_u32("Clear z bits", clear_z_bits, 0x3f800000u);
         passed &= expect_u32(
             "Clear stencil", snapshot.commands[0].data.clear.stencil, 0x2au);
+        passed &= expect_u32(
+            "Clear back buffer", snapshot.commands[0].data.clear.target.offscreen, 0u);
+        passed &= expect_u32(
+            "Clear depth attached", snapshot.commands[0].data.clear.target.no_depth, 0u);
+        passed &= expect_u32(
+            "Clear default depth", snapshot.commands[0].data.clear.target.custom_depth, 0u);
     }
 
     prepare_stack(call_memory, swap_args, 1u);
@@ -173,6 +183,65 @@ int recomp_d3d_frame_adapter_test(void)
             "Swap command counter",
             snapshot.commands[1].data.present.swap_counter,
             1u);
+    }
+
+    {
+        const uint32_t surface = TEST_DEVICE_BASE + 0x6200u;
+        const uint32_t depth_surface = TEST_DEVICE_BASE + 0x6240u;
+        const uint32_t default_depth = TEST_DEVICE_BASE + 0x6020u;
+        RecompD3dPresenterTarget target;
+
+        *recomp_memory_u32(TEST_DEVICE + 0x21b4u) = surface;
+        *recomp_memory_u32(TEST_DEVICE + 0x21b8u) = 0u;
+        *recomp_memory_u32(surface) = 0x01050001u;
+        *recomp_memory_u32(surface + 4u) = 0x80010000u;
+        *recomp_memory_u32(surface + 0xcu) = 0x07800600u;
+        *recomp_memory_u32(surface + 0x10u) = 0u;
+        device_memory[0x16b8u + 6u] = 0xa1u;
+        prepare_stack(call_memory, clear_args, 6u);
+        clear();
+        if (!recomp_d3d_presenter_memory_snapshot(&snapshot)) {
+            passed = 0;
+        } else {
+            target = snapshot.commands[2].data.clear.target;
+            passed &= expect_u32("offscreen clear", target.offscreen, 1u);
+            passed &= expect_u32("offscreen no depth", target.no_depth, 1u);
+            passed &= expect_u32("offscreen null depth is not custom", target.custom_depth, 0u);
+            passed &= expect_u32("offscreen data", target.color.data, 0x10000u);
+            passed &= expect_u32("offscreen width", target.color.width, 256u);
+            passed &= expect_u32("offscreen height", target.color.height, 128u);
+        }
+        *recomp_memory_u32(depth_surface + 4u) = 0x80020000u;
+        *recomp_memory_u32(depth_surface + 0xcu) = 0x07802a00u;
+        *recomp_memory_u32(depth_surface + 0x10u) = 0u;
+        device_memory[0x16b8u + 0x2au] = 0xe1u;
+        *recomp_memory_u32(TEST_DEVICE + 0x21b8u) = depth_surface;
+        passed &= expect_u32(
+            "custom depth accepted", recomp_d3d_frame_adapter_target(&target), 1u);
+        passed &= expect_u32("custom depth attached", target.no_depth, 0u);
+        passed &= expect_u32("custom depth selected", target.custom_depth, 1u);
+        passed &= expect_u32("custom depth data", target.depth.data, 0x20000u);
+        passed &= expect_u32("custom depth format", target.depth.format_byte, 0x2au);
+        passed &= expect_u32("custom depth width", target.depth.width, 256u);
+        passed &= expect_u32("custom depth height", target.depth.height, 128u);
+        memcpy(recomp_memory_u32(default_depth), recomp_memory_u32(depth_surface), 0x14u);
+        passed &= expect_u32(
+            "aliased default depth accepted", recomp_d3d_frame_adapter_target(&target), 1u);
+        passed &= expect_u32("aliased default depth reused", target.custom_depth, 0u);
+        *recomp_memory_u32(depth_surface + 0xcu) = 0x08802a00u;
+        passed &= expect_u32(
+            "different depth shape accepted", recomp_d3d_frame_adapter_target(&target), 1u);
+        passed &= expect_u32("different depth shape stays custom", target.custom_depth, 1u);
+        *recomp_memory_u32(depth_surface + 0xcu) = 0x07800600u;
+        passed &= expect_u32(
+            "color as depth rejected", recomp_d3d_frame_adapter_target(&target), 0u);
+        *recomp_memory_u32(depth_surface + 0xcu) = 0x07802a00u;
+        *recomp_memory_u32(depth_surface + 4u) = 0u;
+        passed &= expect_u32(
+            "missing depth data rejected", recomp_d3d_frame_adapter_target(&target), 0u);
+        *recomp_memory_u32(TEST_DEVICE + 0x21b4u) = 0u;
+        passed &= expect_u32(
+            "missing target rejected", recomp_d3d_frame_adapter_target(&target), 0u);
     }
 
     recomp_d3d_frame_adapter_reset();

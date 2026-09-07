@@ -76,10 +76,14 @@ if(RECOMP_FUNCTION_SOURCE)
     set(_recomp_test_uses_public_fixture FALSE)
 endif()
 
+set(RECOMP_PROGRAM_EBP_EXPECTED 11147 CACHE STRING
+    "Expected generated EBP prologue override count")
+
 add_executable(recomp_runtime_test
     runtime.c
     stop_report.c
     runtime_test.c
+    xapi_time_adapter_test.cpp
     device_model.c
     device_model_test.c
     d3d_creation_model.c
@@ -110,6 +114,7 @@ add_executable(recomp_runtime_test
     dsound_service_model.c
     dsound_service_adapter.c
     dsound_service_adapter_test.c
+    movie_color_model.c
     cri_service_model.c
     cri_service_model_test.c
     cri_service_adapter.c
@@ -119,6 +124,7 @@ add_executable(recomp_runtime_test
     crt_format_adapter_test.c
     fiber_model.c
     fiber_adapter.c
+    fiber_adapter_test.c
     fiber_model_test.c
     flag_macro_test.c
     sse_semantics_test.c
@@ -131,13 +137,19 @@ add_executable(recomp_runtime_test
     input_pulse_source_test.c
     symbolic_link_model.c
     symbolic_link_model_test.c
+    xapi_time_adapter.cpp
     program_manual.c
+    save_adapter.c
     ohci_model.c
     ohci_model_test.c
     apu_model.c
     apu_model_test.c
     kernel_interrupt.c
     kernel_memory.c
+    kernel_memory_test.c
+    kernel_file.c
+    kernel_file_save_test.c
+    save_transaction.cpp
     kernel_rtl.c
     kernel_rtl_test.c
     kernel_crypto.c
@@ -152,6 +164,7 @@ target_include_directories(recomp_runtime_test PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(recomp_runtime_test PRIVATE
     RECOMP_D3D_FRAME_ENABLED RECOMP_DSOUND_TEST_CLOCK)
+
 if(_recomp_test_uses_public_fixture)
     target_compile_definitions(recomp_runtime_test PRIVATE
         RECOMP_PUBLIC_LEAF_FIXTURE)
@@ -218,6 +231,7 @@ if(RECOMP_ENTRY_SOURCE)
         kernel_device.c
         kernel_interrupt.c
         kernel_file.c
+        save_transaction.cpp
         kernel_memory.c
         kernel_rtl.c
         kernel_crypto.c
@@ -281,7 +295,11 @@ if(RECOMP_PROGRAM_DIR)
     set(_ebp_before "\n    uint32_t ebp;\n")
     set(_ebp_after "\n    uint32_t ebp = g_seh_ebp;\n")
     set(_ebp_growth 12)
-    set(_ebp_expected 11147)
+    if(NOT RECOMP_PROGRAM_EBP_EXPECTED MATCHES "^[0-9]+$")
+        message(FATAL_ERROR
+            "RECOMP_PROGRAM_EBP_EXPECTED must be a non-negative integer")
+    endif()
+    set(_ebp_expected "${RECOMP_PROGRAM_EBP_EXPECTED}")
     set(_ebp_applied 0)
     set(_recomp_derived_sources)
     foreach(_source IN LISTS _recomp_program_sources)
@@ -363,7 +381,9 @@ if(RECOMP_PROGRAM_DIR)
         stop_report.c
         runner.cpp
         program_adapters.c
+        xapi_time_adapter.cpp
         program_manual.c
+        save_adapter.c
         d3d_creation_model.c
         d3d_creation_adapter.c
         d3d_draw_model.c
@@ -383,6 +403,7 @@ if(RECOMP_PROGRAM_DIR)
         dsound_service_model.c
         dsound_service_adapter.c
         audio_output_xaudio2.cpp
+        movie_color_model.c
         cri_service_model.c
         cri_service_adapter.c
         crt_format_model.c
@@ -405,6 +426,7 @@ if(RECOMP_PROGRAM_DIR)
         kernel_device.c
         kernel_interrupt.c
         kernel_file.c
+        save_transaction.cpp
         kernel_memory.c
         kernel_rtl.c
         kernel_crypto.c
@@ -427,21 +449,33 @@ if(RECOMP_PROGRAM_DIR)
 endif()
 
 if(WIN32)
+    add_executable(recomp_d3d_presenter_d3d11_test
+        d3d_presenter_d3d11_test.cpp
+        d3d_draw_model.c
+        d3d_texture_model.c)
+    target_link_libraries(recomp_d3d_presenter_d3d11_test PRIVATE
+        d3d11 d3dcompiler dxgi user32)
     add_executable(recomp_audio_output_xaudio2_test audio_output_xaudio2_test.cpp)
 endif()
 
+add_executable(recomp_save_transaction_test
+    save_transaction.cpp save_transaction_test.cpp)
+
 add_executable(recomp_xbox_adpcm_test xbox_adpcm.c xbox_adpcm_test.c)
 
+add_executable(recomp_movie_color_test movie_color_model.c movie_color_model_test.c)
+
 include(CTest)
+add_test(NAME recomp-runtime-movie-color COMMAND recomp_movie_color_test)
 add_test(NAME recomp-runtime-xbox-adpcm COMMAND recomp_xbox_adpcm_test)
 if(TARGET recomp_audio_output_xaudio2_test)
     add_test(NAME recomp-runtime-audio-output COMMAND recomp_audio_output_xaudio2_test)
 endif()
-if(_recomp_test_uses_public_fixture)
-    add_test(NAME recomp-runtime-public-fixture COMMAND recomp_runtime_test)
-else()
-    add_test(NAME recomp-runtime-four-cases COMMAND recomp_runtime_test)
-endif()
+add_test(NAME recomp-runtime-save-transaction COMMAND recomp_save_transaction_test)
+add_test(NAME recomp-runtime-four-cases COMMAND recomp_runtime_test)
+add_test(
+    NAME recomp-runtime-fiber-stack-recycling
+    COMMAND recomp_runtime_test --fiber-stack-recycling)
 set(_invalid_access_check
     "${CMAKE_CURRENT_BINARY_DIR}/check-invalid-access-$<CONFIG>.cmake")
 file(GENERATE OUTPUT "${_invalid_access_check}" CONTENT [=[
@@ -457,10 +491,27 @@ if(NOT error MATCHES
         "^recomp runtime: undeclared 4-byte guest memory access at 0xffffffff")
     message(FATAL_ERROR "unexpected invalid-access diagnostic: ${error}")
 endif()
+foreach(mode IN ITEMS --ram-overrun --ram-pending-ohci)
+    execute_process(
+        COMMAND "$<TARGET_FILE:recomp_runtime_test>" "${mode}"
+        RESULT_VARIABLE result ERROR_VARIABLE error)
+    if(mode STREQUAL "--ram-overrun")
+        set(expected "^recomp runtime: undeclared 4-byte guest memory access at 0x83ffffff")
+    else()
+        set(expected "^recomp runtime: unsupported OHCI write 0xffffffff at 0xfed00004")
+    endif()
+    if(NOT result EQUAL 2 OR NOT error MATCHES "${expected}")
+        message(FATAL_ERROR "${mode}: exit=${result}, diagnostic=${error}")
+    endif()
+endforeach()
 ]=])
 add_test(NAME recomp-runtime-invalid-access
     COMMAND "${CMAKE_COMMAND}" -P "${_invalid_access_check}")
 if(TARGET recomp_runtime_boundary_test)
     add_test(NAME recomp-runtime-caller-callee-integration
         COMMAND recomp_runtime_boundary_test)
+endif()
+if(TARGET recomp_d3d_presenter_d3d11_test)
+    add_test(NAME recomp-runtime-d3d11-texture-cache
+        COMMAND recomp_d3d_presenter_d3d11_test)
 endif()

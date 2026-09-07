@@ -1,0 +1,264 @@
+--- a/tools/recomp/lifter.py
++++ b/tools/recomp/lifter.py
+@@ -279,15 +279,17 @@
+ })
+ 
+ 
+-def _carry_is_consumed(insns, idx):
++def _carry_is_consumed(insns, idx, flags_preserve=None):
+     """True when the next flag-consuming instruction is an ADC or SBB.
+ 
+     Scans forward over EFLAGS-preserving instructions only, so any
+     intervening instruction that redefines CF ends the search.
+     """
++    if flags_preserve is None:
++        flags_preserve = _EFLAGS_PRESERVE
+     j = idx + 1
+     while (j < len(insns)
+-            and insns[j].mnemonic in _EFLAGS_PRESERVE
++            and insns[j].mnemonic in flags_preserve
+             and insns[j].mnemonic != "popfd"
+             and not insns[j].is_branch
+             and not insns[j].is_call
+@@ -401,7 +403,7 @@
+ })
+ 
+ 
+-def _deferred_consumer_clobbers(insns, idx, setter):
++def _deferred_consumer_clobbers(insns, idx, setter, flags_preserve=None):
+     """True when a deferred condition consumes these flags after a clobber.
+ 
+     Scans forward from the flag setter over EFLAGS-preserving instructions.
+@@ -413,6 +415,8 @@
+     cmp/test with an *adjacent* jcc; anything in between sends the jump down
+     the same deferred path SETcc uses, where the clobber is just as fatal.
+     """
++    if flags_preserve is None:
++        flags_preserve = _EFLAGS_PRESERVE
+     watched = _flag_operand_regs(setter.operands)
+     if not watched:
+         return False
+@@ -422,7 +426,7 @@
+             return bool(dirty)
+         if insn.is_branch or insn.is_call or insn.is_ret:
+             return False
+-        if insn.mnemonic not in _EFLAGS_PRESERVE:
++        if insn.mnemonic not in flags_preserve:
+             return False
+         dirty |= _written_regs(insn) & watched
+     return False
+@@ -517,7 +521,7 @@
+     "movapd", "movupd",
+     "addpd", "subpd", "mulpd", "divpd",
+     # SSE/MMX integer
+-    "movd", "movq", "movntq",
++    "movd", "movq", "movntq", "cvtps2pi", "pavgb",
+     "emms",
+     "paddb", "paddw", "paddd", "paddq",
+     "psubb", "psubw", "psubd",
+@@ -1034,6 +1038,12 @@
+     return prolog, epilog
+ 
+ 
++def _uses_mmx(insn):
++    return any(op.type == "reg" and op.reg in
++               ("mm0", "mm1", "mm2", "mm3", "mm4", "mm5", "mm6", "mm7")
++               for op in insn.operands)
++
++
+ class Lifter:
+     """Translates x86 instructions to C statements."""
+ 
+@@ -1056,6 +1066,7 @@
+         self.func_start = 0  # Set per-function by translator
+         self.func_end = 0
+         self.current_function_has_ebp = False
++        self.mmx_enabled = True
+         self.jump_table_targets = {}
+         # Every direct call target we emit a name for, as {addr: name}. The
+         # batch translator diffs this against the functions it actually defined
+@@ -1090,6 +1101,16 @@
+         self.referenced_calls[addr] = name
+         return name
+ 
++    def configure_mmx(self, instructions):
++        # Partial MMX support must not activate stores fed by omitted producers.
++        # Preserve baseline output for the whole body until every MMX form lifts.
++        self.mmx_enabled = True
++        unsupported = [insn for insn in instructions
++                       if _uses_mmx(insn)
++                       and all(line.lstrip().startswith("/*")
++                               for line in self.lift_instruction(insn))]
++        self.mmx_enabled = not unsupported
++
+     def lift_instruction(self, insn):
+         """
+         Translate a single x86 instruction to one or more C statements.
+@@ -1098,6 +1119,11 @@
+         m = insn.mnemonic
+         ops = insn.operands
+         nops = len(ops)
++
++        if (not self.mmx_enabled and _uses_mmx(insn)
++                and m in ("movq", "cvtps2pi", "packssdw", "pavgb")):
++            prefix = "SSE: " if m == "movq" else "TODO: "
++            return [f"/* {prefix}{m} {insn.op_str} */"]
+ 
+         # ── NOP ──
+         if m == "nop" or (m == "lea" and nops == 2 and
+@@ -1228,7 +1254,7 @@
+                  "cvtsi2sd", "cvtsd2si", "cvttsd2si",
+                  "cvtss2sd", "cvtsd2ss",
+                  "xorps", "xorpd", "andps", "orps", "andnps",
+-                 "movd", "movq",
++                 "movd", "movq", "cvtps2pi", "packssdw", "pavgb",
+                  "shufps", "unpcklps", "unpckhps",
+                  "addps", "subps", "mulps", "divps",
+                  "minps", "maxps", "rsqrtss", "rcpss",
+@@ -1833,6 +1859,35 @@
+         def _is_mmx(op):
+             return (op.type == "reg" and op.reg and op.reg.startswith("mm")
+                     and not op.reg.startswith("xmm"))
++
++        def _mmx_read(op):
++            if _is_mmx(op):
++                return op.reg
++            if op.type == "mem" and op.mem_size == 8:
++                return f"MMX_MEM({_fmt_mem(op)})"
++            return None
++
++        if nops == 2 and m == "cvtps2pi" and _is_mmx(ops[0]):
++            if _is_xmm(ops[1]):
++                low, high = f"{ops[1].reg}.f[0]", f"{ops[1].reg}.f[1]"
++            elif ops[1].type == "mem" and ops[1].mem_size == 8:
++                address = _fmt_mem(ops[1])
++                low, high = f"MEMF({address})", f"MEMF(({address}) + 4u)"
++            else:
++                return [f"/* unsupported {m} {insn.op_str} */"]
++            return [f"{ops[0].reg} = MMX_CVTPS2PI({low}, {high}); /* {m} */"]
++
++        if nops == 2 and m in ("packssdw", "pavgb") and _is_mmx(ops[0]):
++            source = _mmx_read(ops[1])
++            if source is not None:
++                return [f"{ops[0].reg} = MMX_{m.upper()}({ops[0].reg}, {source}); /* {m} */"]
++
++        if nops == 2 and m == "movq":
++            source = _mmx_read(ops[1])
++            if _is_mmx(ops[0]) and source is not None:
++                return [f"{ops[0].reg} = {source}; /* movq */"]
++            if ops[0].type == "mem" and ops[0].mem_size == 8 and _is_mmx(ops[1]):
++                return [f"MMX_STORE({_fmt_mem(ops[0])}, {ops[1].reg}); /* movq */"]
+ 
+         # ── Scalar (lane 0) access ──
+         # movss/addss/... genuinely operate on one 32-bit value, so they read
+@@ -2397,6 +2452,8 @@
+     """
+     stmts = []
+     insns = bb.instructions
++    flags_preserve = (_EFLAGS_PRESERVE if lifter.mmx_enabled else
++                      _EFLAGS_PRESERVE - {"cvtps2pi", "pavgb"})
+     i = 0
+ 
+     # Track the last instruction that set flags
+@@ -2520,7 +2577,7 @@
+         # ADD 0x7FFFFFFF / ADC that implements the CRT's _ftol2 rounding.
+         # Look ahead over EFLAGS-preserving instructions for the consumer.
+         if (curr.mnemonic in _CARRY_PRODUCERS
+-                and _carry_is_consumed(insns, i)):
++                and _carry_is_consumed(insns, i, flags_preserve)):
+             if curr.mnemonic == "neg":
+                 results = lifter._lift_neg(
+                     curr, curr.operands, preserve_carry=True)
+@@ -2543,7 +2600,7 @@
+             last_flag_ops = list(curr.operands)
+             clobbered = set()
+             snapshot_names = {}
+-            if _deferred_consumer_clobbers(insns, i, curr):
++            if _deferred_consumer_clobbers(insns, i, curr, flags_preserve):
+                 stmts.extend(_emit_flag_snapshot(last_flag_ops, curr.address))
+         elif curr.mnemonic in _FLAGS_UNDEFINED:
+             # Flags are undefined after these - clear tracking
+@@ -2557,7 +2614,7 @@
+             last_flag_ops = list(curr.operands)
+             clobbered = set()
+             snapshot_names = {}
+-        elif curr.mnemonic in _EFLAGS_PRESERVE:
++        elif curr.mnemonic in flags_preserve:
+             # These preserve EFLAGS but can still overwrite a register the
+             # deferred condition will re-read.
+             clobbered |= _written_regs(curr)
+--- a/tools/recomp/translator.py
++++ b/tools/recomp/translator.py
+@@ -898,6 +898,7 @@
+             else:
+                 self.lifter.jump_table_targets = linear_jump_tables
+         self.translated_function_starts.add(start)
++        self.lifter.configure_mmx(instructions)
+ 
+         # Collect switch table targets as extra block leaders
+         switch_leaders = set()
+--- /dev/null
++++ b/tools/recomp/test_lifter_mmx.py
+@@ -0,0 +1,62 @@
++import unittest
++
++from .disasm import Disassembler
++from .lifter import Lifter, _EFLAGS_PRESERVE
++from .translator import FunctionTranslator
++
++
++class MmxMovieLifterTest(unittest.TestCase):
++    def test_mmx_register_and_memory_forms_emit_real_operations(self):
++        cases = (
++            ("0f2dc1", "mm0 = MMX_CVTPS2PI(xmm1.f[0], xmm1.f[1]); /* cvtps2pi */"),
++            ("0f2d10", "mm2 = MMX_CVTPS2PI(MEMF(eax), MEMF((eax) + 4u)); /* cvtps2pi */"),
++            ("0f6bc1", "mm0 = MMX_PACKSSDW(mm0, mm1); /* packssdw */"),
++            ("0f6b10", "mm2 = MMX_PACKSSDW(mm2, MMX_MEM(eax)); /* packssdw */"),
++            ("0fe0c1", "mm0 = MMX_PAVGB(mm0, mm1); /* pavgb */"),
++            ("0fe008", "mm1 = MMX_PAVGB(mm1, MMX_MEM(eax)); /* pavgb */"),
++            ("0f6fc1", "mm0 = mm1; /* movq */"),
++            ("0f6f08", "mm1 = MMX_MEM(eax); /* movq */"),
++            ("0f7f00", "MMX_STORE(eax, mm0); /* movq */"),
++        )
++        for raw, expected in cases:
++            with self.subTest(raw=raw):
++                data = bytes.fromhex(raw)
++                instructions = Disassembler().disassemble_function(data, 0, len(data))
++                self.assertEqual(len(instructions), 1)
++                self.assertEqual(Lifter().lift_instruction(instructions[0]), [expected])
++
++    def test_new_mmx_handlers_do_not_claim_xmm_movq(self):
++        raw = bytes.fromhex("f30f7ec1")
++        instruction = Disassembler().disassemble_function(raw, 0, len(raw))[0]
++        lifted = Lifter().lift_instruction(instruction)
++        self.assertFalse(any("MMX_" in line for line in lifted))
++
++    def test_mmx_operations_preserve_integer_flags(self):
++        for mnemonic in ("cvtps2pi", "packssdw", "pavgb", "movq"):
++            self.assertIn(mnemonic, _EFLAGS_PRESERVE)
++
++    def test_incomplete_body_keeps_baseline_and_next_complete_body_enables(self):
++        translator = FunctionTranslator(b"", {})
++        for raw, enabled in (("0f6f000fefc00f7f00c3", False),
++                             ("0f6f000fe0c10f7f00c3", True)):
++            data = bytes.fromhex(raw)
++            translator._read_func_bytes = lambda start, end: data
++            code = translator.translate_function(0x1000, {"end": 0x1000 + len(data)})
++            self.assertEqual("MMX_STORE" in code, enabled)
++            self.assertEqual("MMX_MEM" in code, enabled)
++            if not enabled:
++                self.assertIn("/* SSE: movq mm0, qword ptr [eax] */", code)
++                self.assertIn("/* SSE: movq qword ptr [eax], mm0 */", code)
++
++    def test_incomplete_mmx_body_does_not_change_xmm_forms(self):
++        raw = bytes.fromhex("0fefc0f30f7ec1660f6bc1")
++        instructions = Disassembler().disassemble_function(raw, 0, len(raw))
++        lifter = Lifter()
++        expected = [lifter.lift_instruction(insn) for insn in instructions[1:]]
++        lifter.configure_mmx(instructions)
++        self.assertFalse(lifter.mmx_enabled)
++        self.assertEqual([lifter.lift_instruction(insn) for insn in instructions[1:]], expected)
++
++
++if __name__ == "__main__":
++    unittest.main()

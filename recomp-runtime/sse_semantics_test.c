@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <xmmintrin.h>
 
 #include "recomp_types.h"
 
@@ -66,6 +67,25 @@ int recomp_sse_semantics_test(void)
     passed &= expect_float("shufps 0x4E lane1", r.f[1], 4.0f);
     passed &= expect_float("shufps 0x4E lane2", r.f[2], 1.0f);
     passed &= expect_float("shufps 0x4E lane3", r.f[3], 2.0f);
+
+    /* IDCT rotates lanes before scalar stores; preserve all bits, including
+       NaN payloads and signed zero, when lowering to the native shuffle. */
+    {
+        RecompXmm a = {.u = {0x80000000u, 0x7fc12345u, 0x3f800000u, 0x40000000u}};
+        RecompXmm b = {.u = {0xffc54321u, 0x00000000u, 0xbf800000u, 0xc0000000u}};
+        r = XMM_SHUFFLE(a, b, 0xE5);
+        passed &= expect_u32("shufps E5 lane0", r.u[0], a.u[1]);
+        passed &= expect_u32("shufps E5 lane1", r.u[1], a.u[1]);
+        passed &= expect_u32("shufps E5 lane2", r.u[2], b.u[2]);
+        passed &= expect_u32("shufps E5 lane3", r.u[3], b.u[3]);
+        r = XMM_SHUFFLE(a, b, 0xE6);
+        passed &= expect_u32("shufps E6 lane0", r.u[0], a.u[2]);
+        r = XMM_SHUFFLE(a, b, 0xE7);
+        passed &= expect_u32("shufps E7 lane0", r.u[0], a.u[3]);
+        r = XMM_SHUFFLE(a, b, 0);
+        passed &= expect_u32("shufps signed zero", r.u[0], a.u[0]);
+        passed &= expect_u32("shufps source NaN", r.u[2], b.u[0]);
+    }
 
     /* Packed arithmetic must touch all four lanes, not just lane 0. */
     r = XMM_MUL(x, row(2.0f, 2.0f, 2.0f, 2.0f));
@@ -145,6 +165,56 @@ int recomp_sse_semantics_test(void)
     r = XMM_ZERO();
     passed &= expect_u32("xorps self lane0", r.u[0], 0u);
     passed &= expect_u32("xorps self lane3", r.u[3], 0u);
+
+    {
+        unsigned saved_csr = _mm_getcsr();
+        unsigned masked_csr = (saved_csr | _MM_MASK_MASK) &
+            ~(_MM_ROUND_MASK | _MM_EXCEPT_MASK);
+        const unsigned modes[] = {
+            _MM_ROUND_NEAREST, _MM_ROUND_DOWN, _MM_ROUND_UP, _MM_ROUND_TOWARD_ZERO
+        };
+        volatile float halves[] = {-2.5f, -1.5f, 1.5f, 2.5f};
+        const int32_t expected[4][4] = {
+            {-2, -2, 2, 2}, {-3, -2, 1, 2}, {-2, -1, 2, 3}, {-2, -1, 1, 2}
+        };
+        for (unsigned mode = 0u; mode < 4u; ++mode) {
+            _mm_setcsr(masked_csr | modes[mode]);
+            for (unsigned pair = 0u; pair < 4u; pair += 2u) {
+                uint64_t converted = MMX_CVTPS2PI(halves[pair], halves[pair + 1u]);
+                passed &= expect_u32("cvtps2pi low rounding", (uint32_t)converted,
+                    (uint32_t)expected[mode][pair]);
+                passed &= expect_u32("cvtps2pi high rounding", (uint32_t)(converted >> 32),
+                    (uint32_t)expected[mode][pair + 1u]);
+            }
+        }
+        volatile float limits[] = {
+            NAN, INFINITY, -INFINITY, 2147483648.0f, -2147483904.0f,
+            -2147483648.0f, 2147483520.0f
+        };
+        for (unsigned i = 0u; i < 7u; ++i) {
+            _mm_setcsr(masked_csr | _MM_ROUND_NEAREST);
+            uint64_t converted = MMX_CVTPS2PI(limits[i], 7.0f);
+            passed &= expect_u32("cvtps2pi limits", (uint32_t)converted,
+                i == 6u ? 0x7fffff80u : 0x80000000u);
+            passed &= expect_u32("cvtps2pi independent lane", (uint32_t)(converted >> 32), 7u);
+            passed &= expect_u32("cvtps2pi invalid flag", _mm_getcsr() & _MM_EXCEPT_INVALID,
+                i < 5u ? _MM_EXCEPT_INVALID : 0u);
+        }
+        _mm_setcsr(masked_csr | _MM_ROUND_NEAREST);
+        uint64_t packed = MMX_PACKSSDW(
+            MMX_CVTPS2PI(-32768.0f, 32767.0f),
+            MMX_CVTPS2PI(-40000.0f, 40000.0f));
+        passed &= expect_u32("packssdw boundaries", (uint32_t)packed, 0x7fff8000u);
+        passed &= expect_u32("packssdw saturation", (uint32_t)(packed >> 32), 0x7fff8000u);
+        packed = MMX_PACKSSDW(MMX_CVTPS2PI(-1.0f, 2.0f), MMX_CVTPS2PI(-3.0f, 4.0f));
+        passed &= expect_u32("packssdw destination order", (uint32_t)packed, 0x0002ffffu);
+        passed &= expect_u32("packssdw source order", (uint32_t)(packed >> 32), 0x0004fffdu);
+        uint64_t averaged = MMX_PAVGB(
+            UINT64_C(0x1180fe01ffff0000), UINT64_C(0x127f0102fffe0100));
+        passed &= expect_u32("pavgb unsigned extremes", (uint32_t)averaged, 0xffff0100u);
+        passed &= expect_u32("pavgb rounded lanes", (uint32_t)(averaged >> 32), 0x12808002u);
+        _mm_setcsr(saved_csr);
+    }
 
     return passed;
 }

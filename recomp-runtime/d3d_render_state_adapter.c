@@ -13,8 +13,10 @@ enum {
     D3D_DEVICE_SET_RENDER_STATE_FILL_MODE_ADDRESS = 0x001e5470u,
     D3D_DEVICE_SET_RENDER_STATE_Z_ENABLE_ADDRESS = 0x001e6190u,
     D3D_DEVICE_SET_RENDER_STATE_STENCIL_ENABLE_ADDRESS = 0x001e6220u,
+    D3D_DEVICE_SET_RENDER_STATE_STENCIL_FAIL_ADDRESS = 0x001e62b0u,
     D3D_DEVICE_SET_RENDER_STATE_MULTISAMPLE_ANTIALIAS_ADDRESS = 0x001e6510u,
     D3D_STATE_DIRTY_MASK = 0x001f2984u,
+    D3D_COLOR_MASK_SHADOW = 0x001f2c94u,
     D3D_EDGE_ANTIALIAS_SHADOW = 0x001f2de4u,
     D3D_NORMALIZE_NORMALS_SHADOW = 0x001f2dc0u,
     D3D_TEXTURE_FACTOR_SHADOW = 0x001f2dd8u,
@@ -23,6 +25,7 @@ enum {
     D3D_Z_ENABLE_SHADOW = 0x001f2dc4u,
     D3D_CULL_MODE_SHADOW = 0x001f2dd4u,
     D3D_STENCIL_ENABLE_SHADOW = 0x001f2dc8u,
+    D3D_STENCIL_FAIL_SHADOW = 0x001f2dccu,
     D3D_MULTISAMPLE_ANTIALIAS_SHADOW = 0x001f2de8u,
     /* stdcall, one DWORD argument: the callee drops the return address and
        the argument from the stack (ret 4). */
@@ -34,6 +37,15 @@ static RecompD3dRenderStateModel d3d_render_state_model;
 void recomp_d3d_render_state_adapter_reset(void)
 {
     recomp_d3d_render_state_reset(&d3d_render_state_model);
+}
+
+void recomp_d3d_render_state_adapter_initialize(void)
+{
+    /* CreateDevice initializes this cache before scoped passes save it.
+       Reset retains it. An absent host default alone leaves the guest at 0. */
+    recomp_d3d_set_simple_render_state(
+        &d3d_render_state_model, 0x40358u, 0x01010101u);
+    *recomp_memory_u32(D3D_COLOR_MASK_SHADOW) = 0x01010101u;
 }
 
 const RecompD3dRenderStateModel *recomp_d3d_render_state_adapter_model(void)
@@ -192,6 +204,20 @@ void recomp_d3d_set_stencil_enable_adapter(void)
     recomp_runtime.registers.esp = entry_esp + 8u;
 }
 
+/* The dedicated setter emits method 0x40370 without calling SetSimple. */
+void recomp_d3d_set_stencil_fail_adapter(void)
+{
+    uint32_t entry_esp = recomp_runtime.registers.esp;
+    uint32_t value = stack_argument(entry_esp, 0u);
+
+    if (!recomp_d3d_set_simple_render_state(
+            &d3d_render_state_model, 0x40370u, value)) {
+        recomp_stop(2, "d3d-stencil-fail:model-unavailable");
+    }
+    *recomp_memory_u32(D3D_STENCIL_FAIL_SHADOW) = value;
+    recomp_runtime.registers.esp = entry_esp + 8u;
+}
+
 /* D3DDevice_SetRenderState_ZEnable. Generated D3D8 maps the three-value Xbox
    enum to depth-test and W-buffer hardware methods, and performs extra state
    work on transitions to or from W buffering. The API model owns the enum;
@@ -298,6 +324,8 @@ RecompFunction recomp_d3d_render_state_lookup_manual(uint32_t guest_address)
         return recomp_d3d_set_z_enable_adapter;
     case D3D_DEVICE_SET_RENDER_STATE_STENCIL_ENABLE_ADDRESS:
         return recomp_d3d_set_stencil_enable_adapter;
+    case D3D_DEVICE_SET_RENDER_STATE_STENCIL_FAIL_ADDRESS:
+        return recomp_d3d_set_stencil_fail_adapter;
     case D3D_DEVICE_SET_RENDER_STATE_MULTISAMPLE_ANTIALIAS_ADDRESS:
         return recomp_d3d_set_multisample_antialias_adapter;
     default:

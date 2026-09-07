@@ -1,4 +1,5 @@
 #include "input_host_win32.h"
+#include "input_pulse_source.h"
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -39,24 +40,24 @@ bool recomp_input_host_sample(RecompInputGamepad *gamepad)
             XINPUT_GAMEPAD_RIGHT_THUMB;
 
         gamepad->buttons = state.Gamepad.wButtons & digital;
-        gamepad->analog_buttons[0] =
+        gamepad->analog_buttons[RECOMP_INPUT_ANALOG_X] =
             (state.Gamepad.wButtons & XINPUT_GAMEPAD_X) != 0u ? 0xffu : 0u;
-        gamepad->analog_buttons[1] =
+        gamepad->analog_buttons[RECOMP_INPUT_ANALOG_Y] =
             (state.Gamepad.wButtons & XINPUT_GAMEPAD_Y) != 0u ? 0xffu : 0u;
-        gamepad->analog_buttons[2] =
+        gamepad->analog_buttons[RECOMP_INPUT_ANALOG_A] =
             (state.Gamepad.wButtons & XINPUT_GAMEPAD_A) != 0u ? 0xffu : 0u;
-        gamepad->analog_buttons[3] =
+        gamepad->analog_buttons[RECOMP_INPUT_ANALOG_B] =
             (state.Gamepad.wButtons & XINPUT_GAMEPAD_B) != 0u ? 0xffu : 0u;
-        gamepad->analog_buttons[4] =
+        gamepad->analog_buttons[RECOMP_INPUT_ANALOG_BLACK] =
             (state.Gamepad.wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER) != 0u
             ? 0xffu
             : 0u;
-        gamepad->analog_buttons[5] =
+        gamepad->analog_buttons[RECOMP_INPUT_ANALOG_WHITE] =
             (state.Gamepad.wButtons & XINPUT_GAMEPAD_RIGHT_SHOULDER) != 0u
             ? 0xffu
             : 0u;
-        gamepad->analog_buttons[6] = state.Gamepad.bLeftTrigger;
-        gamepad->analog_buttons[7] = state.Gamepad.bRightTrigger;
+        gamepad->analog_buttons[RECOMP_INPUT_ANALOG_LTRIG] = state.Gamepad.bLeftTrigger;
+        gamepad->analog_buttons[RECOMP_INPUT_ANALOG_RTRIG] = state.Gamepad.bRightTrigger;
         gamepad->thumb_lx = state.Gamepad.sThumbLX;
         gamepad->thumb_ly = state.Gamepad.sThumbLY;
         gamepad->thumb_rx = state.Gamepad.sThumbRX;
@@ -69,13 +70,13 @@ bool recomp_input_host_sample(RecompInputGamepad *gamepad)
     if (pressed(VK_RETURN)) gamepad->buttons |= XBOX_START;
     if (pressed(VK_BACK)) gamepad->buttons |= XBOX_BACK;
 
-    if (pressed('A')) gamepad->analog_buttons[0] = 0xffu; /* X */
-    if (pressed('S')) gamepad->analog_buttons[1] = 0xffu; /* Y */
-    if (pressed('Z')) gamepad->analog_buttons[2] = 0xffu; /* A */
-    if (pressed('X')) gamepad->analog_buttons[3] = 0xffu; /* B */
-    if (pressed('Q')) gamepad->analog_buttons[4] = 0xffu; /* White */
-    if (pressed('W')) gamepad->analog_buttons[5] = 0xffu; /* Black */
-    if (pressed('E')) gamepad->analog_buttons[6] = 0xffu; /* Left trigger */
-    if (pressed('R')) gamepad->analog_buttons[7] = 0xffu; /* Right trigger */
+    if (pressed('A')) gamepad->analog_buttons[RECOMP_INPUT_ANALOG_X] = 0xffu;
+    if (pressed('S')) gamepad->analog_buttons[RECOMP_INPUT_ANALOG_Y] = 0xffu;
+    if (pressed('Z')) gamepad->analog_buttons[RECOMP_INPUT_ANALOG_A] = 0xffu;
+    if (pressed('X')) gamepad->analog_buttons[RECOMP_INPUT_ANALOG_B] = 0xffu;
+    if (pressed('Q')) gamepad->analog_buttons[RECOMP_INPUT_ANALOG_WHITE] = 0xffu;
+    if (pressed('W')) gamepad->analog_buttons[RECOMP_INPUT_ANALOG_BLACK] = 0xffu;
+    if (pressed('E')) gamepad->analog_buttons[RECOMP_INPUT_ANALOG_LTRIG] = 0xffu;
+    if (pressed('R')) gamepad->analog_buttons[RECOMP_INPUT_ANALOG_RTRIG] = 0xffu;
     return true;
 }

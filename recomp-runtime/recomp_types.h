@@ -7,6 +7,7 @@
 
 #include <math.h>
 #include <string.h>
+#include <xmmintrin.h>
 
 #if defined(_MSC_VER)
 #include <intrin.h>
@@ -279,16 +280,18 @@ RECOMP_XMM_LANEWISE(XMM_CMP_NEQ, r.u[i] = a.f[i] != b.f[i] ? 0xffffffffu : 0u)
 
 /* SHUFPS takes the low half from the destination and the high half from the
    source. It is the broadcast in every matrix concatenation. */
-static inline RecompXmm XMM_SHUFFLE(RecompXmm a, RecompXmm b, unsigned int imm)
+static inline RecompXmm recomp_xmm_from_native(__m128 value)
 {
     RecompXmm r;
 
-    r.u[0] = a.u[imm & 3u];
-    r.u[1] = a.u[(imm >> 2) & 3u];
-    r.u[2] = b.u[(imm >> 4) & 3u];
-    r.u[3] = b.u[(imm >> 6) & 3u];
+    _mm_storeu_ps(r.f, value);
     return r;
 }
+
+/* SHUFPS carries an immediate byte; retain it for the native instruction. */
+#define XMM_SHUFFLE(a, b, imm) \
+    recomp_xmm_from_native(_mm_shuffle_ps( \
+        _mm_loadu_ps((a).f), _mm_loadu_ps((b).f), (imm)))
 
 static inline RecompXmm XMM_UNPACK_LOW(RecompXmm a, RecompXmm b)
 {
@@ -337,5 +340,48 @@ static inline uint32_t XMM_MOVEMASK(RecompXmm a)
     return ((a.u[0] >> 31) & 1u) | ((a.u[1] >> 30) & 2u) |
            ((a.u[2] >> 29) & 4u) | ((a.u[3] >> 28) & 8u);
 }
+
+/* ponytail: use host MXCSR rounding; model guest MXCSR when a lifted caller
+   writes it. SSE conversions avoid disturbing the host x87/MMX register file. */
+static inline uint64_t MMX_CVTPS2PI(float low, float high)
+{
+    uint32_t a = (uint32_t)_mm_cvtss_si32(_mm_set_ss(low));
+    uint32_t b = (uint32_t)_mm_cvtss_si32(_mm_set_ss(high));
+    return a | ((uint64_t)b << 32);
+}
+
+static inline uint64_t MMX_PACKSSDW(uint64_t a, uint64_t b)
+{
+    uint64_t packed = 0u;
+    for (unsigned lane = 0u; lane < 4u; ++lane) {
+        uint64_t source = lane < 2u ? a : b;
+        int32_t value = (int32_t)(uint32_t)(source >> ((lane & 1u) * 32u));
+        if (value < -32768) value = -32768;
+        if (value > 32767) value = 32767;
+        packed |= (uint64_t)(uint16_t)value << (lane * 16u);
+    }
+    return packed;
+}
+
+static inline uint64_t MMX_PAVGB(uint64_t a, uint64_t b)
+{
+    uint64_t packed = 0u;
+    for (unsigned shift = 0u; shift < 64u; shift += 8u) {
+        unsigned sum = (unsigned)((a >> shift) & 255u) +
+            (unsigned)((b >> shift) & 255u) + 1u;
+        packed |= (uint64_t)(sum >> 1u) << shift;
+    }
+    return packed;
+}
+
+static inline uint64_t MMX_MEM(uint32_t address)
+{
+    uint64_t value;
+    recomp_guest_load(&value, address, 8u);
+    return value;
+}
+
+#define MMX_STORE(address, reg) \
+    recomp_guest_store((uint32_t)(address), &(reg), 8u)
 
 #endif

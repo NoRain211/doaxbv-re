@@ -2,10 +2,15 @@
 #include "runtime.h"
 #include "directory_model.h"
 #include "symbolic_link_model.h"
+#include "save_transaction.h"
+#ifdef RECOMP_FULL_PROGRAM
+#include "fiber_adapter.h"
+#endif
 
 #include <ctype.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 #include <windows.h>
@@ -34,6 +39,8 @@ typedef struct FileHandleEntry {
     RecompDirectoryModel directory;
     FileHandleKind kind;
     int active;
+    int save_write;
+    uint32_t save_owner;
 } FileHandleEntry;
 
 static FileHandleEntry file_handles[MAX_FILE_HANDLES];
@@ -52,6 +59,56 @@ static void ensure_symbolic_links_initialized(void)
 /* Supplied by runner.cpp from the directory containing the XBE. */
 const char *recomp_disc_root_path = NULL;
 
+/* Private proving runs use these fail-loud checkpoints to interrupt real
+   save writes. They are inactive unless explicitly selected in the environment. */
+static unsigned save_write_number;
+
+static unsigned save_fault_write(const char *name)
+{
+    const char *text = getenv(name);
+    char *end;
+    if (text == NULL) return 0u;
+    unsigned long value = strtoul(text, &end, 10);
+    if (*text == '\0' || *end != '\0' || value == 0u || value > 1024u) {
+        recomp_stop(64, "save:invalid-fault-setting");
+    }
+    return (unsigned)value;
+}
+
+static uint32_t current_save_owner(void)
+{
+#ifdef RECOMP_FULL_PROGRAM
+    return recomp_fiber_adapter_model()->current_handle;
+#else
+    return 0u;
+#endif
+}
+
+bool recomp_kernel_save_handles_closed(uint32_t owner)
+{
+    for (size_t i = 0; i < MAX_FILE_HANDLES; ++i) {
+        if (file_handles[i].active && file_handles[i].save_write &&
+            file_handles[i].save_owner == owner) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool save_write_allowed(const FileHandleEntry *entry)
+{
+    uint32_t owner = current_save_owner();
+    if (entry->save_write && recomp_save_pending() && !recomp_save_active(owner)) {
+        recomp_stop(2, "save:non-owner-write");
+    }
+    if (recomp_save_active(owner) &&
+        (!entry->save_write || entry->save_owner != owner)) {
+        recomp_save_note_failure(owner);
+        return false;
+    }
+    return true;
+}
+
 static uint32_t register_file_handle(
     HANDLE host_handle,
     FileHandleKind kind,
@@ -60,6 +117,8 @@ static uint32_t register_file_handle(
     for (size_t i = 0; i < MAX_FILE_HANDLES; ++i) {
         if (!file_handles[i].active) {
             file_handles[i].active = 1;
+            file_handles[i].save_write = 0;
+            file_handles[i].save_owner = 0u;
             file_handles[i].host_handle = host_handle;
             file_handles[i].guest_handle = next_guest_handle;
             file_handles[i].cursor = 0u;
@@ -236,6 +295,23 @@ static int build_host_path(const char *relative, char *host_path, size_t host_pa
         }
     }
     return strlen(host_path) > 0;
+}
+
+static bool is_profile_path(const char *path)
+{
+    char root[MAX_PATH_LEN];
+    if (recomp_disc_root_path == NULL) {
+        return false;
+    }
+    copy_root(root, sizeof root);
+    if (!append_segment(root, sizeof root, ".recomp-storage") ||
+        !append_segment(root, sizeof root, "partition1") ||
+        !append_segment(root, sizeof root, "UDATA")) {
+        return false;
+    }
+    size_t length = strlen(root);
+    return _strnicmp(path, root, length) == 0 &&
+        (path[length] == '\0' || path[length] == '\\' || path[length] == '/');
 }
 
 static int build_save_path(
@@ -672,6 +748,8 @@ static const char *resolve_and_open(
 static void bridge_nt_open_file(void)
 {
     uint32_t file_handle_ptr = kernel_arg(1u);
+    uint32_t desired_access = kernel_arg(2u);
+    uint32_t share_access = kernel_arg(5u);
     uint32_t object_attributes = kernel_arg(3u);
     uint32_t io_status_block = kernel_arg(4u);
 
@@ -688,7 +766,23 @@ static void bridge_nt_open_file(void)
     policy = resolve_and_open(
         object_attributes, guest_path, host_path,
         &host_handle, &is_directory, &is_writable, &status);
-    (void)is_writable;
+    uint32_t save_owner = current_save_owner();
+    bool requested_write = (desired_access & 0x40000000u) != 0u;
+    bool profile_path = is_profile_path(host_path);
+    if (requested_write && recomp_save_pending() &&
+        ((profile_path && !recomp_save_active(save_owner)) ||
+         (recomp_save_active(save_owner) && !profile_path))) {
+        if (host_handle != INVALID_HANDLE_VALUE) CloseHandle(host_handle);
+        recomp_stop(2, "save:unexpected-open-path-or-owner");
+    }
+    if (requested_write && is_writable && !is_directory) {
+        if (host_handle != INVALID_HANDLE_VALUE) CloseHandle(host_handle);
+        host_handle = create_host_file(host_path, desired_access, share_access, 1u);
+        status = host_handle != INVALID_HANDLE_VALUE
+            ? RECOMP_STATUS_SUCCESS : RECOMP_STATUS_OBJECT_NAME_NOT_FOUND;
+        policy = host_handle != INVALID_HANDLE_VALUE
+            ? "host-save-file-open" : "host-save-file-open-failed";
+    }
 
     if (host_handle != INVALID_HANDLE_VALUE) {
         guest_handle = register_file_handle(
@@ -711,6 +805,20 @@ static void bridge_nt_open_file(void)
         if (guest_handle == 0u) {
             status = RECOMP_STATUS_NO_MEMORY;
         }
+    }
+
+    if (requested_write && profile_path && status == RECOMP_STATUS_SUCCESS) {
+        for (size_t i = 0; i < MAX_FILE_HANDLES; ++i) {
+            if (file_handles[i].active && file_handles[i].guest_handle == guest_handle &&
+                file_handles[i].kind == FILE_HANDLE_HOST_FILE) {
+                file_handles[i].save_write = 1;
+                file_handles[i].save_owner = save_owner;
+                break;
+            }
+        }
+    }
+    if (requested_write && status != RECOMP_STATUS_SUCCESS) {
+        recomp_save_note_failure(save_owner);
     }
 
     fprintf(
@@ -762,6 +870,19 @@ static void bridge_nt_create_file(void)
     policy = resolve_and_open(
         object_attributes, guest_path, host_path,
         &host_handle, &is_directory, &is_writable, &status);
+
+    uint32_t save_owner = current_save_owner();
+    bool profile_path = is_profile_path(host_path);
+    bool mutation = (desired_access & GENERIC_WRITE_ACCESS) != 0u ||
+        create_disposition != FILE_OPEN_DISPOSITION;
+    if (mutation && recomp_save_pending() &&
+        ((profile_path && !recomp_save_active(save_owner)) ||
+         (recomp_save_active(save_owner) && !profile_path))) {
+        if (host_handle != INVALID_HANDLE_VALUE) {
+            CloseHandle(host_handle);
+        }
+        recomp_stop(2, "save:unexpected-write-path-or-owner");
+    }
 
     if (is_writable && (create_options & 1u) != 0u) {
         if (host_handle != INVALID_HANDLE_VALUE) {
@@ -852,6 +973,22 @@ static void bridge_nt_create_file(void)
         if (guest_handle == 0u) {
             status = RECOMP_STATUS_NO_MEMORY;
         }
+    }
+
+    if (profile_path && (desired_access & GENERIC_WRITE_ACCESS) != 0u &&
+        status == RECOMP_STATUS_SUCCESS) {
+        for (size_t i = 0; i < MAX_FILE_HANDLES; ++i) {
+            if (file_handles[i].active && file_handles[i].guest_handle == guest_handle &&
+                file_handles[i].kind == FILE_HANDLE_HOST_FILE) {
+                file_handles[i].save_write = 1;
+                file_handles[i].save_owner = save_owner;
+                break;
+            }
+        }
+    }
+    if (mutation && recomp_save_active(save_owner) &&
+        (status != RECOMP_STATUS_SUCCESS || guest_handle == 0u)) {
+        recomp_save_note_failure(save_owner);
     }
 
     fprintf(
@@ -987,6 +1124,7 @@ static void bridge_nt_set_information_file(void)
 
     uint32_t status = RECOMP_STATUS_INVALID_HANDLE;
     uint64_t value = 0u;
+    bool required_save_io = false;
     const char *policy = "invalid-handle";
 
     if (file_information != 0u && length >= 8u) {
@@ -1000,6 +1138,14 @@ static void bridge_nt_set_information_file(void)
             continue;
         }
 
+        required_save_io = file_handles[i].save_write ||
+            file_information_class == FILE_END_OF_FILE_INFORMATION;
+        if (required_save_io && !save_write_allowed(&file_handles[i])) {
+            status = 0xc0000001u;
+            policy = "save-write-owner-rejected";
+            break;
+        }
+
         if (file_handles[i].kind == FILE_HANDLE_PSEUDO) {
             status = RECOMP_STATUS_SUCCESS;
             policy = "pseudo-handle-accepted";
@@ -1007,7 +1153,7 @@ static void bridge_nt_set_information_file(void)
         }
 
         if (file_information_class == FILE_POSITION_INFORMATION) {
-            if (length < 8u) {
+            if (length < 8u || file_information == 0u) {
                 status = 0xc0000004u; /* STATUS_INFO_LENGTH_MISMATCH */
                 policy = "position-length-mismatch";
                 break;
@@ -1025,7 +1171,7 @@ static void bridge_nt_set_information_file(void)
             LARGE_INTEGER move;
             HANDLE host = file_handles[i].host_handle;
 
-            if (length < 8u) {
+            if (length < 8u || file_information == 0u) {
                 status = 0xc0000004u;
                 policy = "end-of-file-length-mismatch";
                 break;
@@ -1054,6 +1200,10 @@ static void bridge_nt_set_information_file(void)
             ? "allocation-hint-accepted"
             : "class-accepted-without-action";
         break;
+    }
+
+    if (required_save_io && status != RECOMP_STATUS_SUCCESS) {
+        recomp_save_note_failure(current_save_owner());
     }
 
     if (io_status_block != 0u) {
@@ -1204,6 +1354,7 @@ static void bridge_nt_write_file(void)
     uint64_t write_offset = 0u;
     const char *policy = "invalid-file-handle";
     int tracked_handle_seen = 0;
+    bool interrupt_after_write = false;
 
     for (size_t i = 0; i < MAX_FILE_HANDLES; ++i) {
         if (!file_handles[i].active ||
@@ -1212,6 +1363,11 @@ static void bridge_nt_write_file(void)
         }
 
         tracked_handle_seen = 1;
+        if (!save_write_allowed(&file_handles[i])) {
+            status = RECOMP_STATUS_UNSUCCESSFUL;
+            policy = "save-write-owner-rejected";
+            break;
+        }
         write_offset = file_handles[i].cursor;
         if (byte_offset != 0u) {
             write_offset = *recomp_memory_u32(byte_offset);
@@ -1244,11 +1400,20 @@ static void bridge_nt_write_file(void)
         const void *host_buffer = length == 0u
             ? NULL
             : (const void *)recomp_memory_i8(buffer);
+        bool owned_write = length != 0u && file_handles[i].save_write &&
+            recomp_save_active(current_save_owner());
+        DWORD host_length = length;
+        if (owned_write) {
+            ++save_write_number;
+            if (save_fault_write("RECOMP_SAVE_SHORT_WRITE_AT") == save_write_number) {
+                host_length /= 2u;
+            }
+        }
         DWORD host_bytes_written = 0u;
         if (!WriteFile(
                 file_handles[i].host_handle,
                 host_buffer,
-                length,
+                host_length,
                 &host_bytes_written,
                 NULL)) {
             status = RECOMP_STATUS_UNSUCCESSFUL;
@@ -1258,13 +1423,20 @@ static void bridge_nt_write_file(void)
 
         bytes_written = host_bytes_written;
         file_handles[i].cursor = write_offset + bytes_written;
-        status = RECOMP_STATUS_SUCCESS;
-        policy = "host-file-write";
+        status = bytes_written == length
+            ? RECOMP_STATUS_SUCCESS : RECOMP_STATUS_UNSUCCESSFUL;
+        policy = bytes_written == length ? "host-file-write" : "host-file-short-write";
+        interrupt_after_write = owned_write && bytes_written == length &&
+            save_fault_write("RECOMP_SAVE_INTERRUPT_AFTER_WRITE") == save_write_number;
         break;
     }
 
     if (!tracked_handle_seen) {
         policy = "untracked-file-handle";
+    }
+
+    if (status != RECOMP_STATUS_SUCCESS || bytes_written != length) {
+        recomp_save_note_failure(current_save_owner());
     }
 
     if (io_status_block != 0u) {
@@ -1283,6 +1455,13 @@ static void bridge_nt_write_file(void)
         (unsigned)bytes_written,
         policy,
         (unsigned)status);
+
+    if (interrupt_after_write) {
+        fprintf(stderr, "recomp save fault: interrupt after write=%u\n", save_write_number);
+        fflush(stderr);
+        TerminateProcess(GetCurrentProcess(), 92u);
+        abort();
+    }
 
     kernel_return(8u, status);
 }
@@ -1591,19 +1770,36 @@ static void bridge_nt_query_symbolic_link_object(void)
 static void bridge_nt_close(void)
 {
     uint32_t guest_handle = kernel_arg(1u);
+    uint32_t status = RECOMP_STATUS_SUCCESS;
 
     ensure_symbolic_links_initialized();
     (void)recomp_symbolic_link_close(&symbolic_links, guest_handle);
     for (size_t i = 0; i < MAX_FILE_HANDLES; ++i) {
-        if (file_handles[i].active && file_handles[i].guest_handle == guest_handle) {
-            if (file_handles[i].host_handle != INVALID_HANDLE_VALUE) {
-                CloseHandle(file_handles[i].host_handle);
-            }
-            file_handles[i].active = 0;
-            break;
+        FileHandleEntry *entry = &file_handles[i];
+        if (!entry->active || entry->guest_handle != guest_handle) {
+            continue;
         }
+        if (entry->host_handle != INVALID_HANDLE_VALUE) {
+            if (entry->save_write && !save_write_allowed(entry)) {
+                status = 0xc0000001u;
+            }
+            if (entry->save_write && !FlushFileBuffers(entry->host_handle)) {
+                status = 0xc0000001u;
+            }
+            if (!CloseHandle(entry->host_handle)) {
+                status = 0xc0000001u;
+            } else {
+                entry->active = 0;
+            }
+        } else {
+            entry->active = 0;
+        }
+        if (entry->save_write && status != RECOMP_STATUS_SUCCESS) {
+            recomp_save_note_failure(entry->save_owner);
+        }
+        break;
     }
-    kernel_return(1u, RECOMP_STATUS_SUCCESS);
+    kernel_return(1u, status);
 }
 
 RecompFunction recomp_kernel_file(uint32_t ordinal)

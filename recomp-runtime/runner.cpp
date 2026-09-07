@@ -1,8 +1,10 @@
+#include "save_transaction.h"
 #include "host_diagnostics.h"
 #ifdef RECOMP_FULL_PROGRAM
 #include "cri_service_adapter.h"
 #include "audio_output.h"
 #include "d3d_presenter.h"
+#include "d3d_frame_adapter.h"
 #include "fiber_adapter.h"
 #include "input_adapter.h"
 #include "input_host_win32.h"
@@ -18,22 +20,60 @@
 #endif
 
 #include <algorithm>
+#include <cerrno>
+#include <chrono>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cwchar>
 #include <filesystem>
 #include <iostream>
 #include <limits>
 #include <string>
 #include <vector>
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 namespace {
 
 extern "C" const char *recomp_disc_root_path;
 
+#if defined(_WIN32) && defined(RECOMP_FULL_PROGRAM)
+BOOL WINAPI handleConsoleControl(DWORD event)
+{
+    if (event != CTRL_C_EVENT && event != CTRL_BREAK_EVENT) {
+        return FALSE;
+    }
+    recomp_d3d_frame_adapter_request_console_break();
+    return TRUE;
+}
+#endif
+
 constexpr std::size_t kRamSize = 64u * 1024u * 1024u;
 constexpr std::uint32_t kStackTop = 0x00f7fff0u;
 constexpr std::uint32_t kKernelDataBase = 0x00740000u;
+std::uint64_t inputHostAfterPoll = 0u;
+std::uint64_t inputWaitAfterPoll = 0u;
+std::string inputResumeFile;
+std::string inputPausedAnalogFile;
+
+bool inputResumeFileExists()
+{
+    std::error_code error;
+    const bool exists = std::filesystem::exists(inputResumeFile, error);
+    if (error || (exists &&
+            !std::filesystem::is_regular_file(inputResumeFile, error))) {
+        std::cerr << "recomp input: invalid resume file: " << inputResumeFile
+                  << " (" << error.message() << ")\n";
+        std::exit(64);
+    }
+    return exists;
+}
 
 extern "C" void xbe_entry_point(void);
 #ifdef RECOMP_FULL_PROGRAM
@@ -42,8 +82,140 @@ extern "C" RecompFunction recomp_program_lookup(
 
 RecompInputPulseSource inputPulseSource;
 
+void samplePausedAnalogFile()
+{
+    if (inputPausedAnalogFile.empty() || !inputPulseSource.paused ||
+        inputPulseSource.pending_samples != 0u) {
+        return;
+    }
+    using Clock = std::chrono::steady_clock;
+    static Clock::time_point retry_deadline;
+    static const char *retry_operation = nullptr;
+    static std::error_code retry_error;
+    const auto fail = [](const char *operation, const std::error_code &error) {
+        std::cerr << "recomp input: invalid/unreadable paused analog file: "
+                  << inputPausedAnalogFile << " operation=" << operation
+                  << " error=" << error.category().name() << ':' << error.value()
+                  << " (" << error.message() << ")\n";
+        std::exit(64);
+    };
+    const auto io_error = [&](const char *operation, const std::error_code &error) {
+#ifdef _WIN32
+        if (error.category() == std::system_category() &&
+            (error.value() == ERROR_SHARING_VIOLATION ||
+             error.value() == ERROR_LOCK_VIOLATION)) {
+            const auto now = Clock::now();
+            if (retry_operation == nullptr) {
+                retry_deadline = now + std::chrono::milliseconds(250);
+            }
+            retry_operation = operation;
+            retry_error = error;
+            if (now < retry_deadline) { return; }
+        }
+#endif
+        fail(operation, error);
+    };
+    const auto crt_error = []() {
+        const int value = errno;
+#ifdef _WIN32
+        unsigned long os_error = 0u;
+        _get_doserrno(&os_error);
+        if (os_error != 0u) {
+            return std::error_code(static_cast<int>(os_error), std::system_category());
+        }
+#endif
+        return std::error_code(value, std::generic_category());
+    };
+    std::error_code error;
+    const bool exists = std::filesystem::exists(inputPausedAnalogFile, error);
+    if (error) { io_error("exists", error); return; }
+    if (!exists) { retry_operation = nullptr; return; }
+    if (retry_operation != nullptr && Clock::now() >= retry_deadline) {
+        fail(retry_operation, retry_error);
+    }
+    const bool regular = std::filesystem::is_regular_file(inputPausedAnalogFile, error);
+    if (error) { io_error("file-type", error); return; }
+    if (!regular) { fail("file-type", {}); }
+#ifdef _WIN32
+    _set_doserrno(0u);
+#endif
+    FILE *file = std::fopen(inputPausedAnalogFile.c_str(), "rb");
+    if (file == nullptr) { io_error("open", crt_error()); return; }
+    char command[8]{};
+#ifdef _WIN32
+    _set_doserrno(0u);
+#endif
+    const std::size_t size = std::fread(command, 1u, sizeof command, file);
+    const std::error_code read_error = crt_error();
+    const bool read_failed = std::ferror(file) != 0;
+    std::fclose(file);
+    if (read_failed) { io_error("read", read_error); return; }
+    const bool digital = command[0] == 'd';
+    const std::size_t length = digital ? 5u : 1u;
+    if (!(size == length || (size == length + 1u && command[length] == '\n') ||
+          (size == length + 2u && command[length] == '\r' && command[length + 1u] == '\n'))) {
+        fail("command-format", {});
+    }
+    std::uint16_t mask = 0u;
+    std::uint8_t index = 0u;
+    if (digital) {
+        for (std::size_t i = 1u; i < length; ++i) {
+            const char digit = command[i];
+            unsigned value = 0u;
+            if (digit >= '0' && digit <= '9') { value = digit - '0'; }
+            else if (digit >= 'a' && digit <= 'f') { value = digit - 'a' + 10u; }
+            else if (digit >= 'A' && digit <= 'F') { value = digit - 'A' + 10u; }
+            else { fail("command-format", {}); }
+            mask = static_cast<std::uint16_t>((mask << 4u) | value);
+        }
+        if (mask == 0u || (mask & 0xff00u) != 0u) { fail("command-format", {}); }
+    } else {
+        if (command[0] < '0' || command[0] > '7') { fail("command-format", {}); }
+        index = static_cast<std::uint8_t>(command[0] - '0');
+    }
+    const bool removed = std::filesystem::remove(inputPausedAnalogFile, error);
+    if (error) { io_error("remove", error); return; }
+    if (!removed) { fail("remove", {}); }
+    retry_operation = nullptr;
+    const bool queued = digital
+        ? recomp_input_pulse_source_press_buttons(&inputPulseSource, mask)
+        : recomp_input_pulse_source_press_analog(&inputPulseSource, index);
+    if (!queued) { fail("queue-pulse", {}); }
+    if (digital) {
+        std::cerr << "recomp input: paused digital pulse mask=0x" << std::hex
+                  << static_cast<unsigned>(mask) << std::dec;
+    } else {
+        std::cerr << "recomp input: paused analog pulse index="
+                  << static_cast<unsigned>(index);
+    }
+    std::cerr << " script_poll=" << inputPulseSource.sample_count << '\n';
+}
+
 bool sampleInputPulse(RecompInputGamepad *gamepad)
 {
+    if (inputWaitAfterPoll != 0u &&
+        inputPulseSource.sample_count >= inputWaitAfterPoll) {
+        if (!inputPulseSource.paused) {
+            inputPulseSource.paused = true;
+            std::cerr << "recomp input: script waiting after poll="
+                      << inputPulseSource.sample_count << '\n';
+        }
+        if (inputPulseSource.pending_samples == 0u &&
+            inputResumeFileExists()) {
+            inputPulseSource.paused = false;
+            inputWaitAfterPoll = 0u;
+            std::cerr << "recomp input: script resumed after poll="
+                      << inputPulseSource.sample_count << '\n';
+        }
+    }
+    if (inputHostAfterPoll != 0u &&
+        inputPulseSource.sample_count >= inputHostAfterPoll &&
+        inputPulseSource.base == nullptr) {
+        inputPulseSource.base = recomp_input_host_sample;
+        std::cerr << "recomp input: host enabled after poll="
+                  << inputPulseSource.sample_count << '\n';
+    }
+    samplePausedAnalogFile();
     return recomp_input_pulse_source_sample(&inputPulseSource, gamepad);
 }
 #endif
@@ -300,7 +472,9 @@ std::vector<AnalogPulse> inputAnalogPulses;
             arg == "--stop-at" || arg == "--milestone-log" ||
             arg == "--input-start-pulse-at" ||
             arg == "--input-a-pulse-at" || arg == "--input-buttons-at" ||
-            arg == "--input-analog-at";
+            arg == "--input-analog-at" || arg == "--input-host-after-poll" ||
+            arg == "--input-wait-after-poll" || arg == "--input-resume-file" ||
+            arg == "--input-paused-analog-file";
 
         if (wantsValue && i + 1 >= argc) {
             std::cerr << "recomp runner: " << arg << " needs a value\n";
@@ -316,6 +490,35 @@ std::vector<AnalogPulse> inputAnalogPulses;
             stopAt = argv[++i];
         } else if (arg == "--milestone-log") {
             milestoneLog = argv[++i];
+        } else if (arg == "--input-wait-after-poll") {
+            const std::string value = argv[++i];
+            if (!parsePositiveU64(value, inputWaitAfterPoll) ||
+                inputWaitAfterPoll == std::numeric_limits<std::uint64_t>::max()) {
+                std::cerr << "recomp runner: invalid input wait poll '"
+                          << value << "'\n";
+                return 64;
+            }
+            inputStartPulseEnabled = true;
+        } else if (arg == "--input-resume-file") {
+            inputResumeFile = argv[++i];
+            if (inputResumeFile.empty()) {
+                std::cerr << "recomp runner: empty input resume file\n";
+                return 64;
+            }
+        } else if (arg == "--input-paused-analog-file") {
+            inputPausedAnalogFile = argv[++i];
+            if (inputPausedAnalogFile.empty()) {
+                std::cerr << "recomp runner: empty paused analog file\n";
+                return 64;
+            }
+        } else if (arg == "--input-host-after-poll") {
+            const std::string value = argv[++i];
+            if (!parsePositiveU64(value, inputHostAfterPoll)) {
+                std::cerr << "recomp runner: invalid host handover poll '"
+                          << value << "'\n";
+                return 64;
+            }
+            inputStartPulseEnabled = true;
         } else if (arg == "--input-start-pulse-at") {
             const std::string value = argv[++i];
             std::uint64_t parsedPoll = 0u;
@@ -467,9 +670,51 @@ std::vector<AnalogPulse> inputAnalogPulses;
                          " [--expect-stop <id>] [--stop-at <id>]"
                          " [--milestone-log <path>]"
                          " [--vsync]"
+                         " [--input-host-after-poll <poll>]"
+                         " [--input-wait-after-poll <poll> --input-resume-file <path>]"
+                         " [--input-paused-analog-file <path>]"
                          " [--input-start-pulse-at <poll>]"
                          " [--input-buttons-at <poll>:<hexmask>]"
                          " [--input-analog-at <poll>:<index>:<value>]\n";
+            return 64;
+        }
+    }
+    if ((inputWaitAfterPoll != 0u) != !inputResumeFile.empty() ||
+        (inputWaitAfterPoll != 0u && inputHostAfterPoll != 0u)) {
+        std::cerr << "recomp runner: input wait needs a resume file and cannot"
+                     " be combined with host handover\n";
+        return 64;
+    }
+    if (inputWaitAfterPoll != 0u && inputResumeFileExists()) {
+        std::cerr << "recomp runner: input resume file already exists\n";
+        return 64;
+    }
+    bool sameInputFiles = false;
+    if (!inputPausedAnalogFile.empty() && !inputResumeFile.empty()) {
+        std::error_code error;
+        const auto analog = std::filesystem::weakly_canonical(
+            std::filesystem::absolute(inputPausedAnalogFile, error), error);
+        if (error) { return 64; }
+        const auto resume = std::filesystem::weakly_canonical(
+            std::filesystem::absolute(inputResumeFile, error), error);
+        if (error) { return 64; }
+#ifdef _WIN32
+        sameInputFiles = _wcsicmp(analog.c_str(), resume.c_str()) == 0;
+#else
+        sameInputFiles = analog == resume;
+#endif
+    }
+    if (!inputPausedAnalogFile.empty() &&
+        (inputWaitAfterPoll == 0u || sameInputFiles)) {
+        std::cerr << "recomp runner: paused analog input needs a wait and a"
+                     " distinct file from resume\n";
+        return 64;
+    }
+    if (!inputPausedAnalogFile.empty()) {
+        std::error_code error;
+        if (std::filesystem::exists(inputPausedAnalogFile, error) || error) {
+            std::cerr << "recomp runner: paused analog file already exists"
+                         " or cannot be checked\n";
             return 64;
         }
     }
@@ -477,6 +722,9 @@ std::vector<AnalogPulse> inputAnalogPulses;
         std::cerr << "usage: recomp_runner --xbe <path>"
                      " [--expect-stop <id>] [--stop-at <id>]"
                      " [--milestone-log <path>]"
+                     " [--input-host-after-poll <poll>]"
+                     " [--input-wait-after-poll <poll> --input-resume-file <path>]"
+                     " [--input-paused-analog-file <path>]"
                      " [--input-start-pulse-at <poll>]"
                      " [--input-buttons-at <poll>:<hexmask>]"
                      " [--input-analog-at <poll>:<index>:<value>]\n";
@@ -487,6 +735,14 @@ std::vector<AnalogPulse> inputAnalogPulses;
         milestoneLog.empty() ? nullptr : milestoneLog.c_str());
     recomp_stop_configure_boundary(
         stopAt.empty() ? nullptr : stopAt.c_str());
+
+#if defined(_WIN32) && defined(RECOMP_FULL_PROGRAM)
+    if (!SetConsoleCtrlHandler(handleConsoleControl, TRUE)) {
+        std::cerr << "recomp runner: console handler installation failed: "
+                  << GetLastError() << '\n';
+        return 1;
+    }
+#endif
 
     doaxbv::XbeParser parser;
     doaxbv::XbeParseResult parsed = parser.parse(xbePath.c_str());
@@ -503,6 +759,11 @@ std::vector<AnalogPulse> inputAnalogPulses;
         }
         static std::string disc_root = parent.string();
         recomp_disc_root_path = disc_root.c_str();
+    }
+
+    if (!recomp_save_initialize(recomp_disc_root_path)) {
+        std::cerr << "recomp runner: save recovery failed; guest not started\n";
+        return 2;
     }
 
     std::vector<std::uint8_t> memory(kRamSize, 0u);

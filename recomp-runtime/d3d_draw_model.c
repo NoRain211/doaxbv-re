@@ -6,6 +6,11 @@ enum {
     /* Fixed-function FVF component bits this seam decodes. */
     RECOMP_D3D_FVF_POSITION_MASK = 0x00fu,
     RECOMP_D3D_FVF_XYZ = 0x002u,
+    RECOMP_D3D_FVF_XYZRHW = 0x004u,
+    RECOMP_D3D_FVF_XYZB1 = 0x006u,
+    RECOMP_D3D_FVF_XYZB2 = 0x008u,
+    RECOMP_D3D_FVF_XYZB3 = 0x00au,
+    RECOMP_D3D_FVF_INDEXED_WEIGHTS = 0x9000u,
     RECOMP_D3D_FVF_NORMAL = 0x010u,
     RECOMP_D3D_FVF_DIFFUSE = 0x040u,
     RECOMP_D3D_FVF_SPECULAR = 0x080u,
@@ -22,20 +27,34 @@ void recomp_d3d_draw_reset(RecompD3dDrawState *state)
 
 uint32_t recomp_d3d_fvf_stride(uint32_t fvf)
 {
+    uint32_t position = fvf & RECOMP_D3D_FVF_POSITION_MASK;
+    uint32_t blend_weight_count;
     uint32_t texture_count =
         (fvf >> RECOMP_D3D_FVF_TEXCOUNT_SHIFT) & RECOMP_D3D_FVF_TEXCOUNT_MASK;
     uint32_t size;
 
-    /* Only untransformed positions are handled; XYZRHW and blend weights
-       would change the vertex layout and the shader with it. */
-    if ((fvf & RECOMP_D3D_FVF_POSITION_MASK) != RECOMP_D3D_FVF_XYZ) {
+    /* XYZRHW bypasses transformation and cannot carry a normal. */
+    if ((fvf & RECOMP_D3D_FVF_INDEXED_WEIGHTS) != 0u ||
+        (position != RECOMP_D3D_FVF_XYZ &&
+         position != RECOMP_D3D_FVF_XYZRHW &&
+         position != RECOMP_D3D_FVF_XYZB1 &&
+         position != RECOMP_D3D_FVF_XYZB2 &&
+         position != RECOMP_D3D_FVF_XYZB3)) {
+        return 0u;
+    }
+    if (position == RECOMP_D3D_FVF_XYZRHW &&
+        (fvf & RECOMP_D3D_FVF_NORMAL) != 0u) {
         return 0u;
     }
     if (texture_count > 4u) {
         return 0u;
     }
 
-    size = 12u;
+    blend_weight_count = position == RECOMP_D3D_FVF_XYZ ||
+        position == RECOMP_D3D_FVF_XYZRHW
+        ? 0u : (position - 4u) / 2u;
+    size = position == RECOMP_D3D_FVF_XYZRHW
+        ? 16u : 12u + blend_weight_count * 4u;
     if ((fvf & RECOMP_D3D_FVF_NORMAL) != 0u) {
         size += 12u;
     }
@@ -60,7 +79,13 @@ bool recomp_d3d_fvf_layout(uint32_t fvf, RecompD3dVertexLayout *layout)
     decoded.texcoord_count =
         (fvf >> RECOMP_D3D_FVF_TEXCOUNT_SHIFT) & RECOMP_D3D_FVF_TEXCOUNT_MASK;
     decoded.position_offset = 0u;
-    offset = 12u;
+    decoded.pretransformed =
+        (fvf & RECOMP_D3D_FVF_POSITION_MASK) == RECOMP_D3D_FVF_XYZRHW;
+    decoded.blend_weight_count =
+        decoded.pretransformed ||
+        (fvf & RECOMP_D3D_FVF_POSITION_MASK) == RECOMP_D3D_FVF_XYZ
+            ? 0u : ((fvf & RECOMP_D3D_FVF_POSITION_MASK) - 4u) / 2u;
+    offset = decoded.pretransformed ? 16u : 12u + decoded.blend_weight_count * 4u;
     if ((fvf & RECOMP_D3D_FVF_NORMAL) != 0u) {
         decoded.normal_offset = offset;
         offset += 12u;

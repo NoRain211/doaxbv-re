@@ -35,6 +35,17 @@ typedef enum RecompD3dPresenterCommandType {
     RECOMP_D3D_PRESENTER_COMMAND_DRAW,
 } RecompD3dPresenterCommandType;
 
+/* Resolved by the adapter. Surface wrappers sharing pixel storage have the
+   same color descriptor; the backend never reads a guest device object. */
+typedef struct RecompD3dPresenterTarget {
+    bool offscreen;
+    bool no_depth;
+    bool custom_depth;
+    RecompD3dTextureDesc color;
+    /* Otherwise use the default host depth surface (unless no_depth). */
+    RecompD3dTextureDesc depth;
+} RecompD3dPresenterTarget;
+
 typedef struct RecompD3dPresenterClearCommand {
     bool clear_color;
     bool clear_depth;
@@ -42,6 +53,7 @@ typedef struct RecompD3dPresenterClearCommand {
     uint32_t color;
     float z;
     uint32_t stencil;
+    RecompD3dPresenterTarget target;
 } RecompD3dPresenterClearCommand;
 
 typedef struct RecompD3dPresenterPresentCommand {
@@ -63,17 +75,38 @@ typedef struct RecompD3dPresenterDrawCommand {
     const void *index_bytes;
     /* World-view-projection rows, already composed by the adapter. */
     float transform[16];
+    /* Additional world-view-projection matrices for 1..3 explicit weights. */
+    float blend_transforms[3][16];
+    uint32_t blend_weight_count;
     bool has_transform;
-    /* Depth and alpha-test state in force for this draw, already decoded by
+    /* Depth, stencil, and alpha-test state for this draw, already decoded by
        the render-state model so the presenter never sees a method number. */
     RecompD3dDepthState depth;
     RecompD3dBlendState blend;
+    /* Stage 0 selects this ARGB factor for both color and alpha. */
+    bool use_texture_factor;
+    /* Stage 1 multiplies the sampled result by this factor. */
+    bool modulate_texture_factor;
+    uint32_t texture_factor;
+    /* Measured stage-0 selection or modulation of material alpha. */
+    RecompD3dMaterialAlphaMode material_alpha_mode;
+    float material_alpha;
+    /* ponytail: exact zero illumination; full lighting needs light evaluation. */
+    bool zero_diffuse_rgb;
+    /* Exact four-source register-combiner filter; uses all four UV sets. */
+    bool four_tap_filter;
     /* Stage 0 texture for this draw. `texture_bytes` is a host-readable view
        of guest pixel memory, valid only for the duration of the submit. */
     RecompD3dTextureDesc texture;
     bool has_texture;
+    /* Storage aliases the current guest backbuffer, whose pixels are host-owned. */
+    bool texture_is_backbuffer;
     const void *texture_bytes;
     uint32_t texture_byte_count;
+    /* Bound P8 palette in guest ARGB32 order, valid during the submit. */
+    const void *palette_bytes;
+    uint32_t palette_byte_count;
+    RecompD3dPresenterTarget target;
 } RecompD3dPresenterDrawCommand;
 
 typedef struct RecompD3dPresenterCommand {
@@ -95,6 +128,7 @@ typedef enum RecompD3dPresenterError {
     RECOMP_D3D_PRESENTER_WRONG_THREAD,
     RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND,
     RECOMP_D3D_PRESENTER_COMMAND_LIMIT,
+    RECOMP_D3D_PRESENTER_CLOSED,
 } RecompD3dPresenterError;
 
 /* Lifecycle calls and submissions occur on one owning thread. Create requires

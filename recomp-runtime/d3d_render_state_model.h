@@ -78,8 +78,8 @@ bool recomp_d3d_get_simple_render_state(
     uint32_t *value);
 
 /* The subset of guest render state a host rasterizer needs to reproduce the
-   guest's depth and alpha-test behaviour. Derived from the raw NV2A methods
-   the guest wrote, so a consumer never decodes method numbers itself. */
+   guest's depth, stencil and alpha-test behaviour. Derived from raw NV2A
+   methods the guest wrote, so a consumer never decodes method numbers itself. */
 typedef enum RecompD3dCompareFunc {
     RECOMP_D3D_COMPARE_NEVER = 0,
     RECOMP_D3D_COMPARE_LESS,
@@ -91,6 +91,17 @@ typedef enum RecompD3dCompareFunc {
     RECOMP_D3D_COMPARE_ALWAYS,
 } RecompD3dCompareFunc;
 
+typedef enum RecompD3dStencilOp {
+    RECOMP_D3D_STENCIL_KEEP,
+    RECOMP_D3D_STENCIL_ZERO,
+    RECOMP_D3D_STENCIL_REPLACE,
+    RECOMP_D3D_STENCIL_INCRSAT,
+    RECOMP_D3D_STENCIL_DECRSAT,
+    RECOMP_D3D_STENCIL_INVERT,
+    RECOMP_D3D_STENCIL_INCRWRAP,
+    RECOMP_D3D_STENCIL_DECRWRAP,
+} RecompD3dStencilOp;
+
 typedef struct RecompD3dDepthState {
     bool depth_test_enable;
     bool depth_write_enable;
@@ -98,6 +109,14 @@ typedef struct RecompD3dDepthState {
     bool alpha_test_enable;
     RecompD3dCompareFunc alpha_func;
     uint32_t alpha_ref;
+    bool stencil_enable;
+    RecompD3dCompareFunc stencil_func;
+    uint32_t stencil_ref;
+    uint32_t stencil_read_mask;
+    uint32_t stencil_write_mask;
+    RecompD3dStencilOp stencil_fail;
+    RecompD3dStencilOp stencil_zfail;
+    RecompD3dStencilOp stencil_pass;
 } RecompD3dDepthState;
 
 /* Translates one NV2A GL-style comparison enum (0x0200..0x0207) into a
@@ -108,9 +127,12 @@ bool recomp_d3d_compare_func_from_nv(
     uint32_t value,
     RecompD3dCompareFunc *func);
 
-/* Reads the depth and alpha-test state the guest has established. States the
-   guest never wrote fall back to the Xbox D3D8 defaults rather than the
-   host's, because the two disagree: D3D8 defaults ZFUNC to LESSEQUAL while
+/* Returns false for an unknown operation, leaving the output untouched. */
+bool recomp_d3d_stencil_op_from_nv(uint32_t value, RecompD3dStencilOp *op);
+
+/* Reads the depth, stencil and alpha-test state the guest has established.
+   States the guest never wrote fall back to the Xbox D3D8 defaults rather
+   than the host's: D3D8 defaults ZFUNC to LESSEQUAL while
    Direct3D 11 defaults to LESS, which drops every coplanar surface the guest
    expects to win. */
 void recomp_d3d_depth_state(
@@ -142,6 +164,8 @@ typedef enum RecompD3dBlendOp {
 
 typedef struct RecompD3dBlendState {
     bool blend_enable;
+    /* Compact RGBA channel enables: R=1, G=2, B=4, A=8. */
+    uint8_t color_write_mask;
     RecompD3dBlendFactor src_factor;
     RecompD3dBlendFactor dst_factor;
     RecompD3dBlendOp op;
@@ -160,6 +184,39 @@ bool recomp_d3d_blend_op_from_nv(uint32_t value, RecompD3dBlendOp *op);
 void recomp_d3d_blend_state(
     const RecompD3dRenderStateModel *model,
     RecompD3dBlendState *state);
+
+/* The measured stage-0 path selects TFACTOR for both color and alpha. */
+bool recomp_d3d_texture_factor_selected(
+    uint32_t color_op,
+    uint32_t color_arg1,
+    uint32_t alpha_op,
+    uint32_t alpha_arg1);
+
+/* The measured final stage multiplies CURRENT by TFACTOR in both channels. */
+bool recomp_d3d_texture_factor_modulate_selected(
+    const uint32_t stage[6],
+    uint32_t next_color_op);
+
+/* No ambient, enabled lights, or material emission can contribute RGB. */
+bool recomp_d3d_diffuse_rgb_is_zero(
+    uint32_t ambient,
+    uint32_t active_light_head,
+    const float emissive[3]);
+
+typedef enum RecompD3dMaterialAlphaMode {
+    RECOMP_D3D_MATERIAL_ALPHA_NONE = 0,
+    RECOMP_D3D_MATERIAL_ALPHA_MODULATE_TEXTURE = 1,
+    RECOMP_D3D_MATERIAL_ALPHA_SELECT_DIFFUSE = 2,
+} RecompD3dMaterialAlphaMode;
+
+/* Recognizes the measured stage-0 material modes 3 and 0. */
+RecompD3dMaterialAlphaMode recomp_d3d_texture_material_alpha_mode(
+    uint32_t color_op,
+    uint32_t color_arg1,
+    uint32_t color_arg2,
+    uint32_t alpha_op,
+    uint32_t alpha_arg1,
+    uint32_t alpha_arg2);
 
 #ifdef __cplusplus
 }

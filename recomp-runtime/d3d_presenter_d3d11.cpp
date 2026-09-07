@@ -29,14 +29,17 @@ constexpr wchar_t kWindowTitle[] = L"DOAXBV Recomp";
    cached with its matching input layout.
 
    Vertex color is the guest's when the FVF carries one, otherwise the normal
-   visualized as |n|. A bound texture modulates that color; `textured` is a
-   shader constant rather than a second pipeline variant because the same FVF
-   is drawn both with and without a texture. Real lighting is a separate
+   visualized as |n|. A bound texture modulates diffuse color or supplies RGBA
+   directly when there is no diffuse component. Real lighting is a separate
    seam. */
 constexpr char kDrawShaderPrologue[] =
     "cbuffer Transform : register(b0) {\n"
-    "    row_major float4x4 wvp;\n"
+    "    row_major float4x4 wvp[4];\n"
     "    float4 draw_flags;\n"
+    "    float4 blend_flags;\n"
+    "    float4 texture_factor;\n"
+    "    float4 lighting_flags;\n"
+    "    float4 texture_flags;\n"
     "}\n"
     "Texture2D guest_texture : register(t0);\n"
     "SamplerState guest_sampler : register(s0);\n";
@@ -55,34 +58,94 @@ void buildDrawShaderSource(
         layout.diffuse_offset != RECOMP_D3D_FVF_ABSENT;
     const bool has_texcoord =
         layout.texcoord_offset != RECOMP_D3D_FVF_ABSENT;
+    const bool four_coords = layout.texcoord_count == 4u;
+    const char *extra_coords = four_coords
+        ? "    float2 texcoord1 : TEXCOORD1;\n"
+          "    float2 texcoord2 : TEXCOORD2;\n"
+          "    float2 texcoord3 : TEXCOORD3;\n" : "";
 
+    char position[768];
+    if (layout.pretransformed) {
+        std::snprintf(position, sizeof position,
+            "    output.position = mul(float4(input.position.xyz, 1.0f), wvp[0]) / input.position.w;\n");
+    } else if (layout.blend_weight_count != 0u) {
+        std::snprintf(position, sizeof position,
+            "    if (blend_flags.x > 0.5f) {\n"
+            "    output.position = float4(0, 0, 0, 0);\n"
+            "    float remainder = 1.0f;\n"
+            "    [unroll] for (uint i = 0; i < %u; ++i) {\n"
+            "        output.position += input.weights[i] * mul(float4(input.position, 1), wvp[i]);\n"
+            "        remainder -= input.weights[i];\n"
+            "    }\n"
+            "    output.position += remainder * mul(float4(input.position, 1), wvp[%u]);\n"
+            "    } else { output.position = mul(float4(input.position, 1), wvp[0]); }\n",
+            layout.blend_weight_count, layout.blend_weight_count);
+    } else {
+        std::snprintf(position, sizeof position,
+            "    output.position = mul(float4(input.position, 1.0f), wvp[0]);\n");
+    }
     std::snprintf(
         out,
         out_size,
         "%s"
         "struct VSIn {\n"
-        "    float3 position : POSITION;\n"
-        "%s%s%s"
+        "    %s position : POSITION;\n"
+        "%s%s%s%s%s"
         "};\n"
         "struct VSOut {\n"
         "    float4 position : SV_POSITION;\n"
         "    float4 color : COLOR0;\n"
         "    float2 texcoord : TEXCOORD0;\n"
+        "%s"
         "};\n"
         "VSOut vs_main(VSIn input) {\n"
         "    VSOut output;\n"
-        "    output.position = mul(float4(input.position, 1.0f), wvp);\n"
+        "%s"
+        "%s"
         "%s"
         "%s"
         "    return output;\n"
         "}\n"
         "float4 ps_main(VSOut input) : SV_TARGET {\n"
+        "    float4 shaded = input.color;\n"
         "%s"
+        "    if (blend_flags.y == 1.0f) {\n"
+        "        shaded = texture_factor;\n"
+        "    } else if (draw_flags.x > 0.5f) {\n"
+        "        float4 sampled = guest_texture.Sample(guest_sampler, input.texcoord * texture_flags.xy);\n"
+        "        if (lighting_flags.y > 0.5f) sampled.rgb = 1.0f;\n"
+        "        shaded %s sampled;\n"
+        "        if (lighting_flags.x > 0.5f) shaded.rgb = 0.0f;\n"
+        "        shaded.a = blend_flags.w > 0.5f\n"
+        "            ? blend_flags.z : shaded.a * blend_flags.z;\n"
+        "        if (blend_flags.y > 1.5f) shaded *= texture_factor;\n"
+        "    }\n"
+        /* NV2A compares rounded 8-bit alpha. Function values follow
+           RecompD3dCompareFunc, from NEVER (0) to ALWAYS (7). */
+        "    if (draw_flags.y > 0.5f) {\n"
+        "        float alpha = round(saturate(shaded.a) * 255.0f);\n"
+        "        float ref = draw_flags.w;\n"
+        "        int func = (int)draw_flags.z;\n"
+        "        bool alpha_pass = func == 7 ||\n"
+        "            (func == 1 && alpha < ref) ||\n"
+        "            (func == 2 && alpha == ref) ||\n"
+        "            (func == 3 && alpha <= ref) ||\n"
+        "            (func == 4 && alpha > ref) ||\n"
+        "            (func == 5 && alpha != ref) ||\n"
+        "            (func == 6 && alpha >= ref);\n"
+        "        if (!alpha_pass) discard;\n"
+        "    }\n"
+        "    return shaded;\n"
         "}\n",
         kDrawShaderPrologue,
+        layout.pretransformed ? "float4" : "float3",
+        layout.blend_weight_count ? "    float3 weights : BLENDWEIGHT;\n" : "",
         has_normal ? "    float3 normal : NORMAL;\n" : "",
         has_diffuse ? "    float4 diffuse : COLOR0;\n" : "",
         has_texcoord ? "    float2 texcoord : TEXCOORD0;\n" : "",
+        extra_coords,
+        extra_coords,
+        position,
         /* Guest vertex color when the stream has one; otherwise the normal
            stands in so surfaces remain distinguishable. */
         has_diffuse
@@ -94,38 +157,29 @@ void buildDrawShaderSource(
         has_texcoord
             ? "    output.texcoord = input.texcoord;\n"
             : "    output.texcoord = float2(0.0f, 0.0f);\n",
-        /* Blending is live, so a hardcoded alpha of 1.0 would saturate every
-           SRC_ALPHA-weighted blend. Pass guest alpha through when the stream
-           carries one. */
-        has_diffuse
-            ? "    float4 shaded = input.color;\n"
-              "    if (draw_flags.x > 0.5f) {\n"
-              "        shaded *= guest_texture.Sample("
-              "guest_sampler, input.texcoord);\n"
-              "    }\n"
-              "    return shaded;\n"
-            /* Without a diffuse component the fixed-function default is
-               white, so a textured draw must show the texture itself. The
-               normal stand-in only applies when nothing is bound. */
-            : "    if (draw_flags.x > 0.5f) {\n"
-              "        return float4(guest_texture.Sample("
-              "guest_sampler, input.texcoord).rgb, 1.0f);\n"
-              "    }\n"
-              "    return float4(input.color.rgb, 1.0f);\n");
+        four_coords
+            ? "    output.texcoord1 = input.texcoord1;\n"
+              "    output.texcoord2 = input.texcoord2;\n"
+              "    output.texcoord3 = input.texcoord3;\n" : "",
+        four_coords
+            ? "    if (texture_flags.z > 0.5f) {\n"
+              "        float4 t0 = guest_texture.Sample(guest_sampler, input.texcoord * texture_flags.xy);\n"
+              "        float4 t1 = guest_texture.Sample(guest_sampler, input.texcoord1 * texture_flags.xy);\n"
+              "        float4 t2 = guest_texture.Sample(guest_sampler, input.texcoord2 * texture_flags.xy);\n"
+              "        float4 t3 = guest_texture.Sample(guest_sampler, input.texcoord3 * texture_flags.xy);\n"
+              "        shaded = 0.5f * (saturate((128.0f / 255.0f) * (t0 + t1))\n"
+              "                        + saturate((128.0f / 255.0f) * (t2 + t3)));\n"
+              "    } else\n" : "",
+        /* The fixed-function diffuse default is white. Preserve texture alpha
+           before the shared alpha test and SRC_ALPHA blending. */
+        has_diffuse ? "*=" : "=");
 }
 
 LRESULT CALLBACK presenterWindowProc(
     HWND window,
     UINT message,
     WPARAM wparam,
-    LPARAM lparam)
-{
-    if (message == WM_CLOSE) {
-        DestroyWindow(window);
-        return 0;
-    }
-    return DefWindowProcW(window, message, wparam, lparam);
-}
+    LPARAM lparam);
 
 template <typename T>
 void releaseCom(T *&object)
@@ -157,6 +211,13 @@ struct DepthStateEntry {
     bool test_enable;
     bool write_enable;
     RecompD3dCompareFunc func;
+    bool stencil_enable;
+    RecompD3dCompareFunc stencil_func;
+    uint32_t stencil_read_mask;
+    uint32_t stencil_write_mask;
+    RecompD3dStencilOp stencil_fail;
+    RecompD3dStencilOp stencil_zfail;
+    RecompD3dStencilOp stencil_pass;
     ID3D11DepthStencilState *state;
 };
 
@@ -168,13 +229,14 @@ struct BlendStateEntry {
     RecompD3dBlendFactor src;
     RecompD3dBlendFactor dst;
     RecompD3dBlendOp op;
+    uint8_t color_write_mask;
     ID3D11BlendState *state;
 };
 
-/* Guest textures are uploaded once and then reused by guest address. The
-   guest reuses an address after freeing it, so the decoded shape is part of
-   the key. */
+/* Guest textures are cached by address and shape. Linear movie buffers are
+   rewritten in place, so their pixels are refreshed whenever sampled. */
 constexpr uint32_t kTextureSlots = 256u;
+constexpr uint32_t kPaletteBytes = 256u * 4u;
 
 struct TextureEntry {
     bool used;
@@ -182,7 +244,27 @@ struct TextureEntry {
     uint32_t format_byte;
     uint32_t width;
     uint32_t height;
+    uint8_t palette[kPaletteBytes];
     ID3D11ShaderResourceView *view;
+};
+
+/* Rendered pixels have no CPU copy to re-upload after texture FIFO eviction.
+   ponytail: retain 16 targets; add guest lifetime tracking if this fills. */
+constexpr uint32_t kRenderTargetSlots = 16u;
+
+struct RenderTargetEntry {
+    RecompD3dTextureDesc desc;
+    ID3D11RenderTargetView *render_view;
+    ID3D11ShaderResourceView *sample_view;
+};
+
+/* Depth belongs to its guest resource, which can serve several color targets.
+   ponytail: retain 16 depths; add guest lifetime tracking if this fills. */
+constexpr uint32_t kDepthTargetSlots = 16u;
+
+struct DepthTargetEntry {
+    RecompD3dTextureDesc desc;
+    ID3D11DepthStencilView *view;
 };
 
 } // namespace
@@ -193,10 +275,13 @@ struct RecompD3dPresenter {
     HINSTANCE instance = nullptr;
     bool owns_window_class = false;
     HWND window = nullptr;
+    bool close_requested = false;
     ID3D11Device *device = nullptr;
     ID3D11DeviceContext *context = nullptr;
     IDXGISwapChain *swap_chain = nullptr;
     ID3D11RenderTargetView *render_target_view = nullptr;
+    ID3D11Texture2D *back_buffer_copy = nullptr;
+    ID3D11ShaderResourceView *back_buffer_sample = nullptr;
     ID3D11Texture2D *depth_texture = nullptr;
     ID3D11DepthStencilView *depth_view = nullptr;
     ID3D11Buffer *draw_vertex_buffer = nullptr;
@@ -211,11 +296,19 @@ struct RecompD3dPresenter {
     uint32_t draw_pipeline_count = 0u;
     DepthStateEntry depth_states[kDepthStateSlots]{};
     uint32_t depth_state_count = 0u;
+    uint32_t next_depth_state_slot = 0u;
     BlendStateEntry blend_states[kBlendStateSlots]{};
     uint32_t blend_state_count = 0u;
+    uint32_t next_blend_state_slot = 0u;
     TextureEntry textures[kTextureSlots]{};
     uint32_t texture_count = 0u;
+    uint32_t next_texture_slot = 0u;
+    RenderTargetEntry render_targets[kRenderTargetSlots]{};
+    uint32_t render_target_count = 0u;
+    DepthTargetEntry depth_targets[kDepthTargetSlots]{};
+    uint32_t depth_target_count = 0u;
     ID3D11SamplerState *draw_sampler = nullptr;
+    ID3D11SamplerState *filter_sampler = nullptr;
     bool draw_shared_ready = false;
     bool draw_shared_failed = false;
     uint32_t draw_count = 0u;
@@ -224,6 +317,8 @@ struct RecompD3dPresenter {
     HRESULT create_result = E_FAIL;
     uint32_t present_count = 0;
     bool first_present_reported = false;
+    unsigned frame_dump_count = 0u;
+    ULONGLONG next_frame_dump_ms = 0u;
 };
 
 namespace {
@@ -231,6 +326,29 @@ namespace {
 RecompD3dPresenter *active_presenter;
 
 static bool immediate_present;
+
+LRESULT CALLBACK presenterWindowProc(
+    HWND window,
+    UINT message,
+    WPARAM wparam,
+    LPARAM lparam)
+{
+    if (message == WM_NCCREATE) {
+        const auto *creation = reinterpret_cast<const CREATESTRUCTW *>(lparam);
+        SetWindowLongPtrW(window, GWLP_USERDATA,
+            reinterpret_cast<LONG_PTR>(creation->lpCreateParams));
+    }
+    if (message == WM_CLOSE) {
+        auto *presenter = reinterpret_cast<RecompD3dPresenter *>(
+            GetWindowLongPtrW(window, GWLP_USERDATA));
+        if (presenter != nullptr) {
+            presenter->close_requested = true;
+        }
+        DestroyWindow(window);
+        return 0;
+    }
+    return DefWindowProcW(window, message, wparam, lparam);
+}
 
 bool configSupported(const RecompD3dPresenterConfig &config)
 {
@@ -267,6 +385,7 @@ void releaseGraphics(RecompD3dPresenter *presenter)
         entry.used = false;
     }
     presenter->depth_state_count = 0u;
+    presenter->next_depth_state_slot = 0u;
     for (uint32_t i = 0u; i < presenter->blend_state_count; ++i) {
         BlendStateEntry &entry = presenter->blend_states[i];
 
@@ -274,6 +393,7 @@ void releaseGraphics(RecompD3dPresenter *presenter)
         entry.used = false;
     }
     presenter->blend_state_count = 0u;
+    presenter->next_blend_state_slot = 0u;
     for (uint32_t i = 0u; i < presenter->texture_count; ++i) {
         TextureEntry &entry = presenter->textures[i];
 
@@ -281,13 +401,26 @@ void releaseGraphics(RecompD3dPresenter *presenter)
         entry.used = false;
     }
     presenter->texture_count = 0u;
+    presenter->next_texture_slot = 0u;
+    for (uint32_t i = 0u; i < presenter->render_target_count; ++i) {
+        releaseCom(presenter->render_targets[i].sample_view);
+        releaseCom(presenter->render_targets[i].render_view);
+    }
+    presenter->render_target_count = 0u;
+    for (uint32_t i = 0u; i < presenter->depth_target_count; ++i) {
+        releaseCom(presenter->depth_targets[i].view);
+    }
+    presenter->depth_target_count = 0u;
     releaseCom(presenter->draw_sampler);
+    releaseCom(presenter->filter_sampler);
     presenter->draw_vertex_capacity = 0u;
     presenter->draw_index_capacity = 0u;
     presenter->draw_shared_ready = false;
     releaseCom(presenter->depth_view);
     releaseCom(presenter->depth_texture);
     releaseCom(presenter->render_target_view);
+    releaseCom(presenter->back_buffer_sample);
+    releaseCom(presenter->back_buffer_copy);
     releaseCom(presenter->swap_chain);
     releaseCom(presenter->context);
     releaseCom(presenter->device);
@@ -348,7 +481,7 @@ bool createWindow(RecompD3dPresenter *presenter)
         nullptr,
         nullptr,
         presenter->instance,
-        nullptr);
+        presenter);
     if (presenter->window == nullptr) {
         return false;
     }
@@ -381,10 +514,11 @@ HRESULT createDeviceWithDriver(
     swap_chain_desc.SampleDesc.Count = 1u;
     swap_chain_desc.SampleDesc.Quality = 0u;
     swap_chain_desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-    swap_chain_desc.BufferCount = 1u;
+    swap_chain_desc.BufferCount = immediate_present ? 1u : 2u;
     swap_chain_desc.OutputWindow = presenter->window;
     swap_chain_desc.Windowed = TRUE;
-    swap_chain_desc.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
+    swap_chain_desc.SwapEffect = immediate_present
+        ? DXGI_SWAP_EFFECT_DISCARD : DXGI_SWAP_EFFECT_FLIP_DISCARD;
 
     return D3D11CreateDeviceAndSwapChain(
         nullptr,
@@ -478,14 +612,228 @@ HRESULT createGraphics(RecompD3dPresenter *presenter)
     return S_OK;
 }
 
+RenderTargetEntry *findRenderTarget(
+    RecompD3dPresenter *presenter,
+    const RecompD3dTextureDesc &desc)
+{
+    for (uint32_t i = 0u; i < presenter->render_target_count; ++i) {
+        RenderTargetEntry &entry = presenter->render_targets[i];
+
+        if (entry.desc.data == desc.data &&
+            entry.desc.format_byte == desc.format_byte &&
+            entry.desc.width == desc.width && entry.desc.height == desc.height) {
+            return &entry;
+        }
+    }
+    return nullptr;
+}
+
+RecompD3dPresenterError lookupDepthTarget(
+    RecompD3dPresenter *presenter,
+    const RecompD3dPresenterTarget &target,
+    uint32_t color_width,
+    uint32_t color_height,
+    ID3D11DepthStencilView *&view)
+{
+    view = nullptr;
+    if (target.no_depth) {
+        return RECOMP_D3D_PRESENTER_OK;
+    }
+    const RecompD3dTextureDesc &desc = target.depth;
+    const uint32_t width = target.custom_depth
+        ? desc.width : presenter->config.width;
+    const uint32_t height = target.custom_depth
+        ? desc.height : presenter->config.height;
+    if (width != color_width || height != color_height) {
+        std::fprintf(stderr,
+            "recomp d3d presenter: target size mismatch "
+            "color=0x%08X fmt=0x%02X size=%ux%u "
+            "depth=0x%08X fmt=0x%02X size=%ux%u custom_depth=%d\n",
+            target.color.data, target.color.format_byte, color_width, color_height,
+            desc.data, desc.format_byte, width, height,
+            target.custom_depth ? 1 : 0);
+        return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+    }
+    if (!target.custom_depth) {
+        view = presenter->depth_view;
+        return RECOMP_D3D_PRESENTER_OK;
+    }
+    if (!desc.depth || desc.data == 0u || width == 0u || height == 0u ||
+        width > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION ||
+        height > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION ||
+        (desc.format_byte != 0x2au && desc.format_byte != 0x2eu)) {
+        std::fprintf(stderr,
+            "recomp d3d presenter: unsupported depth target data=0x%08X "
+            "fmt=0x%02X size=%ux%u depth=%d\n",
+            desc.data, desc.format_byte, width, height, desc.depth ? 1 : 0);
+        return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+    }
+    for (uint32_t i = 0u; i < presenter->depth_target_count; ++i) {
+        const DepthTargetEntry &entry = presenter->depth_targets[i];
+        if (entry.desc.data == desc.data &&
+            entry.desc.format_byte == desc.format_byte &&
+            entry.desc.width == width && entry.desc.height == height) {
+            view = entry.view;
+            return RECOMP_D3D_PRESENTER_OK;
+        }
+    }
+    if (presenter->depth_target_count == kDepthTargetSlots) {
+        std::fprintf(stderr,
+            "recomp d3d presenter: depth target cache full (%u) "
+            "data=0x%08X fmt=0x%02X size=%ux%u\n",
+            kDepthTargetSlots, desc.data, desc.format_byte, width, height);
+        return RECOMP_D3D_PRESENTER_HOST_FAILURE;
+    }
+
+    D3D11_TEXTURE2D_DESC texture_desc{};
+    texture_desc.Width = width;
+    texture_desc.Height = height;
+    texture_desc.MipLevels = 1u;
+    texture_desc.ArraySize = 1u;
+    texture_desc.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
+    texture_desc.SampleDesc.Count = 1u;
+    texture_desc.Usage = D3D11_USAGE_DEFAULT;
+    texture_desc.BindFlags = D3D11_BIND_DEPTH_STENCIL;
+    ID3D11Texture2D *texture = nullptr;
+    HRESULT result = presenter->device->CreateTexture2D(
+        &texture_desc, nullptr, &texture);
+    if (SUCCEEDED(result)) {
+        result = presenter->device->CreateDepthStencilView(
+            texture, nullptr, &view);
+    }
+    releaseCom(texture);
+    if (FAILED(result)) {
+        releaseCom(view);
+        std::fprintf(stderr,
+            "recomp d3d presenter: depth target create failed "
+            "data=0x%08X fmt=0x%02X size=%ux%u hr=0x%08lX\n",
+            desc.data, desc.format_byte, width, height,
+            static_cast<unsigned long>(result));
+        return RECOMP_D3D_PRESENTER_HOST_FAILURE;
+    }
+    presenter->depth_targets[presenter->depth_target_count++] = {desc, view};
+    std::fprintf(stderr,
+        "recomp d3d presenter: depth target data=0x%08X fmt=0x%02X size=%ux%u\n",
+        desc.data, desc.format_byte, width, height);
+    return RECOMP_D3D_PRESENTER_OK;
+}
+
+RecompD3dPresenterError bindTarget(
+    RecompD3dPresenter *presenter,
+    const RecompD3dPresenterTarget &target,
+    ID3D11RenderTargetView *&color_view,
+    ID3D11DepthStencilView *&depth_view)
+{
+    color_view = presenter->render_target_view;
+    uint32_t width = presenter->config.width;
+    uint32_t height = presenter->config.height;
+
+    if (target.offscreen) {
+        const RecompD3dTextureDesc &desc = target.color;
+        if (desc.depth || desc.data == 0u ||
+            desc.width == 0u || desc.height == 0u ||
+            desc.width > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION ||
+            desc.height > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION ||
+            (desc.format_byte != RECOMP_D3D_TEXTURE_FORMAT_A8R8G8B8 &&
+             desc.format_byte != 0x12u)) {
+            std::fprintf(stderr,
+                "recomp d3d presenter: unsupported target data=0x%08X "
+                "fmt=0x%02X size=%ux%u no_depth=%d\n",
+                desc.data, desc.format_byte, desc.width, desc.height,
+                target.no_depth ? 1 : 0);
+            return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+        }
+
+        RenderTargetEntry *entry = findRenderTarget(presenter, desc);
+        if (entry == nullptr) {
+            if (presenter->render_target_count == kRenderTargetSlots) {
+                std::fprintf(stderr,
+                    "recomp d3d presenter: render target cache full (%u)\n",
+                    kRenderTargetSlots);
+                return RECOMP_D3D_PRESENTER_HOST_FAILURE;
+            }
+            D3D11_TEXTURE2D_DESC texture_desc{};
+            texture_desc.Width = desc.width;
+            texture_desc.Height = desc.height;
+            texture_desc.MipLevels = 1u;
+            texture_desc.ArraySize = 1u;
+            texture_desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+            texture_desc.SampleDesc.Count = 1u;
+            texture_desc.Usage = D3D11_USAGE_DEFAULT;
+            texture_desc.BindFlags =
+                D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+
+            ID3D11Texture2D *texture = nullptr;
+            RenderTargetEntry created{};
+            HRESULT result = presenter->device->CreateTexture2D(
+                &texture_desc, nullptr, &texture);
+            if (SUCCEEDED(result)) {
+                result = presenter->device->CreateRenderTargetView(
+                    texture, nullptr, &created.render_view);
+            }
+            if (SUCCEEDED(result)) {
+                result = presenter->device->CreateShaderResourceView(
+                    texture, nullptr, &created.sample_view);
+            }
+            releaseCom(texture);
+            if (FAILED(result)) {
+                releaseCom(created.sample_view);
+                releaseCom(created.render_view);
+                std::fprintf(stderr,
+                    "recomp d3d presenter: render target create failed "
+                    "data=0x%08X fmt=0x%02X size=%ux%u hr=0x%08lX\n",
+                    desc.data, desc.format_byte, desc.width, desc.height,
+                    static_cast<unsigned long>(result));
+                return RECOMP_D3D_PRESENTER_HOST_FAILURE;
+            }
+            created.desc = desc;
+            entry = &presenter->render_targets[presenter->render_target_count++];
+            *entry = created;
+            std::fprintf(stderr,
+                "recomp d3d presenter: render target data=0x%08X "
+                "fmt=0x%02X size=%ux%u\n",
+                desc.data, desc.format_byte, desc.width, desc.height);
+        }
+        color_view = entry->render_view;
+        width = desc.width;
+        height = desc.height;
+    }
+
+    const RecompD3dPresenterError depth_result =
+        lookupDepthTarget(presenter, target, width, height, depth_view);
+    if (depth_result != RECOMP_D3D_PRESENTER_OK) {
+        return depth_result;
+    }
+
+    /* Clear can write a previously sampled target too. Switch the output
+       before rebinding t0 so sampling the previous output remains valid. */
+    ID3D11ShaderResourceView *no_texture = nullptr;
+    presenter->context->PSSetShaderResources(0u, 1u, &no_texture);
+    presenter->context->OMSetRenderTargets(1u, &color_view, depth_view);
+    const D3D11_VIEWPORT viewport = {
+        0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height),
+        0.0f, 1.0f,
+    };
+    presenter->context->RSSetViewports(1u, &viewport);
+    return RECOMP_D3D_PRESENTER_OK;
+}
+
 RecompD3dPresenterError submitClear(
     RecompD3dPresenter *presenter,
     const RecompD3dPresenterClearCommand &clear)
 {
-    if (!clear.clear_color || !clear.clear_depth ||
-        !clear.clear_stencil || !std::isfinite(clear.z) ||
-        clear.z < 0.0f || clear.z > 1.0f || clear.stencil > 0xffu) {
+    if ((clear.clear_depth &&
+         (!std::isfinite(clear.z) || clear.z < 0.0f || clear.z > 1.0f)) ||
+        (clear.clear_stencil && clear.stencil > 0xffu)) {
         return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+    }
+
+    ID3D11RenderTargetView *color_view;
+    ID3D11DepthStencilView *depth_view;
+    const RecompD3dPresenterError target_result =
+        bindTarget(presenter, clear.target, color_view, depth_view);
+    if (target_result != RECOMP_D3D_PRESENTER_OK) {
+        return target_result;
     }
 
     constexpr float byte_to_float = 1.0f / 255.0f;
@@ -495,13 +843,25 @@ RecompD3dPresenterError submitClear(
         static_cast<float>(clear.color & 0xffu) * byte_to_float,
         static_cast<float>((clear.color >> 24u) & 0xffu) * byte_to_float,
     };
-    presenter->context->ClearRenderTargetView(
-        presenter->render_target_view, color);
-    presenter->context->ClearDepthStencilView(
-        presenter->depth_view,
-        D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL,
-        clear.z,
-        static_cast<UINT8>(clear.stencil));
+    if (clear.clear_color) {
+        presenter->context->ClearRenderTargetView(
+            color_view, color);
+    }
+    UINT depth_stencil_flags = 0u;
+    if (clear.clear_depth) {
+        depth_stencil_flags |= D3D11_CLEAR_DEPTH;
+    }
+    if (clear.clear_stencil) {
+        depth_stencil_flags |= D3D11_CLEAR_STENCIL;
+    }
+    /* The guest ignores depth/stencil clear bits when no depth is attached. */
+    if (depth_stencil_flags != 0u && depth_view != nullptr) {
+        presenter->context->ClearDepthStencilView(
+            depth_view,
+            depth_stencil_flags,
+            clear.z,
+            static_cast<UINT8>(clear.stencil));
+    }
     return FAILED(presenter->device->GetDeviceRemovedReason())
         ? RECOMP_D3D_PRESENTER_HOST_FAILURE
         : RECOMP_D3D_PRESENTER_OK;
@@ -554,7 +914,7 @@ bool createDrawPipeline(
         return false;
     }
 
-    char source[2048];
+    char source[8192];
     buildDrawShaderSource(layout, source, sizeof source);
 
     ID3DBlob *vertex_blob = nullptr;
@@ -579,12 +939,21 @@ bool createDrawPipeline(
             &pipeline.pixel_shader);
     }
     if (SUCCEEDED(result)) {
-        D3D11_INPUT_ELEMENT_DESC elements[4]{};
+        D3D11_INPUT_ELEMENT_DESC elements[8]{};
         UINT count = 0u;
 
         elements[count++] = {
-            "POSITION", 0u, DXGI_FORMAT_R32G32B32_FLOAT, 0u,
+            "POSITION", 0u, layout.pretransformed
+                ? DXGI_FORMAT_R32G32B32A32_FLOAT : DXGI_FORMAT_R32G32B32_FLOAT, 0u,
             layout.position_offset, D3D11_INPUT_PER_VERTEX_DATA, 0u};
+        if (layout.blend_weight_count != 0u) {
+            const DXGI_FORMAT formats[] = {
+                DXGI_FORMAT_R32_FLOAT, DXGI_FORMAT_R32G32_FLOAT,
+                DXGI_FORMAT_R32G32B32_FLOAT};
+            elements[count++] = {
+                "BLENDWEIGHT", 0u, formats[layout.blend_weight_count - 1u], 0u,
+                12u, D3D11_INPUT_PER_VERTEX_DATA, 0u};
+        }
         if (layout.normal_offset != RECOMP_D3D_FVF_ABSENT) {
             elements[count++] = {
                 "NORMAL", 0u, DXGI_FORMAT_R32G32B32_FLOAT, 0u,
@@ -597,10 +966,12 @@ bool createDrawPipeline(
                 "COLOR", 0u, DXGI_FORMAT_B8G8R8A8_UNORM, 0u,
                 layout.diffuse_offset, D3D11_INPUT_PER_VERTEX_DATA, 0u};
         }
-        if (layout.texcoord_offset != RECOMP_D3D_FVF_ABSENT) {
+        const uint32_t texture_coords = layout.texcoord_count == 4u ? 4u
+            : (layout.texcoord_count != 0u ? 1u : 0u);
+        for (uint32_t i = 0u; i < texture_coords; ++i) {
             elements[count++] = {
-                "TEXCOORD", 0u, DXGI_FORMAT_R32G32_FLOAT, 0u,
-                layout.texcoord_offset, D3D11_INPUT_PER_VERTEX_DATA, 0u};
+                "TEXCOORD", i, DXGI_FORMAT_R32G32_FLOAT, 0u,
+                layout.texcoord_offset + i * 8u, D3D11_INPUT_PER_VERTEX_DATA, 0u};
         }
         result = presenter->device->CreateInputLayout(
             elements,
@@ -651,8 +1022,8 @@ bool ensureSharedDrawState(RecompD3dPresenter *presenter)
 
     HRESULT result;
     D3D11_BUFFER_DESC constant_desc{};
-    /* 4x4 transform plus one float4 of draw flags. */
-    constant_desc.ByteWidth = 80u;
+    /* Four WVP matrices, draw/blend flags, and RGBA texture factor. */
+    constant_desc.ByteWidth = 336u;
     constant_desc.Usage = D3D11_USAGE_DYNAMIC;
     constant_desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     constant_desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
@@ -688,6 +1059,12 @@ bool ensureSharedDrawState(RecompD3dPresenter *presenter)
     if (FAILED(result)) {
         return false;
     }
+    sampler_desc.Filter = D3D11_FILTER_MIN_MAG_LINEAR_MIP_POINT;
+    sampler_desc.AddressU = sampler_desc.AddressV = sampler_desc.AddressW =
+        D3D11_TEXTURE_ADDRESS_CLAMP;
+    result = presenter->device->CreateSamplerState(
+        &sampler_desc, &presenter->filter_sampler);
+    if (FAILED(result)) return false;
 
     presenter->draw_shared_failed = false;
     presenter->draw_shared_ready = true;
@@ -791,9 +1168,29 @@ D3D11_COMPARISON_FUNC hostCompareFunc(RecompD3dCompareFunc func)
     }
 }
 
-/* Returns the depth-stencil state for one decoded guest depth state, creating
-   it on first use. Returns null when the cache is full or creation fails, so
-   the caller can fall back to the host default rather than skip the draw. */
+D3D11_STENCIL_OP hostStencilOp(RecompD3dStencilOp op)
+{
+    switch (op) {
+    case RECOMP_D3D_STENCIL_ZERO:
+        return D3D11_STENCIL_OP_ZERO;
+    case RECOMP_D3D_STENCIL_REPLACE:
+        return D3D11_STENCIL_OP_REPLACE;
+    case RECOMP_D3D_STENCIL_INCRSAT:
+        return D3D11_STENCIL_OP_INCR_SAT;
+    case RECOMP_D3D_STENCIL_DECRSAT:
+        return D3D11_STENCIL_OP_DECR_SAT;
+    case RECOMP_D3D_STENCIL_INVERT:
+        return D3D11_STENCIL_OP_INVERT;
+    case RECOMP_D3D_STENCIL_INCRWRAP:
+        return D3D11_STENCIL_OP_INCR;
+    case RECOMP_D3D_STENCIL_DECRWRAP:
+        return D3D11_STENCIL_OP_DECR;
+    case RECOMP_D3D_STENCIL_KEEP:
+    default:
+        return D3D11_STENCIL_OP_KEEP;
+    }
+}
+
 ID3D11DepthStencilState *lookupDepthState(
     RecompD3dPresenter *presenter,
     const RecompD3dDepthState &depth)
@@ -803,12 +1200,16 @@ ID3D11DepthStencilState *lookupDepthState(
 
         if (entry.used && entry.test_enable == depth.depth_test_enable &&
             entry.write_enable == depth.depth_write_enable &&
-            entry.func == depth.depth_func) {
+            entry.func == depth.depth_func &&
+            entry.stencil_enable == depth.stencil_enable &&
+            entry.stencil_func == depth.stencil_func &&
+            entry.stencil_read_mask == depth.stencil_read_mask &&
+            entry.stencil_write_mask == depth.stencil_write_mask &&
+            entry.stencil_fail == depth.stencil_fail &&
+            entry.stencil_zfail == depth.stencil_zfail &&
+            entry.stencil_pass == depth.stencil_pass) {
             return entry.state;
         }
-    }
-    if (presenter->depth_state_count == kDepthStateSlots) {
-        return nullptr;
     }
 
     D3D11_DEPTH_STENCIL_DESC desc{};
@@ -817,26 +1218,52 @@ ID3D11DepthStencilState *lookupDepthState(
         ? D3D11_DEPTH_WRITE_MASK_ALL
         : D3D11_DEPTH_WRITE_MASK_ZERO;
     desc.DepthFunc = hostCompareFunc(depth.depth_func);
-    desc.StencilEnable = FALSE;
+    desc.StencilEnable = depth.stencil_enable ? TRUE : FALSE;
+    desc.StencilReadMask = static_cast<UINT8>(depth.stencil_read_mask);
+    desc.StencilWriteMask = static_cast<UINT8>(depth.stencil_write_mask);
+    desc.FrontFace.StencilFunc = hostCompareFunc(depth.stencil_func);
+    desc.FrontFace.StencilFailOp = hostStencilOp(depth.stencil_fail);
+    desc.FrontFace.StencilDepthFailOp = hostStencilOp(depth.stencil_zfail);
+    desc.FrontFace.StencilPassOp = hostStencilOp(depth.stencil_pass);
+    desc.BackFace = desc.FrontFace;
 
     ID3D11DepthStencilState *state = nullptr;
     if (FAILED(presenter->device->CreateDepthStencilState(&desc, &state))) {
         return nullptr;
     }
 
+    // ponytail: FIFO eviction; track recent use if state creation churn is costly.
     DepthStateEntry &entry =
-        presenter->depth_states[presenter->depth_state_count++];
+        presenter->depth_states[presenter->next_depth_state_slot];
+    releaseCom(entry.state);
+    presenter->next_depth_state_slot =
+        (presenter->next_depth_state_slot + 1u) % kDepthStateSlots;
+    if (presenter->depth_state_count < kDepthStateSlots) {
+        ++presenter->depth_state_count;
+    }
     entry.used = true;
     entry.test_enable = depth.depth_test_enable;
     entry.write_enable = depth.depth_write_enable;
     entry.func = depth.depth_func;
+    entry.stencil_enable = depth.stencil_enable;
+    entry.stencil_func = depth.stencil_func;
+    entry.stencil_read_mask = depth.stencil_read_mask;
+    entry.stencil_write_mask = depth.stencil_write_mask;
+    entry.stencil_fail = depth.stencil_fail;
+    entry.stencil_zfail = depth.stencil_zfail;
+    entry.stencil_pass = depth.stencil_pass;
     entry.state = state;
-    std::fprintf(
-        stderr,
-        "recomp d3d presenter: depth state test=%d write=%d func=%d\n",
-        depth.depth_test_enable ? 1 : 0,
-        depth.depth_write_enable ? 1 : 0,
-        static_cast<int>(depth.depth_func));
+    static unsigned depth_state_lines;
+    if (depth_state_lines < kDepthStateSlots) {
+        ++depth_state_lines;
+        std::fprintf(
+            stderr,
+            "recomp d3d presenter: depth state test=%d write=%d func=%d stencil=%d\n",
+            depth.depth_test_enable ? 1 : 0,
+            depth.depth_write_enable ? 1 : 0,
+            static_cast<int>(depth.depth_func),
+            depth.stencil_enable ? 1 : 0);
+    }
     return state;
 }
 
@@ -889,8 +1316,6 @@ D3D11_BLEND_OP hostBlendOp(RecompD3dBlendOp op)
     }
 }
 
-/* Returns the blend state for one decoded guest blend state, creating it on
-   first use. Null falls back to the host default, which is blending off. */
 /* Xbox block-compressed formats map straight onto the host equivalents, and
    both store 4x4 blocks in the same order, so the guest bytes upload as-is.
    The uncompressed formats need unswizzling first. */
@@ -904,6 +1329,7 @@ DXGI_FORMAT hostTextureFormat(uint32_t format_byte)
     case RECOMP_D3D_TEXTURE_FORMAT_DXT5:
         return DXGI_FORMAT_BC3_UNORM;
     case RECOMP_D3D_TEXTURE_FORMAT_A8R8G8B8:
+    case RECOMP_D3D_TEXTURE_FORMAT_P8:
         return DXGI_FORMAT_B8G8R8A8_UNORM;
     case RECOMP_D3D_TEXTURE_FORMAT_A8:
         return DXGI_FORMAT_A8_UNORM;
@@ -943,27 +1369,95 @@ void recompD3dPresenterCountDrawTexture(
     }
 }
 
+ID3D11ShaderResourceView *lookupBackBufferTexture(
+    RecompD3dPresenter *presenter,
+    const RecompD3dTextureDesc &desc)
+{
+    if (desc.format_byte != 0x12u || !desc.linear || desc.depth ||
+        desc.width != presenter->config.width ||
+        desc.height != presenter->config.height ||
+        presenter->render_target_view == nullptr) return nullptr;
+
+    if (presenter->back_buffer_copy == nullptr) {
+        D3D11_TEXTURE2D_DESC texture_desc{};
+        texture_desc.Width = desc.width;
+        texture_desc.Height = desc.height;
+        texture_desc.MipLevels = texture_desc.ArraySize = 1u;
+        texture_desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+        texture_desc.SampleDesc.Count = 1u;
+        texture_desc.Usage = D3D11_USAGE_DEFAULT;
+        texture_desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        HRESULT result = presenter->device->CreateTexture2D(
+            &texture_desc, nullptr, &presenter->back_buffer_copy);
+        if (SUCCEEDED(result)) {
+            result = presenter->device->CreateShaderResourceView(
+                presenter->back_buffer_copy, nullptr, &presenter->back_buffer_sample);
+        }
+        if (FAILED(result)) {
+            releaseCom(presenter->back_buffer_sample);
+            releaseCom(presenter->back_buffer_copy);
+            return nullptr;
+        }
+    }
+    /* Sampling observes the current render buffer at this draw, even if the
+       preceding draw sampled an older copy. Keep the copy outside the FIFO. */
+    ID3D11ShaderResourceView *none = nullptr;
+    presenter->context->PSSetShaderResources(0u, 1u, &none);
+    ID3D11Resource *source = nullptr;
+    presenter->render_target_view->GetResource(&source);
+    presenter->context->CopyResource(presenter->back_buffer_copy, source);
+    releaseCom(source);
+    return presenter->back_buffer_sample;
+}
+
 ID3D11ShaderResourceView *lookupTexture(
     RecompD3dPresenter *presenter,
     const RecompD3dPresenterDrawCommand &draw)
 {
     const RecompD3dTextureDesc &desc = draw.texture;
+    const bool palettized = desc.format_byte == RECOMP_D3D_TEXTURE_FORMAT_P8;
+    const bool linear_bgra = desc.format_byte == 0x12u;
 
+    if (draw.texture_is_backbuffer) return lookupBackBufferTexture(presenter, desc);
+
+    if (palettized && (draw.palette_bytes == nullptr ||
+        draw.palette_byte_count != kPaletteBytes)) {
+        return nullptr;
+    }
+
+    if (RenderTargetEntry *entry = findRenderTarget(presenter, desc)) {
+        return entry->sample_view;
+    }
+    if (linear_bgra && (!desc.linear || desc.depth ||
+        desc.bits_per_pixel != 32u || desc.width == 0u || desc.height == 0u ||
+        desc.width > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION ||
+        desc.height > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION ||
+        desc.pitch < desc.width * 4u || draw.texture_bytes == nullptr ||
+        static_cast<uint64_t>(desc.height - 1u) * desc.pitch + desc.width * 4u >
+            draw.texture_byte_count)) {
+        return nullptr;
+    }
     for (uint32_t i = 0u; i < presenter->texture_count; ++i) {
         TextureEntry &entry = presenter->textures[i];
 
         if (entry.used && entry.data == desc.data &&
             entry.format_byte == desc.format_byte &&
-            entry.width == desc.width && entry.height == desc.height) {
+            entry.width == desc.width && entry.height == desc.height &&
+            (!palettized || std::memcmp(entry.palette, draw.palette_bytes, kPaletteBytes) == 0)) {
+            if (linear_bgra) {
+                ID3D11Resource *resource = nullptr;
+                entry.view->GetResource(&resource);
+                presenter->context->UpdateSubresource(
+                    resource, 0u, nullptr, draw.texture_bytes, desc.pitch, 0u);
+                releaseCom(resource);
+            }
             return entry.view;
         }
     }
-    if (presenter->texture_count == kTextureSlots) {
-        return nullptr;
-    }
-
-    const DXGI_FORMAT format = hostTextureFormat(desc.format_byte);
-    if (format == DXGI_FORMAT_UNKNOWN) {
+    const DXGI_FORMAT format = linear_bgra
+        ? DXGI_FORMAT_B8G8R8A8_UNORM : hostTextureFormat(desc.format_byte);
+    if (format == DXGI_FORMAT_UNKNOWN || draw.texture_bytes == nullptr ||
+        draw.texture_byte_count == 0u || (desc.linear && !linear_bgra)) {
         return nullptr;
     }
 
@@ -974,13 +1468,38 @@ ID3D11ShaderResourceView *lookupTexture(
     texture_desc.ArraySize = 1u;
     texture_desc.Format = format;
     texture_desc.SampleDesc.Count = 1u;
-    texture_desc.Usage = D3D11_USAGE_IMMUTABLE;
+    texture_desc.Usage = linear_bgra ? D3D11_USAGE_DEFAULT : D3D11_USAGE_IMMUTABLE;
     texture_desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
 
     D3D11_SUBRESOURCE_DATA initial{};
     std::vector<uint8_t> unswizzled;
 
-    if (isSwizzledTextureFormat(desc.format_byte)) {
+    if (linear_bgra) {
+        initial.pSysMem = draw.texture_bytes;
+        initial.SysMemPitch = desc.pitch;
+    } else if (palettized) {
+        const size_t texels = static_cast<size_t>(desc.width) * desc.height;
+        if (desc.width == 0u || desc.height == 0u ||
+            desc.width > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION ||
+            desc.height > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION ||
+            texels > draw.texture_byte_count) {
+            return nullptr;
+        }
+        std::vector<uint8_t> indices(texels);
+        if (!recomp_d3d_texture_unswizzle(
+                static_cast<const uint8_t *>(draw.texture_bytes),
+                indices.data(), desc.width, desc.height, 1u)) {
+            return nullptr;
+        }
+        unswizzled.resize(texels * 4u);
+        const auto *palette = static_cast<const uint8_t *>(draw.palette_bytes);
+        for (size_t i = 0u; i < texels; ++i) {
+            /* Little-endian ARGB palette words are already BGRA bytes. */
+            std::memcpy(unswizzled.data() + i * 4u, palette + indices[i] * 4u, 4u);
+        }
+        initial.pSysMem = unswizzled.data();
+        initial.SysMemPitch = desc.width * 4u;
+    } else if (isSwizzledTextureFormat(desc.format_byte)) {
         const uint32_t texel_bytes = desc.bits_per_pixel / 8u;
 
         unswizzled.resize(
@@ -1018,12 +1537,20 @@ ID3D11ShaderResourceView *lookupTexture(
         return nullptr;
     }
 
-    TextureEntry &entry = presenter->textures[presenter->texture_count++];
+    // ponytail: FIFO eviction; track recent use if upload churn is costly.
+    TextureEntry &entry = presenter->textures[presenter->next_texture_slot];
+    releaseCom(entry.view);
+    presenter->next_texture_slot =
+        (presenter->next_texture_slot + 1u) % kTextureSlots;
+    if (presenter->texture_count < kTextureSlots) {
+        ++presenter->texture_count;
+    }
     entry.used = true;
     entry.data = desc.data;
     entry.format_byte = desc.format_byte;
     entry.width = desc.width;
     entry.height = desc.height;
+    if (palettized) std::memcpy(entry.palette, draw.palette_bytes, kPaletteBytes);
     entry.view = view;
     return view;
 }
@@ -1037,12 +1564,10 @@ ID3D11BlendState *lookupBlendState(
 
         if (entry.used && entry.enable == blend.blend_enable &&
             entry.src == blend.src_factor && entry.dst == blend.dst_factor &&
-            entry.op == blend.op) {
+            entry.op == blend.op &&
+            entry.color_write_mask == blend.color_write_mask) {
             return entry.state;
         }
-    }
-    if (presenter->blend_state_count == kBlendStateSlots) {
-        return nullptr;
     }
 
     D3D11_BLEND_DESC desc{};
@@ -1054,28 +1579,41 @@ ID3D11BlendState *lookupBlendState(
     target.SrcBlendAlpha = hostBlendFactor(blend.src_factor, true);
     target.DestBlendAlpha = hostBlendFactor(blend.dst_factor, true);
     target.BlendOpAlpha = hostBlendOp(blend.op);
-    target.RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+    target.RenderTargetWriteMask = blend.color_write_mask;
 
     ID3D11BlendState *state = nullptr;
     if (FAILED(presenter->device->CreateBlendState(&desc, &state))) {
         return nullptr;
     }
 
+    // ponytail: FIFO eviction; track recent use if state creation churn is costly.
     BlendStateEntry &entry =
-        presenter->blend_states[presenter->blend_state_count++];
+        presenter->blend_states[presenter->next_blend_state_slot];
+    releaseCom(entry.state);
+    presenter->next_blend_state_slot =
+        (presenter->next_blend_state_slot + 1u) % kBlendStateSlots;
+    if (presenter->blend_state_count < kBlendStateSlots) {
+        ++presenter->blend_state_count;
+    }
     entry.used = true;
     entry.enable = blend.blend_enable;
     entry.src = blend.src_factor;
     entry.dst = blend.dst_factor;
     entry.op = blend.op;
+    entry.color_write_mask = blend.color_write_mask;
     entry.state = state;
-    std::fprintf(
-        stderr,
-        "recomp d3d presenter: blend state enable=%d src=%d dst=%d op=%d\n",
-        blend.blend_enable ? 1 : 0,
-        static_cast<int>(blend.src_factor),
-        static_cast<int>(blend.dst_factor),
-        static_cast<int>(blend.op));
+    static unsigned blend_state_lines;
+    if (blend_state_lines < kBlendStateSlots) {
+        ++blend_state_lines;
+        std::fprintf(
+            stderr,
+            "recomp d3d presenter: blend state enable=%d src=%d dst=%d op=%d mask=0x%02X\n",
+            blend.blend_enable ? 1 : 0,
+            static_cast<int>(blend.src_factor),
+            static_cast<int>(blend.dst_factor),
+            static_cast<int>(blend.op),
+            static_cast<unsigned>(blend.color_write_mask));
+    }
     return state;
 }
 
@@ -1085,7 +1623,16 @@ RecompD3dPresenterError submitDraw(
 {
     if (draw.vertex_bytes == nullptr || draw.index_bytes == nullptr ||
         draw.vertex_stride == 0u || draw.vertex_count == 0u ||
-        draw.index_count == 0u || !draw.has_transform) {
+        draw.index_count == 0u) {
+        return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+    }
+
+    RecompD3dVertexLayout layout;
+    if (!recomp_d3d_fvf_layout(draw.fvf, &layout) ||
+        layout.stride != draw.vertex_stride ||
+        (!layout.pretransformed && !draw.has_transform) ||
+        (draw.blend_weight_count != 0u &&
+         layout.blend_weight_count != draw.blend_weight_count)) {
         return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
     }
 
@@ -1111,6 +1658,23 @@ RecompD3dPresenterError submitDraw(
     const DrawPipeline *pipeline = lookupDrawPipeline(presenter, draw.fvf);
     if (pipeline == nullptr) {
         return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+    }
+
+    ID3D11RenderTargetView *color_view;
+    ID3D11DepthStencilView *depth_view;
+    const RecompD3dPresenterError target_result =
+        bindTarget(presenter, draw.target, color_view, depth_view);
+    if (target_result != RECOMP_D3D_PRESENTER_OK) {
+        return target_result;
+    }
+    if (draw.has_texture) {
+        const RenderTargetEntry *sampled = findRenderTarget(presenter, draw.texture);
+        if (sampled != nullptr && sampled->render_view == color_view) {
+            std::fprintf(stderr,
+                "recomp d3d presenter: cannot sample active render target "
+                "data=0x%08X\n", draw.texture.data);
+            return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+        }
     }
 
     const UINT vertex_size = draw.vertex_stride * draw.vertex_count;
@@ -1153,15 +1717,58 @@ RecompD3dPresenterError submitDraw(
     const UINT index_size = draw_index_count * 2u;
     ID3D11ShaderResourceView *texture_view =
         draw.has_texture ? lookupTexture(presenter, draw) : nullptr;
+    if (draw.four_tap_filter && texture_view == nullptr) {
+        return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+    }
     /* Observation only: bind counts say what the guest selected, not what a
        draw actually consumed, and only the latter can explain the frame. */
     recompD3dPresenterCountDrawTexture(draw, texture_view != nullptr);
-    float draw_constants[20];
+    float draw_constants[84]{};
     std::memcpy(draw_constants, draw.transform, sizeof draw.transform);
-    draw_constants[16] = texture_view != nullptr ? 1.0f : 0.0f;
-    draw_constants[17] = 0.0f;
-    draw_constants[18] = 0.0f;
-    draw_constants[19] = 0.0f;
+    std::memcpy(draw_constants + 16, draw.blend_transforms, sizeof draw.blend_transforms);
+    if (layout.pretransformed) {
+        D3D11_VIEWPORT viewport{};
+        UINT count = 1u;
+        presenter->context->RSGetViewports(&count, &viewport);
+        if (count != 1u || viewport.Width <= 0.0f || viewport.Height <= 0.0f ||
+            viewport.MaxDepth <= viewport.MinDepth) {
+            return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+        }
+        /* Undo the bound viewport; legacy pixel centers are integers, while
+           D3D11 centers are half integers. The shader restores clip W from RHW. */
+        std::memset(draw_constants, 0, sizeof draw.transform);
+        draw_constants[0] = 2.0f / viewport.Width;
+        draw_constants[5] = -2.0f / viewport.Height;
+        draw_constants[10] = 1.0f / (viewport.MaxDepth - viewport.MinDepth);
+        draw_constants[12] = -1.0f + (0.5f - viewport.TopLeftX) * draw_constants[0];
+        draw_constants[13] = 1.0f + (0.5f - viewport.TopLeftY) * draw_constants[5];
+        draw_constants[14] = -viewport.MinDepth * draw_constants[10];
+        draw_constants[15] = 1.0f;
+    }
+    draw_constants[64] = texture_view != nullptr ? 1.0f : 0.0f;
+    draw_constants[65] = draw.depth.alpha_test_enable ? 1.0f : 0.0f;
+    draw_constants[66] = static_cast<float>(draw.depth.alpha_func);
+    draw_constants[67] = static_cast<float>(draw.depth.alpha_ref);
+    draw_constants[68] = draw.blend_weight_count != 0u ? 1.0f : 0.0f;
+    draw_constants[69] = draw.use_texture_factor ? 1.0f
+        : (draw.modulate_texture_factor ? 2.0f : 0.0f);
+    draw_constants[70] = draw.material_alpha_mode == RECOMP_D3D_MATERIAL_ALPHA_NONE
+        ? 1.0f : draw.material_alpha;
+    draw_constants[71] = draw.material_alpha_mode == RECOMP_D3D_MATERIAL_ALPHA_SELECT_DIFFUSE
+        ? 1.0f : 0.0f;
+    draw_constants[72] = ((draw.texture_factor >> 16u) & 0xffu) / 255.0f;
+    draw_constants[73] = ((draw.texture_factor >> 8u) & 0xffu) / 255.0f;
+    draw_constants[74] = (draw.texture_factor & 0xffu) / 255.0f;
+    draw_constants[75] = ((draw.texture_factor >> 24u) & 0xffu) / 255.0f;
+    draw_constants[76] = draw.zero_diffuse_rgb ? 1.0f : 0.0f;
+    /* NV2A A8 supplies white RGB; DXGI A8 supplies only alpha. */
+    draw_constants[77] = draw.texture.format_byte == RECOMP_D3D_TEXTURE_FORMAT_A8
+        ? 1.0f : 0.0f;
+    draw_constants[80] = draw.texture.linear && draw.texture.width != 0u
+        ? 1.0f / draw.texture.width : 1.0f;
+    draw_constants[81] = draw.texture.linear && draw.texture.height != 0u
+        ? 1.0f / draw.texture.height : 1.0f;
+    draw_constants[82] = draw.four_tap_filter ? 1.0f : 0.0f;
 
     if (!ensureDynamicBuffer(
             presenter,
@@ -1197,20 +1804,27 @@ RecompD3dPresenterError submitDraw(
     presenter->context->PSSetConstantBuffers(
         0u, 1u, &presenter->draw_constant_buffer);
     presenter->context->PSSetShaderResources(0u, 1u, &texture_view);
-    presenter->context->PSSetSamplers(0u, 1u, &presenter->draw_sampler);
+    ID3D11SamplerState *sampler = draw.four_tap_filter
+        ? presenter->filter_sampler : presenter->draw_sampler;
+    presenter->context->PSSetSamplers(0u, 1u, &sampler);
     presenter->context->RSSetState(presenter->draw_rasterizer_state);
-    presenter->context->OMSetDepthStencilState(
-        lookupDepthState(presenter, draw.depth), 0u);
+    ID3D11DepthStencilState *depth_state = lookupDepthState(presenter, draw.depth);
+    if (depth_state == nullptr) {
+        return RECOMP_D3D_PRESENTER_HOST_FAILURE;
+    }
+    presenter->context->OMSetDepthStencilState(depth_state, draw.depth.stencil_ref);
     {
         const float blend_factor[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+        ID3D11BlendState *blend_state = lookupBlendState(presenter, draw.blend);
+        if (blend_state == nullptr) {
+            return RECOMP_D3D_PRESENTER_HOST_FAILURE;
+        }
 
         presenter->context->OMSetBlendState(
-            lookupBlendState(presenter, draw.blend),
+            blend_state,
             blend_factor,
             0xffffffffu);
     }
-    presenter->context->OMSetRenderTargets(
-        1u, &presenter->render_target_view, presenter->depth_view);
     presenter->context->DrawIndexed(draw_index_count, 0u, 0);
     ++presenter->draw_count;
 
@@ -1324,13 +1938,21 @@ bool pumpMessages()
     return true;
 }
 
-/* Writes one BMP of the back buffer after the requested present, when
-   RECOMP_D3D_FRAME_DUMP names a path and RECOMP_D3D_FRAME_DUMP_AT names a
-   present index. BMP keeps this dependency-free; the gate does the analysis. */
-void dumpBackBufferOnce(RecompD3dPresenter *presenter)
+bool frameDumpDue(ULONGLONG now, unsigned interval_ms, ULONGLONG &next)
 {
-    static unsigned dumped = 0u;
+    if (interval_ms != 0u && now < next) {
+        return false;
+    }
+    /* Missed captures are skipped, never replayed in a catch-up burst. */
+    next = now + interval_ms;
+    return true;
+}
 
+/* RECOMP_D3D_FRAME_DUMP names the BMP path; AT and COUNT select presents.
+   INTERVAL_MS optionally spaces captures in host time. Capture stays inside
+   the renderer, without cross-process window painting or missed-frame bursts. */
+void dumpBackBufferOnce(RecompD3dPresenter *presenter, uint32_t present_count)
+{
     const char *path = std::getenv("RECOMP_D3D_FRAME_DUMP");
     if (path == nullptr) {
         return;
@@ -1343,18 +1965,26 @@ void dumpBackBufferOnce(RecompD3dPresenter *presenter)
     const unsigned count = count_text != nullptr
         ? static_cast<unsigned>(std::strtoul(count_text, nullptr, 10))
         : 1u;
-    if (dumped >= (count == 0u ? 1u : count)) {
+    if (presenter->frame_dump_count >= (count == 0u ? 1u : count)) {
         return;
     }
     const char *at_text = std::getenv("RECOMP_D3D_FRAME_DUMP_AT");
     const unsigned at = at_text != nullptr
         ? static_cast<unsigned>(std::strtoul(at_text, nullptr, 10))
         : 1u;
-    if (presenter->present_count < at) {
+    if (present_count < at) {
         return;
     }
-    const unsigned dump_index = dumped;
-    ++dumped;
+    const char *interval_text =
+        std::getenv("RECOMP_D3D_FRAME_DUMP_INTERVAL_MS");
+    const unsigned interval_ms = interval_text != nullptr
+        ? static_cast<unsigned>(std::strtoul(interval_text, nullptr, 10))
+        : 0u;
+    if (!frameDumpDue(GetTickCount64(), interval_ms,
+            presenter->next_frame_dump_ms)) {
+        return;
+    }
+    const unsigned dump_index = presenter->frame_dump_count++;
 
     /* One name per frame in a burst; the single-dump case keeps the exact
        path it always used so existing gates and receipts still match. */
@@ -1435,12 +2065,13 @@ void dumpBackBufferOnce(RecompD3dPresenter *presenter)
                 stderr,
                 "recomp d3d presenter: frame dump path=%s size=%ux%u present=%u\n",
                 path, width, height,
-                static_cast<unsigned>(presenter->present_count));
+                static_cast<unsigned>(present_count));
         }
         presenter->context->Unmap(staging, 0u);
     }
     staging->Release();
     back_buffer->Release();
+    presenter->next_frame_dump_ms = GetTickCount64() + interval_ms;
 }
 
 RecompD3dPresenterError submitPresent(
@@ -1454,6 +2085,9 @@ RecompD3dPresenterError submitPresent(
        so a stop here named the symptom and not the cause. Name each one. */
     {
         const bool pumped = pumpMessages();
+        if (pumped && presenter->close_requested) {
+            return RECOMP_D3D_PRESENTER_CLOSED;
+        }
         if (!pumped || !IsWindow(presenter->window)) {
             std::fprintf(
                 stderr,
@@ -1473,6 +2107,9 @@ RecompD3dPresenterError submitPresent(
        unconditionally meant the throttled path was never actually throttled:
        every frame was retired immediately and only the blocking behaviour
        changed. Pace to one refresh unless immediate presenting is asked for. */
+    // Capture the rendered buffer before flip presentation releases it.
+    dumpBackBufferOnce(presenter, presenter->present_count + 1u);
+
     const HRESULT present_result = presenter->swap_chain->Present(
         immediate_present ? 0u : 1u,
         immediate_present ? DXGI_PRESENT_DO_NOT_WAIT : 0u);
@@ -1494,12 +2131,17 @@ RecompD3dPresenterError submitPresent(
        captured rectangle is whatever is topmost at that screen position, so a
        run can "pass" on desktop pixels. Reading the back buffer here measures
        what this program actually rendered. Opt-in, and off by default. */
-    dumpBackBufferOnce(presenter);
 
     if (!presenter->first_present_reported) {
         ShowWindow(presenter->window, SW_SHOW);
         UpdateWindow(presenter->window);
-        if (!pumpMessages() || !IsWindow(presenter->window)) {
+        if (!pumpMessages()) {
+            return RECOMP_D3D_PRESENTER_HOST_FAILURE;
+        }
+        if (presenter->close_requested) {
+            return RECOMP_D3D_PRESENTER_CLOSED;
+        }
+        if (!IsWindow(presenter->window)) {
             return RECOMP_D3D_PRESENTER_HOST_FAILURE;
         }
         RECT client_rect{};

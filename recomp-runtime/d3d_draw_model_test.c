@@ -11,6 +11,11 @@ void sub_001E78B0(void)
     recomp_runtime.registers.esp += 16u;
 }
 
+void sub_001E7750(void)
+{
+    recomp_runtime.registers.esp += 20u;
+}
+
 static int expect_u32(const char *field, uint32_t actual, uint32_t expected)
 {
     if (actual == expected) {
@@ -44,10 +49,9 @@ int recomp_d3d_draw_model_test(void)
     passed &= expect_u32("fvf 0x0112 xyz only", recomp_d3d_fvf_stride(0x002u), 12u);
     passed &= expect_u32(
         "fvf diffuse", recomp_d3d_fvf_stride(0x042u), 16u);
-    /* XYZRHW positions are pre-transformed and are not handled by this seam. */
-    passed &= expect_u32("fvf xyzrhw rejected", recomp_d3d_fvf_stride(0x004u), 0u);
+    passed &= expect_u32("fvf xyzrhw stride", recomp_d3d_fvf_stride(0x004u), 16u);
 
-    /* Both FVFs this title actually draws with. 0x142 carries a diffuse color
+    /* Two unweighted FVFs this title draws with. 0x142 carries a diffuse color
        where 0x112 carries a normal, so their texcoords sit at different
        offsets: a consumer using one fixed layout for both reads the wrong
        bytes for whichever it was not built from. */
@@ -60,6 +64,8 @@ int recomp_d3d_draw_model_test(void)
             1u);
         passed &= expect_u32("layout 0x112 stride", layout.stride, 32u);
         passed &= expect_u32("layout 0x112 position", layout.position_offset, 0u);
+        passed &= expect_u32("layout 0x112 pretransformed", layout.pretransformed, 0u);
+        passed &= expect_u32("layout 0x112 weights", layout.blend_weight_count, 0u);
         passed &= expect_u32("layout 0x112 normal", layout.normal_offset, 12u);
         passed &= expect_u32(
             "layout 0x112 diffuse",
@@ -73,6 +79,7 @@ int recomp_d3d_draw_model_test(void)
             recomp_d3d_fvf_layout(0x142u, &layout) ? 1u : 0u,
             1u);
         passed &= expect_u32("layout 0x142 stride", layout.stride, 24u);
+        passed &= expect_u32("layout 0x142 weights", layout.blend_weight_count, 0u);
         passed &= expect_u32(
             "layout 0x142 normal",
             layout.normal_offset,
@@ -87,9 +94,53 @@ int recomp_d3d_draw_model_test(void)
             recomp_d3d_fvf_stride(0x142u));
 
         passed &= expect_u32(
-            "layout xyzrhw rejected",
-            recomp_d3d_fvf_layout(0x004u, &layout) ? 1u : 0u,
-            0u);
+            "layout glyph decoded",
+            recomp_d3d_fvf_layout(0x144u, &layout) ? 1u : 0u,
+            1u);
+        passed &= expect_u32("layout glyph stride", layout.stride, 28u);
+        passed &= expect_u32("layout glyph stride matches", layout.stride,
+            recomp_d3d_fvf_stride(0x144u));
+        passed &= expect_u32("layout glyph pretransformed", layout.pretransformed, 1u);
+        passed &= expect_u32("layout glyph position", layout.position_offset, 0u);
+        passed &= expect_u32("layout glyph weights", layout.blend_weight_count, 0u);
+        passed &= expect_u32("layout glyph normal", layout.normal_offset, RECOMP_D3D_FVF_ABSENT);
+        passed &= expect_u32("layout glyph diffuse", layout.diffuse_offset, 16u);
+        passed &= expect_u32("layout glyph texcoord", layout.texcoord_offset, 20u);
+        passed &= expect_u32("layout glyph texcoord count", layout.texcoord_count, 1u);
+    }
+
+    for (uint32_t weights = 1u; weights <= 3u; ++weights) {
+        uint32_t fvf = 0x110u | (4u + weights * 2u);
+        RecompD3dVertexLayout layout = {0};
+
+        passed &= expect_u32("weighted stride", recomp_d3d_fvf_stride(fvf),
+            32u + weights * 4u);
+        passed &= expect_u32("weighted layout decoded",
+            recomp_d3d_fvf_layout(fvf, &layout) ? 1u : 0u, 1u);
+        passed &= expect_u32("weighted layout count", layout.blend_weight_count, weights);
+        passed &= expect_u32("weighted layout position", layout.position_offset, 0u);
+        passed &= expect_u32("weighted layout pretransformed", layout.pretransformed, 0u);
+        passed &= expect_u32("weighted layout normal", layout.normal_offset, 12u + weights * 4u);
+        passed &= expect_u32("weighted layout texcoord", layout.texcoord_offset, 24u + weights * 4u);
+        passed &= expect_u32("weighted layout stride", layout.stride, 32u + weights * 4u);
+    }
+    {
+        const uint32_t invalid[] = {
+            0x114u, 0x11cu, 0x11eu,
+            0x1116u, 0x1118u, 0x111au,
+            0x8116u, 0x8118u, 0x811au,
+        };
+
+        for (uint32_t i = 0u; i < sizeof invalid / sizeof invalid[0]; ++i) {
+            RecompD3dVertexLayout layout = {0};
+
+            layout.stride = 123u;
+            passed &= expect_u32("unsupported weighted stride",
+                recomp_d3d_fvf_stride(invalid[i]), 0u);
+            passed &= expect_u32("unsupported weighted layout",
+                recomp_d3d_fvf_layout(invalid[i], &layout) ? 1u : 0u, 0u);
+            passed &= expect_u32("rejected layout untouched", layout.stride, 123u);
+        }
     }
 
     passed &= expect_u32(

@@ -73,5 +73,14 @@
     ".sav",
     ".jsonl"
   ],
-  "byte_literal_exceptions": []
+  "byte_literal_exceptions": [
+    {
+      "sha256": "649c5b82067b429cdbd2ad9709a090db5dbaae0bb32dc1a7b00b01479efc37ed",
+      "reason": "Synthetic DXT3 fixture: repeated alpha nibbles, RGB565 red endpoint and zero color selectors in d3d_presenter_d3d11_test.cpp."
+    },
+    {
+      "sha256": "549c541390990688b916a69888bff39b2218b567bd17f774097cf1b217356ed4",
+      "reason": "Synthetic DXT1 fixture: RGB565 white/black endpoints and zero selectors in d3d_presenter_d3d11_test.cpp."
+    }
+  ]
 }

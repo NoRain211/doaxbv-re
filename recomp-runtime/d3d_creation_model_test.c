@@ -1,6 +1,8 @@
 #include "d3d_creation_adapter.h"
 #include "d3d_creation_model.h"
 #include "d3d_presenter_memory_test.h"
+#include "d3d_render_state_adapter.h"
+#include "kernel_abi.h"
 #include "program_manual.h"
 #include "runtime.h"
 #include "xbox_memory_layout.h"
@@ -60,6 +62,18 @@ static RecompD3dPresentationParameters observed_presentation(void)
         .buffer_surfaces = {0x00a23ab0u, 0x00a23ac8u, 0u},
         .depth_stencil_surface = 0x00a23ae0u,
     };
+}
+
+static RecompD3dPresentationParameters observed_activity_reset(void)
+{
+    RecompD3dPresentationParameters presentation = observed_presentation();
+
+    presentation.multi_sample_type = 0x00002021u;
+    presentation.flags = 0x00000010u;
+    presentation.buffer_surfaces[0] = 0x00a23af8u;
+    presentation.buffer_surfaces[1] = 0x00a23b10u;
+    presentation.depth_stencil_surface = 0x00a23b28u;
+    return presentation;
 }
 
 static void prepare_call(
@@ -149,6 +163,7 @@ int recomp_d3d_creation_model_test(void)
     };
     RecompD3dPresenterMemorySnapshot frame_snapshot;
     RecompFunction adapter;
+    RecompFunction persist_adapter;
     RecompFunction reset_adapter;
     int passed = 1;
 
@@ -163,6 +178,7 @@ int recomp_d3d_creation_model_test(void)
         const RecompD3dCreateResources resources = {1u, 2u};
         RecompD3dPresentationParameters reset_presentation = presentation;
         uint32_t output_device = 0u;
+        uint32_t saved_surface = 0u;
 
         recomp_d3d_creation_reset(&model);
         passed &= expect_u32(
@@ -194,6 +210,12 @@ int recomp_d3d_creation_model_test(void)
             "model depth-stencil format",
             model.device.depth_stencil_format,
             0x0000002eu);
+        passed &= expect_u32(
+            "model persist display",
+            recomp_d3d_persist_display(&model, &saved_surface),
+            1u);
+        passed &= expect_u32(
+            "model persisted surface", saved_surface, 0x00a23ac8u);
         {
             RecompD3dPushSpace space;
 
@@ -286,6 +308,26 @@ int recomp_d3d_creation_model_test(void)
             "model second observed reset interval",
             recomp_d3d_reset_device(&model, &reset_presentation),
             RECOMP_D3D_OK);
+        reset_presentation = observed_activity_reset();
+        passed &= expect_u32(
+            "model activity reset result",
+            recomp_d3d_reset_device(&model, &reset_presentation),
+            RECOMP_D3D_OK);
+        passed &= expect_u32(
+            "model activity reset surface 0",
+            model.device.buffer_surfaces[0],
+            0x00a23af8u);
+        passed &= expect_u32(
+            "model activity reset depth surface",
+            model.device.depth_stencil_surface,
+            0x00a23b28u);
+        reset_presentation.multi_sample_type = 0x00002022u;
+        passed &= expect_u32(
+            "model unsupported reset multisample",
+            recomp_d3d_reset_device(&model, &reset_presentation),
+            RECOMP_D3D_INVALID_CALL);
+        reset_presentation = presentation;
+        reset_presentation.flags = 0x10u;
         reset_presentation.full_screen_presentation_interval = 2u;
         passed &= expect_u32(
             "model unsupported reset interval",
@@ -321,9 +363,38 @@ int recomp_d3d_creation_model_test(void)
     passed &= expect_u32(
         "creation flag", *recomp_memory_u32(0x001f3620u), 1u);
     passed &= expect_u32(
+        "creation color-write shadow",
+        *recomp_memory_u32(0x001f2c94u), 0x01010101u);
+    {
+        uint32_t mask = 0u;
+        passed &= expect_u32(
+            "creation color-write state present",
+            recomp_d3d_get_simple_render_state(
+                recomp_d3d_render_state_adapter_model(), 0x40358u, &mask),
+            1u);
+        passed &= expect_u32("creation color-write state", mask, 0x01010101u);
+    }
+    passed &= expect_u32(
         "creation device flags",
         *recomp_memory_u32(RECOMP_D3D_DEVICE_ADDRESS + 8u),
         3u);
+
+    persist_adapter = recomp_lookup_manual(0x001e4ae0u);
+    if (persist_adapter == NULL) {
+        fprintf(stderr, "D3D creation: PersistDisplay lookup failed\n");
+        return 0;
+    }
+    *recomp_memory_u32(TEST_ENTRY_ESP) = 0x0010abcdu;
+    recomp_runtime.registers.esp = TEST_ENTRY_ESP;
+    persist_adapter();
+    passed &= expect_u32(
+        "persist HRESULT", recomp_runtime.registers.eax, RECOMP_D3D_OK);
+    passed &= expect_u32(
+        "persist ESP", recomp_runtime.registers.esp, TEST_ENTRY_ESP + 4u);
+    passed &= expect_u32(
+        "persisted AV surface",
+        recomp_kernel_av_get_saved_data_address(),
+        0x00a23ac8u);
 
     {
         RecompFunction make_space_adapter =
@@ -436,10 +507,14 @@ int recomp_d3d_creation_model_test(void)
 
         reset_presentation.full_screen_presentation_interval = 1u;
         *recomp_memory_u32(RECOMP_D3D_DEVICE_ADDRESS + 8u) = 0x00004001u;
+        *recomp_memory_u32(0x001f2c94u) = 0x00010101u;
         prepare_reset_call(call_memory, reset_presentation);
         reset_adapter();
         passed &= expect_u32(
             "reset HRESULT", recomp_runtime.registers.eax, RECOMP_D3D_OK);
+        passed &= expect_u32(
+            "reset preserves color-write shadow",
+            *recomp_memory_u32(0x001f2c94u), 0x00010101u);
         passed &= expect_u32(
             "reset ESP", recomp_runtime.registers.esp, TEST_ENTRY_ESP + 8u);
         passed &= expect_u32(
@@ -480,6 +555,29 @@ int recomp_d3d_creation_model_test(void)
             *recomp_memory_u32(0x001f2d84u),
             0x80000001u);
 
+        reset_presentation = observed_activity_reset();
+        prepare_reset_call(call_memory, reset_presentation);
+        reset_adapter();
+        passed &= expect_u32(
+            "activity reset HRESULT",
+            recomp_runtime.registers.eax,
+            RECOMP_D3D_OK);
+        passed &= expect_u32(
+            "activity reset preserves color-write shadow",
+            *recomp_memory_u32(0x001f2c94u), 0x00010101u);
+        passed &= expect_u32(
+            "activity reset multisample",
+            *recomp_memory_u32(RECOMP_D3D_DEVICE_ADDRESS + 0x211cu),
+            0x00002021u);
+        passed &= expect_u32(
+            "activity reset back-buffer surface 1",
+            *recomp_memory_u32(RECOMP_D3D_DEVICE_ADDRESS + 0x21c4u),
+            0x00a23b10u);
+        passed &= expect_u32(
+            "activity reset depth surface",
+            *recomp_memory_u32(RECOMP_D3D_DEVICE_ADDRESS + 0x21ccu),
+            0x00a23b28u);
+
         reset_presentation.full_screen_presentation_interval = 2u;
         prepare_reset_call(call_memory, reset_presentation);
         reset_adapter();
@@ -494,7 +592,7 @@ int recomp_d3d_creation_model_test(void)
             passed &= expect_u32(
                 "rejected reset command count",
                 frame_snapshot.command_count,
-                2u);
+                3u);
         }
     }
 
@@ -507,6 +605,9 @@ int recomp_d3d_creation_model_test(void)
             "duplicate create HRESULT",
             recomp_runtime.registers.eax,
             RECOMP_D3D_INVALID_CALL);
+        passed &= expect_u32(
+            "rejected create preserves color-write shadow",
+            *recomp_memory_u32(0x001f2c94u), 0x00010101u);
         passed &= expect_u32(
             "duplicate create heap rollback",
             xbox_HeapCheckpoint(),
@@ -577,19 +678,19 @@ int recomp_d3d_creation_model_test(void)
     passed &= expect_u32(
         "render-target surface (+0x21b4)",
         *recomp_memory_u32(RECOMP_D3D_DEVICE_ADDRESS + 0x21b4u),
-        0x00a23ab0u);
+        0x00a23af8u);
     passed &= expect_u32(
         "depth-stencil surface (+0x21b8)",
         *recomp_memory_u32(RECOMP_D3D_DEVICE_ADDRESS + 0x21b8u),
-        0x00a23ae0u);
+        0x00a23b28u);
     passed &= expect_u32(
         "back-buffer surface 0 (+0x21c0)",
         *recomp_memory_u32(RECOMP_D3D_DEVICE_ADDRESS + 0x21c0u),
-        0x00a23ab0u);
+        0x00a23af8u);
     passed &= expect_u32(
         "back-buffer surface 1 (+0x21c4)",
         *recomp_memory_u32(RECOMP_D3D_DEVICE_ADDRESS + 0x21c4u),
-        0x00a23ac8u);
+        0x00a23b10u);
     passed &= expect_u32(
         "back-buffer surface 2 (+0x21c8)",
         *recomp_memory_u32(RECOMP_D3D_DEVICE_ADDRESS + 0x21c8u),
@@ -597,7 +698,7 @@ int recomp_d3d_creation_model_test(void)
     passed &= expect_u32(
         "depth-stencil copy (+0x21cc)",
         *recomp_memory_u32(RECOMP_D3D_DEVICE_ADDRESS + 0x21ccu),
-        0x00a23ae0u);
+        0x00a23b28u);
     passed &= expect_u32(
         "back-buffer count (+0x21bc)",
         *recomp_memory_u32(RECOMP_D3D_DEVICE_ADDRESS + 0x21bcu),

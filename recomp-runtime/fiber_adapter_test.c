@@ -1,0 +1,174 @@
+#include "fiber_adapter.h"
+#include "xbox_memory_layout.h"
+
+#include <stdio.h>
+#include <string.h>
+
+enum {
+    TEST_TLS_INDEX_ADDRESS = 0x003b5258u,
+    TEST_HEAP_BASE = 0x27000000u,
+    TEST_HEAP_SIZE = 0x00200000u,
+    TEST_STATE_BASE = 0x28000000u,
+    TEST_STATE_SIZE = 0x00002000u,
+    TEST_TLS_BLOCK = TEST_STATE_BASE + 0x100u,
+    TEST_ENTRY_ESP = TEST_STATE_BASE + 0x1100u,
+    TEST_STACK_SIZE = 0x3000u,
+    TEST_FIBER_ENTRY = 0x000b5570u,
+};
+
+void recomp_test_heap_reset(uint32_t cursor, int fail_after);
+
+static int expect_u32(const char *field, uint32_t actual, uint32_t expected)
+{
+    if (actual == expected) {
+        return 1;
+    }
+    fprintf(
+        stderr,
+        "fiber adapter: %s was 0x%08x, expected 0x%08x\n",
+        field,
+        actual,
+        expected);
+    return 0;
+}
+
+static void prepare_call(uint32_t argument_count, const uint32_t *arguments)
+{
+    uint32_t *stack = recomp_memory_u32(TEST_ENTRY_ESP);
+
+    stack[0] = 0x0010abcdu;
+    for (uint32_t i = 0u; i < argument_count; ++i) {
+        stack[i + 1u] = arguments[i];
+    }
+    recomp_runtime.registers.esp = TEST_ENTRY_ESP;
+}
+
+static const RecompFiber *find_fiber(uint32_t guest_handle)
+{
+    const RecompFiberModel *model = recomp_fiber_adapter_model();
+
+    for (size_t i = 0u; i < RECOMP_FIBER_MAX_COUNT; ++i) {
+        const RecompFiber *fiber = &model->fibers[i];
+
+        if (fiber->active && fiber->guest_handle == guest_handle) {
+            return fiber;
+        }
+    }
+    return NULL;
+}
+
+int recomp_fiber_adapter_test(void)
+{
+    static uint8_t low_memory[8];
+    static uint8_t tls_index_memory[4];
+    static uint8_t heap_memory[TEST_HEAP_SIZE];
+    static uint8_t state_memory[TEST_STATE_SIZE];
+    const RecompMemoryRegion regions[] = {
+        {
+            .address = 0u,
+            .size = sizeof low_memory,
+            .data = low_memory,
+        },
+        {
+            .address = TEST_TLS_INDEX_ADDRESS,
+            .size = sizeof tls_index_memory,
+            .data = tls_index_memory,
+        },
+        {
+            .address = TEST_HEAP_BASE,
+            .size = sizeof heap_memory,
+            .data = heap_memory,
+        },
+        {
+            .address = TEST_STATE_BASE,
+            .size = sizeof state_memory,
+            .data = state_memory,
+        },
+    };
+    const uint32_t first_parameter = 0x11111111u;
+    const uint32_t second_parameter = 0x22222222u;
+    uint32_t arguments[3];
+    uint32_t first_handle;
+    uint32_t first_heap_checkpoint;
+    uint32_t second_handle;
+    RecompFunction adapter;
+    const RecompFiber *fiber;
+    int passed = 1;
+
+    memset(low_memory, 0, sizeof low_memory);
+    memset(tls_index_memory, 0, sizeof tls_index_memory);
+    memset(heap_memory, 0xa5, sizeof heap_memory);
+    memset(state_memory, 0, sizeof state_memory);
+    recomp_runtime_init(regions, 4u, NULL, 0u, NULL, 0u);
+    recomp_test_heap_reset(TEST_HEAP_BASE, -1);
+    recomp_fiber_adapter_reset();
+
+    *recomp_memory_u32(0u) = 0xffffffffu;
+    *recomp_memory_u32(4u) = TEST_STATE_BASE;
+    *recomp_memory_u32(TEST_TLS_INDEX_ADDRESS) = 0u;
+    *recomp_memory_u32(TEST_STATE_BASE) = TEST_TLS_BLOCK;
+
+    arguments[0] = 0xabcdef01u;
+    prepare_call(1u, arguments);
+    adapter = recomp_fiber_lookup_manual(0x00183099u);
+    adapter();
+
+    arguments[0] = TEST_STACK_SIZE;
+    arguments[1] = TEST_FIBER_ENTRY;
+    arguments[2] = first_parameter;
+    prepare_call(3u, arguments);
+    adapter = recomp_fiber_lookup_manual(0x00182fbbu);
+    adapter();
+    first_handle = recomp_runtime.registers.eax;
+    first_heap_checkpoint = xbox_HeapCheckpoint();
+
+    arguments[0] = first_handle;
+    prepare_call(1u, arguments);
+    adapter = recomp_fiber_lookup_manual(0x00183047u);
+    adapter();
+    passed &= expect_u32(
+        "deleted fiber absent",
+        find_fiber(first_handle) != NULL,
+        0u);
+    *recomp_memory_u32(TEST_HEAP_BASE + 0x100u) = 0xdeadbeefu;
+
+    arguments[0] = TEST_STACK_SIZE;
+    arguments[1] = TEST_FIBER_ENTRY;
+    arguments[2] = second_parameter;
+    prepare_call(3u, arguments);
+    adapter = recomp_fiber_lookup_manual(0x00182fbbu);
+    adapter();
+    second_handle = recomp_runtime.registers.eax;
+
+    passed &= expect_u32(
+        "guest stack handle reused", second_handle, first_handle);
+    passed &= expect_u32(
+        "guest heap unchanged",
+        xbox_HeapCheckpoint(),
+        first_heap_checkpoint);
+    passed &= expect_u32(
+        "guest stack base",
+        *recomp_memory_u32(second_handle + 8u),
+        TEST_HEAP_BASE);
+    passed &= expect_u32(
+        "guest stack parameter",
+        *recomp_memory_u32(second_handle),
+        second_parameter);
+    passed &= expect_u32(
+        "guest stack cleared",
+        *recomp_memory_u32(TEST_HEAP_BASE + 0x100u),
+        0u);
+    fiber = find_fiber(second_handle);
+    passed &= expect_u32("recreated fiber present", fiber != NULL, 1u);
+    if (fiber != NULL) {
+        passed &= expect_u32(
+            "recreated fiber parameter", fiber->parameter, second_parameter);
+    }
+
+    arguments[0] = second_handle;
+    prepare_call(1u, arguments);
+    adapter = recomp_fiber_lookup_manual(0x00183047u);
+    adapter();
+    recomp_fiber_adapter_reset();
+    return passed;
+}

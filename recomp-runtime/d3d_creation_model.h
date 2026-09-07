@@ -14,6 +14,7 @@ enum {
     RECOMP_D3D_PUSH_BUFFER_LIMIT_OFFSET = 0x00007dfcu,
     RECOMP_D3D_CONTEXT_SIZE = 0x00000060u,
     RECOMP_D3D_OK = 0x00000000u,
+    RECOMP_D3D_FAIL = 0x80004005u,
     RECOMP_D3D_OUT_OF_MEMORY = 0x8007000eu,
     RECOMP_D3D_INVALID_CALL = 0x8876086cu,
 };
@@ -101,6 +102,9 @@ uint32_t recomp_d3d_create_device(
 uint32_t recomp_d3d_reset_device(
     RecompD3dCreationModel *model,
     const RecompD3dPresentationParameters *presentation);
+bool recomp_d3d_persist_display(
+    const RecompD3dCreationModel *model,
+    uint32_t *saved_surface);
 /* The generated callers enter this seam only after their current reservation
    is exhausted. With no NV2A consumer in the recomp, reuse the completed ring
    immediately instead of exposing or polling the hardware DMA GET register. */

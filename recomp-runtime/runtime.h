@@ -100,6 +100,8 @@ void recomp_runtime_init(
     const RecompFunctionEntry *functions,
     size_t function_count);
 void recomp_runtime_set_lookup(RecompFunctionLookup lookup);
+/* Resolve a complete guest span through the normal checked memory path. */
+uint8_t *recomp_memory(uint32_t guest_address, size_t width);
 uint32_t *recomp_memory_u32(uint32_t guest_address);
 uint64_t *recomp_memory_u64(uint32_t guest_address);
 uint16_t *recomp_memory_u16(uint32_t guest_address);

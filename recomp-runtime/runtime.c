@@ -22,6 +22,7 @@ typedef struct RecompDispatchFrame {
 
 static RecompDispatchFrame dispatch_stack[64];
 static size_t dispatch_depth;
+static uint8_t *direct_ram;
 
 static void report_dispatch_stack(void);
 static void watch_init(void);
@@ -29,6 +30,7 @@ static void watch_init(void);
 enum {
     XBOX_RAM_SIZE = 0x04000000u,
     XBOX_CACHED_ALIAS = 0x80000000u,
+    XBOX_PHYSICAL_ALIAS = 0xf0000000u,
     USB0_OHCI_BASE = 0xfed00000u,
 };
 
@@ -60,6 +62,10 @@ void recomp_runtime_init(
         .functions = functions,
         .function_count = function_count,
     };
+    direct_ram = memory_region_count == 1u && memory_regions != NULL &&
+        memory_regions[0].address == 0u &&
+        memory_regions[0].size == 0x04000000u
+        ? memory_regions[0].data : NULL;
     /* x87 reset default: all exceptions masked, round-to-nearest,
        extended precision. The guest CRT reads this back through FNSTCW. */
     recomp_runtime.fpu_control_word = 0x037fu;
@@ -709,11 +715,31 @@ static void check_watch_write(void)
     watch.value = current;
 }
 
-static uint8_t *recomp_memory(uint32_t guest_address, size_t width)
+/* The full runner maps one contiguous RAM allocation. Keep instrumented and
+   device accesses on the general path, including the preceding OHCI flush. */
+static uint8_t *find_direct_ram(uint32_t guest_address, size_t width)
+{
+    uint32_t window = guest_address & 0xfc000000u;
+    uint32_t offset = guest_address & 0x03ffffffu;
+
+    if (direct_ram == NULL || watch.active || recomp_runtime.accesses != NULL ||
+        (window != 0u && window != XBOX_CACHED_ALIAS &&
+         window != XBOX_PHYSICAL_ALIAS) || width > XBOX_RAM_SIZE - offset) {
+        return NULL;
+    }
+    return direct_ram + offset;
+}
+
+/* Keep device and diagnostic work out of the inlined RAM accessors. */
+#if defined(_MSC_VER)
+__declspec(noinline)
+#elif defined(__GNUC__)
+__attribute__((noinline))
+#endif
+static uint8_t *recomp_memory_slow(uint32_t guest_address, size_t width)
 {
     uint8_t *memory;
 
-    commit_mmio_u32_write();
     check_watch_write();
 
     /* MCPX audio aperture is device space, not guest RAM, so it is served
@@ -730,6 +756,12 @@ static uint8_t *recomp_memory(uint32_t guest_address, size_t width)
         memory = find_memory_region(
             guest_address - XBOX_CACHED_ALIAS, width);
     }
+    /* Xbox D3D returns this physical-memory view for D3DLOCK_TILED. */
+    if (memory == NULL && guest_address >= XBOX_PHYSICAL_ALIAS &&
+        guest_address - XBOX_PHYSICAL_ALIAS < XBOX_RAM_SIZE) {
+        memory = find_memory_region(
+            guest_address - XBOX_PHYSICAL_ALIAS, width);
+    }
     if (memory != NULL) {
         record_memory_access(guest_address, width);
         return memory;
@@ -739,12 +771,36 @@ static uint8_t *recomp_memory(uint32_t guest_address, size_t width)
     return NULL;
 }
 
+#if defined(_MSC_VER)
+__forceinline
+#endif
+uint8_t *recomp_memory(uint32_t guest_address, size_t width)
+{
+    uint8_t *memory;
+
+    if (mmio_u32_access.pending) {
+        commit_mmio_u32_write();
+    }
+    memory = find_direct_ram(guest_address, width);
+    if (memory != NULL) {
+        return memory;
+    }
+    return recomp_memory_slow(guest_address, width);
+}
+
 uint32_t *recomp_memory_u32(uint32_t guest_address)
 {
     RecompOhciRegister reg;
     uint32_t value;
+    uint8_t *memory;
 
-    commit_mmio_u32_write();
+    if (mmio_u32_access.pending) {
+        commit_mmio_u32_write();
+    }
+    memory = find_direct_ram(guest_address, sizeof(uint32_t));
+    if (memory != NULL) {
+        return (uint32_t *)(void *)memory;
+    }
     if (usb0_ohci_register(guest_address, &reg)) {
         if (!recomp_ohci_read(&usb0_ohci, reg, &value)) {
             fail_memory_access(guest_address, sizeof(uint32_t));

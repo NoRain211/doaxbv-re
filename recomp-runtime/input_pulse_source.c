@@ -14,6 +14,10 @@ void recomp_input_pulse_source_init(
     source->buttons_poll_count = 0u;
     source->analog_poll_count = 0u;
     source->sample_count = 0u;
+    source->paused = false;
+    source->pending_analog_index = 0u;
+    source->pending_samples = 0u;
+    source->pending_buttons_mask = 0u;
     (void)recomp_input_pulse_source_add_poll(source, pulse_poll);
 }
 
@@ -76,12 +80,64 @@ bool recomp_input_pulse_source_add_analog_poll(
     return true;
 }
 
+bool recomp_input_pulse_source_press_analog(
+    RecompInputPulseSource *source,
+    uint8_t index)
+{
+    if (source == NULL || index >= RECOMP_INPUT_ANALOG_BUTTON_COUNT ||
+        source->pending_samples != 0u) {
+        return false;
+    }
+    source->pending_analog_index = index;
+    source->pending_buttons_mask = 0u;
+    source->pending_samples = 7u;
+    return true;
+}
+
+bool recomp_input_pulse_source_press_buttons(
+    RecompInputPulseSource *source,
+    uint16_t mask)
+{
+    if (source == NULL || mask == 0u || (mask & 0xff00u) != 0u ||
+        source->pending_samples != 0u) {
+        return false;
+    }
+    source->pending_buttons_mask = mask;
+    source->pending_samples = 7u;
+    return true;
+}
+
+static void sample_pending_press(
+    RecompInputPulseSource *source,
+    RecompInputGamepad *gamepad)
+{
+    if (source->pending_samples != 0u) {
+        --source->pending_samples;
+        if (source->pending_buttons_mask != 0u) {
+            if (source->pending_samples != 0u) {
+                gamepad->buttons |= source->pending_buttons_mask;
+            } else {
+                gamepad->buttons &= (uint16_t)~source->pending_buttons_mask;
+            }
+        } else {
+            gamepad->analog_buttons[source->pending_analog_index] =
+                source->pending_samples != 0u
+                    ? RECOMP_INPUT_ANALOG_PRESSED : 0u;
+        }
+    }
+}
+
 bool recomp_input_pulse_source_sample(
     RecompInputPulseSource *source,
     RecompInputGamepad *gamepad)
 {
     if (source == NULL || gamepad == NULL) {
         return false;
+    }
+    if (source->paused) {
+        *gamepad = (RecompInputGamepad){0};
+        sample_pending_press(source, gamepad);
+        return true;
     }
     if (source->base == NULL) {
         *gamepad = (RecompInputGamepad){0};
@@ -115,5 +171,6 @@ bool recomp_input_pulse_source_sample(
             break;
         }
     }
+    sample_pending_press(source, gamepad);
     return true;
 }

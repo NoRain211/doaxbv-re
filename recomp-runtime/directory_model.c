@@ -3,24 +3,34 @@
 #include <ctype.h>
 #include <string.h>
 
-static bool text_equal(const char *left, const char *right)
-{
-    while (*left != '\0' && *right != '\0') {
-        if (tolower((unsigned char)*left) !=
-            tolower((unsigned char)*right)) {
-            return false;
-        }
-        ++left;
-        ++right;
-    }
-    return *left == *right;
-}
-
 static bool pattern_matches(const char *pattern, const char *name)
 {
-    return pattern == NULL || pattern[0] == '\0' ||
-        strcmp(pattern, "*") == 0 || strcmp(pattern, "*.*") == 0 ||
-        text_equal(pattern, name);
+    const char *after_star = NULL;
+    const char *star_name = NULL;
+
+    if (pattern == NULL || pattern[0] == '\0' ||
+        strcmp(pattern, "*.*") == 0) {
+        return true;
+    }
+    while (*name != '\0') {
+        if (*pattern == '*') {
+            after_star = ++pattern;
+            star_name = name;
+        } else if (*pattern != '\0' &&
+            tolower((unsigned char)*pattern) == tolower((unsigned char)*name)) {
+            ++pattern;
+            ++name;
+        } else if (after_star != NULL) {
+            pattern = after_star;
+            name = ++star_name;
+        } else {
+            return false;
+        }
+    }
+    while (*pattern == '*') {
+        ++pattern;
+    }
+    return *pattern == '\0';
 }
 
 void recomp_directory_reset(RecompDirectoryModel *model)

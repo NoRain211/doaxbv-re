@@ -17,6 +17,9 @@ uint32_t recomp_d3d_draw_adapter_declined(void);
 /* Reports every distinct FVF that reached the presenter and its draw count. */
 void recomp_d3d_draw_adapter_report_fvf(void);
 
+/* Completes the optional one-present diagnostic, including an empty frame. */
+void recomp_d3d_draw_adapter_capture_present(uint32_t present, uint32_t presenter_error);
+
 RecompFunction recomp_d3d_draw_lookup_manual(uint32_t guest_address);
 
 #endif

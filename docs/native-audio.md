@@ -20,5 +20,5 @@ music and effects. The user confirmed synchronization. General game performance
 stalls remain separate work; physical device unplug/reconnect is unproven.
 
 The CMake checks `recomp-runtime-xbox-adpcm`, `recomp-runtime-audio-output`,
-and `recomp-runtime-public-fixture` cover codec samples and validation, backend
+and `recomp-runtime-four-cases` cover codec samples and validation, backend
 buffer lifetime/error handling, and adapter playback controls respectively.

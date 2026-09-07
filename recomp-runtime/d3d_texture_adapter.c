@@ -119,20 +119,29 @@ static void release_texture_resource(uint32_t texture)
         0x001e7c90u, saved_esp, __FILE__, __LINE__);
 }
 
-static void record_texture_census(uint32_t stage, uint32_t texture)
+bool recomp_d3d_texture_adapter_describe(
+    uint32_t resource, RecompD3dTextureDesc *out)
 {
+    if (resource == 0u || out == NULL) {
+        return false;
+    }
     uint32_t format_dword =
-        *recomp_memory_u32(texture + D3D_TEXTURE_FORMAT_OFFSET);
+        *recomp_memory_u32(resource + D3D_TEXTURE_FORMAT_OFFSET);
     uint32_t size_dword =
-        *recomp_memory_u32(texture + D3D_TEXTURE_SIZE_OFFSET);
-    uint32_t data = *recomp_memory_u32(texture + D3D_TEXTURE_DATA_OFFSET);
+        *recomp_memory_u32(resource + D3D_TEXTURE_SIZE_OFFSET);
+    uint32_t data = *recomp_memory_u32(resource + D3D_TEXTURE_DATA_OFFSET);
     uint32_t format_byte = (format_dword >> 8u) & 0xffu;
     uint32_t descriptor = *(const uint8_t *)(const void *)
         recomp_memory_i8(D3D_FORMAT_DESCRIPTOR_TABLE + format_byte);
+    return recomp_d3d_texture_describe(
+        format_dword, size_dword, data, descriptor, out);
+}
+
+static void record_texture_census(uint32_t stage, uint32_t texture)
+{
     RecompD3dTextureDesc desc;
 
-    if (recomp_d3d_texture_describe(
-            format_dword, size_dword, data, descriptor, &desc)) {
+    if (recomp_d3d_texture_adapter_describe(texture, &desc)) {
         recomp_d3d_texture_census_record(&texture_model.census, &desc, stage);
         if (stage < RECOMP_D3D_TEXTURE_STAGE_COUNT) {
             stage_descs[stage] = desc;

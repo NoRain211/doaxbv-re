@@ -78,6 +78,7 @@ RecompFunction recomp_kernel_startup(uint32_t ordinal);
 RecompFunction recomp_kernel_thread(uint32_t ordinal);
 RecompFunction recomp_kernel_video(uint32_t ordinal);
 RecompFunction recomp_kernel_file(uint32_t ordinal);
+bool recomp_kernel_save_handles_closed(uint32_t owner);
 
 /* Plain configuration model used by its import adapter. */
 uint32_t recomp_kernel_query_nonvolatile_setting(
@@ -118,9 +119,11 @@ void recomp_kernel_sha_final(RecompShaContext *context, uint8_t *digest);
 
 /* Plain image-section model used by its import adapter. */
 uint32_t recomp_kernel_load_section(uint32_t section);
+uint32_t recomp_kernel_unload_section(uint32_t section);
 
 /* Plain AV model used by its import adapter. */
 uint32_t recomp_kernel_av_get_saved_data_address(void);
+void recomp_kernel_av_set_saved_data_address(uint32_t address);
 uint32_t recomp_kernel_av_send_tv_encoder_option(
     uint32_t register_base,
     uint32_t option,

@@ -9,11 +9,15 @@ void recomp_d3d_set_texture_factor_adapter(void);
 void recomp_d3d_set_cull_mode_adapter(void);
 void recomp_d3d_set_multisample_antialias_adapter(void);
 void recomp_d3d_set_stencil_enable_adapter(void);
+void recomp_d3d_set_stencil_fail_adapter(void);
 void recomp_d3d_set_z_enable_adapter(void);
 void recomp_d3d_set_fill_mode_adapter(void);
 void recomp_d3d_set_edge_antialias_adapter(void);
 void recomp_d3d_set_simple_render_state_adapter(void);
 RecompFunction recomp_d3d_render_state_lookup_manual(uint32_t guest_address);
+
+/* Guest-visible defaults for a successful CreateDevice, not Reset. */
+void recomp_d3d_render_state_adapter_initialize(void);
 
 /* Test seam: reset and inspect the file-static model. */
 void recomp_d3d_render_state_adapter_reset(void);

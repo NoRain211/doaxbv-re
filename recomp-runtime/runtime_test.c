@@ -7,6 +7,7 @@
 #define ARRAY_SIZE(values) (sizeof(values) / sizeof((values)[0]))
 
 void sub_00189800(void);
+int recomp_xapi_time_adapter_test(void);
 int recomp_device_model_test(void);
 int recomp_d3d_creation_model_test(void);
 int recomp_d3d_draw_model_test(void);
@@ -21,6 +22,7 @@ int recomp_dsound_service_adapter_test(void);
 int recomp_cri_service_model_test(void);
 int recomp_cri_service_adapter_test(void);
 int recomp_crt_format_adapter_test(void);
+int recomp_fiber_adapter_test(void);
 int recomp_fiber_model_test(void);
 int recomp_flag_macro_test(void);
 int recomp_sse_semantics_test(void);
@@ -30,6 +32,8 @@ int recomp_input_pulse_source_test(void);
 int recomp_symbolic_link_model_test(void);
 int recomp_ohci_model_test(void);
 int recomp_apu_model_test(void);
+int recomp_kernel_memory_test(void);
+int recomp_kernel_file_save_test(void);
 int recomp_kernel_thread_test(void);
 int recomp_kernel_video_test(void);
 int recomp_kernel_rtl_test(void);
@@ -297,6 +301,49 @@ static int run_cached_ram_alias(void)
     return passed;
 }
 
+static int run_physical_ram_alias(void)
+{
+    uint32_t words[] = {0x11223344u, 0x55667788u};
+    RecompMemoryAccess accesses[2];
+    const RecompMemoryRegion region = {
+        .address = 0x0368bffcu,
+        .size = sizeof(words),
+        .data = (uint8_t *)words,
+    };
+    int passed = 1;
+
+    recomp_runtime_init(
+        &region, 1u, accesses, ARRAY_SIZE(accesses), NULL, 0u);
+    passed &= expect_u32(
+        "physical RAM alias",
+        "direct read",
+        *recomp_memory_u32(0x0368c000u),
+        0x55667788u);
+    *recomp_memory_u32(0xf368c000u) = 0xaabbccddu;
+    passed &= expect_u32(
+        "physical RAM alias", "aliased write", words[1], 0xaabbccddu);
+    passed &= expect_size(
+        "physical RAM alias", "access_count", recomp_runtime.access_count, 2u);
+    passed &= expect_size(
+        "physical RAM alias",
+        "undeclared_access_count",
+        recomp_runtime.undeclared_access_count,
+        0u);
+    if (recomp_runtime.access_count == 2u) {
+        passed &= expect_u32(
+            "physical RAM alias",
+            "direct access address",
+            accesses[0].address,
+            0x0368c000u);
+        passed &= expect_u32(
+            "physical RAM alias",
+            "alias access address",
+            accesses[1].address,
+            0xf368c000u);
+    }
+    return passed;
+}
+
 static int run_usb0_ohci_initialization(void)
 {
     static const uint32_t expected_addresses[] = {
@@ -529,6 +576,247 @@ static int run_usb0_ohci_initialization(void)
     return passed;
 }
 
+/* One contiguous 64MiB allocation mirrors what the full runner maps, and is
+   the only shape that arms the direct RAM path. */
+static uint8_t *calloc_ram_fixture(void)
+{
+    uint8_t *ram = calloc(0x04000000u, 1u);
+
+    if (ram == NULL) {
+        fprintf(stderr, "direct RAM: fixture allocation failed\n");
+        exit(EXIT_FAILURE);
+    }
+    fill_object_window(ram, 0u, 0x04000000u);
+    return ram;
+}
+
+static const RecompMemoryRegion full_ram_region(uint8_t *ram)
+{
+    return (RecompMemoryRegion){
+        .address = 0u,
+        .size = 0x04000000u,
+        .data = ram,
+    };
+}
+
+static int ram_byte_matches(
+    const char *case_name,
+    const uint8_t *memory,
+    uint32_t address,
+    size_t width)
+{
+    for (size_t i = 0; i < width; ++i) {
+        uint8_t expected = (uint8_t)(((address + (uint32_t)i) * 33u + 17u) &
+                                     0xffu);
+
+        if (memory[i] != expected) {
+            fprintf(
+                stderr,
+                "%s: byte at 0x%08x was 0x%02x, expected 0x%02x\n",
+                case_name,
+                address + (uint32_t)i,
+                memory[i],
+                expected);
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int run_direct_ram_windows(uint8_t *ram)
+{
+    static const size_t widths[] = {1u, 2u, 4u, 8u, 16u};
+    static const struct {
+        uint32_t base;
+        const char *name;
+    } windows[] = {
+        {0x00000000u, "direct RAM"},
+        {0x80000000u, "cached RAM alias"},
+        {0xf0000000u, "physical RAM alias"},
+    };
+    RecompMemoryRegion region = full_ram_region(ram);
+    int passed = 1;
+
+    recomp_runtime_init(&region, 1u, NULL, 0u, NULL, 0u);
+
+    for (size_t w = 0; w < ARRAY_SIZE(widths); ++w) {
+        size_t width = widths[w];
+        uint32_t offset = 0x04000000u - (uint32_t)width;
+
+        for (size_t v = 0; v < ARRAY_SIZE(windows); ++v) {
+            uint32_t address = windows[v].base + offset;
+            uint8_t *memory = recomp_memory(address, width);
+
+            if (memory == NULL) {
+                fprintf(
+                    stderr,
+                    "%s: %u-byte access at 0x%08x failed\n",
+                    windows[v].name,
+                    (unsigned)width,
+                    address);
+                passed = 0;
+                continue;
+            }
+            passed &= ram_byte_matches(
+                windows[v].name, memory, offset, width);
+            passed &= ram_byte_matches(windows[v].name,
+                recomp_memory(windows[v].base, width), 0u, width);
+            if (width == sizeof(uint32_t)) {
+                passed &= expect_u32(windows[v].name, "u32 boundary read",
+                    *recomp_memory_u32(address), *(uint32_t *)(void *)memory);
+            } else if (width == sizeof(int8_t)) {
+                passed &= ram_byte_matches(windows[v].name,
+                    (uint8_t *)(void *)recomp_memory_i8(address), offset, width);
+            } else if (width == sizeof(uint16_t)) {
+                passed &= ram_byte_matches(windows[v].name,
+                    (uint8_t *)(void *)recomp_memory_u16(address), offset, width);
+            } else if (width == sizeof(uint64_t)) {
+                passed &= ram_byte_matches(windows[v].name,
+                    (uint8_t *)(void *)recomp_memory_u64(address), offset, width);
+            }
+        }
+    }
+
+    /* A write through one window must be visible through the others. */
+    *(uint32_t *)(void *)recomp_memory(0x81000000u, sizeof(uint32_t)) =
+        0xc0ffee11u;
+    passed &= expect_u32(
+        "direct RAM",
+        "cached write seen from direct window",
+        *(uint32_t *)(void *)recomp_memory(0x01000000u, sizeof(uint32_t)),
+        0xc0ffee11u);
+    passed &= expect_u32(
+        "direct RAM",
+        "cached write seen from physical window",
+        *(uint32_t *)(void *)recomp_memory(0xf1000000u, sizeof(uint32_t)),
+        0xc0ffee11u);
+    return passed;
+}
+
+static int run_alias_region_precedence(uint8_t *ram)
+{
+    uint32_t alias_words[] = {0xdeadbeefu, 0x0badf00du};
+    RecompMemoryRegion regions[] = {
+        full_ram_region(ram),
+        {
+            .address = 0x81000800u,
+            .size = sizeof(alias_words),
+            .data = (uint8_t *)alias_words,
+        },
+    };
+    int passed = 1;
+
+    recomp_runtime_init(
+        regions, ARRAY_SIZE(regions), NULL, 0u, NULL, 0u);
+    passed &= expect_u32(
+        "alias precedence",
+        "explicit region read",
+        *(uint32_t *)(void *)recomp_memory(0x81000804u, sizeof(uint32_t)),
+        0x0badf00du);
+    *(uint32_t *)(void *)recomp_memory(0x81000800u, sizeof(uint32_t)) =
+        0xfeedfaceu;
+    passed &= expect_u32(
+        "alias precedence", "explicit region write", alias_words[0],
+        0xfeedfaceu);
+    passed &= expect_u32(
+        "alias precedence",
+        "ram alias resolves to full region",
+        *(uint32_t *)(void *)recomp_memory(0x81c7f7e4u, sizeof(uint32_t)),
+        ((0x01c7f7e4u * 33u + 17u) & 0xffu) |
+            (((0x01c7f7e5u * 33u + 17u) & 0xffu) << 8) |
+            (((0x01c7f7e6u * 33u + 17u) & 0xffu) << 16) |
+            (((0x01c7f7e7u * 33u + 17u) & 0xffu) << 24));
+    passed &= expect_u32(
+        "alias precedence",
+        "direct window resolves to full region",
+        *(uint32_t *)(void *)recomp_memory(0x01000004u, sizeof(uint32_t)),
+        ((0x01000004u * 33u + 17u) & 0xffu) |
+            (((0x01000005u * 33u + 17u) & 0xffu) << 8) |
+            (((0x01000006u * 33u + 17u) & 0xffu) << 16) |
+            (((0x01000007u * 33u + 17u) & 0xffu) << 24));
+    return passed;
+}
+
+static int run_ram_access_logging(uint8_t *ram)
+{
+    RecompMemoryAccess accesses[4];
+    RecompMemoryRegion region = full_ram_region(ram);
+    int passed = 1;
+
+    recomp_runtime_init(
+        &region, 1u, accesses, ARRAY_SIZE(accesses), NULL, 0u);
+    (void)*recomp_memory_u32(0x01c7f7e4u);
+    *(uint32_t *)(void *)recomp_memory_u32(0x81c7f7e4u) = 0x11223344u;
+    (void)*recomp_memory_u32(0xf368c000u);
+    passed &= expect_size(
+        "RAM logging", "access_count", recomp_runtime.access_count, 3u);
+    if (recomp_runtime.access_count == 3u) {
+        passed &= expect_u32(
+            "RAM logging", "direct logged address",
+            accesses[0].address, 0x01c7f7e4u);
+        passed &= expect_u32(
+            "RAM logging", "cached logged address",
+            accesses[1].address, 0x81c7f7e4u);
+        passed &= expect_u32(
+            "RAM logging", "physical logged address",
+            accesses[2].address, 0xf368c000u);
+        for (size_t i = 0; i < 3u; ++i) {
+            passed &= expect_u32(
+                "RAM logging", "logged width", accesses[i].width, 4u);
+        }
+    }
+    passed &= expect_u32(
+        "RAM logging", "aliased write reached ram",
+        *(uint32_t *)(void *)recomp_memory(0x01c7f7e4u, sizeof(uint32_t)),
+        0x11223344u);
+    return passed;
+}
+
+static int run_reinit_clears_direct_cache(uint8_t *ram)
+{
+    uint32_t small_words[] = {0u, 0u};
+    RecompMemoryRegion small = {
+        .address = 0x01c7f7e0u,
+        .size = sizeof(small_words),
+        .data = (uint8_t *)small_words,
+    };
+    int passed = 1;
+
+    /* Arming the direct path first leaves a stale cache if reinit does not
+       reset it; the small region must then win for its own span. */
+    {
+        RecompMemoryRegion region = full_ram_region(ram);
+
+        recomp_runtime_init(&region, 1u, NULL, 0u, NULL, 0u);
+    }
+    recomp_runtime_init(&small, 1u, NULL, 0u, NULL, 0u);
+    *(uint32_t *)(void *)recomp_memory_u32(0x81c7f7e4u) = 0x5a5a5a5au;
+    passed &= expect_u32(
+        "reinit cache", "small region write", small_words[1], 0x5a5a5a5au);
+    return passed;
+}
+
+static int run_ram_overrun(void)
+{
+    uint8_t *ram = calloc_ram_fixture();
+    RecompMemoryRegion region = full_ram_region(ram);
+
+    recomp_runtime_init(&region, 1u, NULL, 0u, NULL, 0u);
+    (void)*recomp_memory_u32(0x83ffffffu);
+    return EXIT_SUCCESS;
+}
+
+static int run_ram_pending_ohci(void)
+{
+    uint8_t *ram = calloc_ram_fixture();
+    RecompMemoryRegion region = full_ram_region(ram);
+
+    recomp_runtime_init(&region, 1u, NULL, 0u, NULL, 0u);
+    *recomp_memory_u32(0xfed00004u) = 0xffffffffu;
+    (void)*recomp_memory_u32(0x00001000u);
+    return EXIT_SUCCESS;
+}
+
 int main(int argc, char **argv)
 {
     int passed = 1;
@@ -536,15 +824,40 @@ int main(int argc, char **argv)
     if (argc == 2 && strcmp(argv[1], "--invalid-access") == 0) {
         return run_invalid_access();
     }
+    if (argc == 2 && strcmp(argv[1], "--fiber-stack-recycling") == 0) {
+        return recomp_fiber_adapter_test() ? EXIT_SUCCESS : EXIT_FAILURE;
+    }
+    if (argc == 2 && strcmp(argv[1], "--ram-overrun") == 0) {
+        return run_ram_overrun();
+    }
+    if (argc == 2 && strcmp(argv[1], "--ram-pending-ohci") == 0) {
+        return run_ram_pending_ohci();
+    }
     if (argc != 1) {
-        fprintf(stderr, "usage: recomp_runtime_test [--invalid-access]\n");
+        fprintf(
+            stderr,
+            "usage: recomp_runtime_test "
+            "[--invalid-access|--fiber-stack-recycling|"
+            "--ram-overrun|--ram-pending-ohci]\n");
         return 64;
     }
 
     for (size_t i = 0; i < ARRAY_SIZE(fixtures); ++i) {
         passed &= run_fixture(&fixtures[i]);
     }
+    {
+        uint8_t *ram = calloc_ram_fixture();
+
+        passed &= run_direct_ram_windows(ram);
+        passed &= run_alias_region_precedence(ram);
+        passed &= run_ram_access_logging(ram);
+        passed &= run_reinit_clears_direct_cache(ram);
+        recomp_runtime_init(NULL, 0u, NULL, 0u, NULL, 0u);
+        free(ram);
+    }
     passed &= run_cached_ram_alias();
+    passed &= run_physical_ram_alias();
+    passed &= recomp_xapi_time_adapter_test();
     passed &= recomp_device_model_test();
     passed &= recomp_d3d_creation_model_test();
     passed &= recomp_d3d_draw_model_test();
@@ -568,6 +881,8 @@ int main(int argc, char **argv)
     passed &= recomp_symbolic_link_model_test();
     passed &= recomp_ohci_model_test();
     passed &= recomp_apu_model_test();
+    passed &= recomp_kernel_memory_test();
+    passed &= recomp_kernel_file_save_test();
     passed &= recomp_kernel_thread_test();
     passed &= recomp_kernel_video_test();
     passed &= recomp_kernel_rtl_test();

@@ -400,7 +400,7 @@ uint32_t recomp_kernel_load_section(uint32_t section)
     const uint32_t XBE_SECTION_HEADER_SIZE = 0x38u;
     const uint32_t XBE_SECTION_REFERENCE_COUNT = 0x18u;
 
-    if (!guest_range_is_mapped(section, XBE_SECTION_HEADER_SIZE)) {
+    if (section == 0u || !guest_range_is_mapped(section, XBE_SECTION_HEADER_SIZE)) {
         return STATUS_INVALID_PARAMETER;
     }
 
@@ -410,6 +410,21 @@ uint32_t recomp_kernel_load_section(uint32_t section)
         return STATUS_INVALID_PARAMETER;
     }
     ++*reference_count;
+    return STATUS_SUCCESS;
+}
+
+uint32_t recomp_kernel_unload_section(uint32_t section)
+{
+    if (section == 0u || !guest_range_is_mapped(section, 0x38u)) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    uint32_t *reference_count = recomp_memory_u32(section + 0x18u);
+    if (*reference_count == 0u) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    /* ponytail: the eager loader keeps section bytes resident; decommit needs
+       matching reload support before either operation can release pages. */
+    --*reference_count;
     return STATUS_SUCCESS;
 }
 
@@ -424,6 +439,24 @@ static void bridge_xe_load_section(void)
     fprintf(
         stderr,
         "recomp kernel: XeLoadSection section=0x%08x references=%u"
+        " status=0x%08x\n",
+        (unsigned)section,
+        (unsigned)reference_count,
+        (unsigned)status);
+    kernel_return(1u, status);
+}
+
+static void bridge_xe_unload_section(void)
+{
+    uint32_t section = kernel_arg(1u);
+    uint32_t status = recomp_kernel_unload_section(section);
+    uint32_t reference_count = status == STATUS_SUCCESS
+        ? *recomp_memory_u32(section + 0x18u)
+        : 0u;
+
+    fprintf(
+        stderr,
+        "recomp kernel: XeUnloadSection section=0x%08x references=%u"
         " status=0x%08x\n",
         (unsigned)section,
         (unsigned)reference_count,
@@ -457,6 +490,7 @@ RecompFunction recomp_kernel_memory(uint32_t ordinal)
     case 199u: return bridge_nt_free_virtual_memory;
     case 217u: return bridge_nt_query_virtual_memory;
     case 327u: return bridge_xe_load_section;
+    case 328u: return bridge_xe_unload_section;
     default: return NULL;
     }
 }

@@ -1,4 +1,5 @@
 #include "cri_service_adapter.h"
+#include "movie_color_model.h"
 
 #include "stop_report.h"
 
@@ -15,6 +16,7 @@ enum {
     CRI_LANE2_SERVICE_ADDRESS = 0x00193e30u,
     CRI_LANE5_SERVICE_ADDRESS = 0x00193e50u,
     MWP_FRAME_GET_STATUS_ADDRESS = 0x00198320u,
+    MWP_COLOR_CONVERT_ADDRESS = 0x001a8a70u,
     CRI_SYNC_FLAG_ADDRESS = 0x003b772cu,
     CRI_PARTITION_COUNT_ADDRESS = 0x005e69d0u,
 };
@@ -442,6 +444,51 @@ static void recomp_adxf_open_adapter(void)
     }
 }
 
+static uint8_t *movie_span(uint32_t address, uint64_t bytes)
+{
+    if (bytes == 0u || bytes > UINT32_MAX ||
+        (uint64_t)address + bytes > 0x100000000ull) {
+        recomp_stop(2, "cri-movie:invalid-span");
+    }
+    return recomp_memory(address, (size_t)bytes);
+}
+
+static void recomp_mwp_color_convert_adapter(void)
+{
+    uint32_t entry_esp = recomp_runtime.registers.esp;
+    uint32_t arguments[3], source[6], destination[6];
+    RecompMoviePlane planes[3];
+    int16_t table[RECOMP_MOVIE_COLOR_TABLE_ENTRIES];
+
+    recomp_guest_load(arguments, entry_esp + 4u, sizeof arguments);
+    recomp_guest_load(source, arguments[0], sizeof source);
+    recomp_guest_load(destination, arguments[1], sizeof destination);
+    uint32_t width = destination[1], height = destination[2];
+    uint32_t pitch = destination[3];
+    if (width == 0u || height == 0u ||
+        (uint64_t)width * 4u > pitch || destination[4] != pitch ||
+        (uint64_t)pitch * 2u != destination[5]) {
+        recomp_stop(2, "cri-movie:unsupported-output-layout");
+    }
+    for (unsigned i = 0u; i < 3u; ++i) {
+        uint32_t columns = i == 0u ? width : width / 2u + width % 2u;
+        uint32_t rows = i == 0u ? height : height / 2u + height % 2u;
+        uint32_t stride = source[i + 3u];
+        uint64_t bytes = (uint64_t)(rows - 1u) * stride + columns;
+        if (stride < columns) recomp_stop(2, "cri-movie:invalid-plane-stride");
+        planes[i] = (RecompMoviePlane){movie_span(source[i], bytes),
+            (size_t)bytes, stride};
+    }
+    recomp_guest_load(table, arguments[2], sizeof table);
+    uint64_t bytes = (uint64_t)(height - 1u) * pitch + (uint64_t)width * 4u;
+    uint8_t *output = movie_span(destination[0], bytes);
+    if (!recomp_movie_color_convert(planes, width, height, table,
+            RECOMP_MOVIE_COLOR_TABLE_ENTRIES, output, (size_t)bytes, pitch)) {
+        recomp_stop(2, "cri-movie:invalid-color-conversion");
+    }
+    recomp_runtime.registers.esp = entry_esp + 4u;
+}
+
 static void recomp_mwp_frame_get_status_adapter(void)
 {
     RecompCriServiceResult lane2_result = run_file_worker_step();
@@ -450,6 +497,8 @@ static void recomp_mwp_frame_get_status_adapter(void)
         recomp_stop(2, "cri-service:mwp-status-unavailable");
     }
     require_lane2_service(lane2_result);
+    /* Boot movies register their decoder on lane 5 and poll for readiness. */
+    require_lane5_service(run_service_batch(5, &service_hooks.lane5_service, 1u));
     service_hooks.mwp_frame_get_status();
     ++mwp_status_calls;
     if (!have_prior_mwp_status ||
@@ -537,6 +586,8 @@ RecompFunction recomp_cri_service_lookup_manual(uint32_t guest_address)
         return recomp_cri_sync_callback_adapter;
     case MWP_FRAME_GET_STATUS_ADDRESS:
         return recomp_mwp_frame_get_status_adapter;
+    case MWP_COLOR_CONVERT_ADDRESS:
+        return recomp_mwp_color_convert_adapter;
     default:
         return NULL;
     }

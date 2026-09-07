@@ -50,28 +50,36 @@ RecompD3dFrameResult recomp_d3d_frame_clear(
         result.error = RECOMP_D3D_FRAME_UNSUPPORTED_CLEAR_RECTS;
         return result;
     }
-    if (flags != RECOMP_D3D_CLEAR_OBSERVED_FLAGS) {
+    if ((flags & ~RECOMP_D3D_CLEAR_KNOWN_FLAGS) != 0u) {
         result.error = RECOMP_D3D_FRAME_UNSUPPORTED_CLEAR_FLAGS;
         return result;
     }
-    if ((z_bits & 0x7f800000u) == 0x7f800000u) {
+    if ((flags & RECOMP_D3D_CLEAR_DEPTH) != 0u &&
+        (z_bits & 0x7f800000u) == 0x7f800000u) {
         result.error = RECOMP_D3D_FRAME_INVALID_CLEAR_DEPTH;
         return result;
     }
-    if (stencil > 0xffu) {
+    if ((flags & RECOMP_D3D_CLEAR_STENCIL) != 0u && stencil > 0xffu) {
         result.error = RECOMP_D3D_FRAME_INVALID_CLEAR_STENCIL;
         return result;
     }
 
     result.error = RECOMP_D3D_FRAME_OK;
     result.command.type = RECOMP_D3D_PRESENTER_COMMAND_CLEAR;
-    result.command.data.clear.clear_color = true;
-    result.command.data.clear.clear_depth = true;
-    result.command.data.clear.clear_stencil = true;
+    /* D3D11 cannot clear individual render-target color components. Match
+       Cxbx's API-level behavior by treating any Xbox target-component bit as
+       a whole-target clear. */
+    result.command.data.clear.clear_color =
+        (flags & RECOMP_D3D_CLEAR_TARGET) != 0u;
+    result.command.data.clear.clear_depth =
+        (flags & RECOMP_D3D_CLEAR_DEPTH) != 0u;
+    result.command.data.clear.clear_stencil =
+        (flags & RECOMP_D3D_CLEAR_STENCIL) != 0u;
     result.command.data.clear.color = color;
     memcpy(&result.command.data.clear.z, &z_bits, sizeof z_bits);
-    if (result.command.data.clear.z < 0.0f ||
-        result.command.data.clear.z > 1.0f) {
+    if (result.command.data.clear.clear_depth &&
+        (result.command.data.clear.z < 0.0f ||
+         result.command.data.clear.z > 1.0f)) {
         result.error = RECOMP_D3D_FRAME_INVALID_CLEAR_DEPTH;
         return result;
     }

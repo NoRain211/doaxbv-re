@@ -2,9 +2,16 @@
 
 #include <stdint.h>
 
+static uint32_t av_saved_data_address;
+
 uint32_t recomp_kernel_av_get_saved_data_address(void)
 {
-    return 0u;
+    return av_saved_data_address;
+}
+
+void recomp_kernel_av_set_saved_data_address(uint32_t address)
+{
+    av_saved_data_address = address;
 }
 
 uint32_t recomp_kernel_av_send_tv_encoder_option(
@@ -28,6 +35,12 @@ static void bridge_av_get_saved_data_address(void)
     kernel_return(0u, recomp_kernel_av_get_saved_data_address());
 }
 
+static void bridge_av_set_saved_data_address(void)
+{
+    recomp_kernel_av_set_saved_data_address(kernel_arg(1u));
+    kernel_return(1u, 0u);
+}
+
 static void bridge_av_send_tv_encoder_option(void)
 {
     uint32_t register_base = kernel_arg(1u);
@@ -46,6 +59,7 @@ RecompFunction recomp_kernel_video(uint32_t ordinal)
     switch (ordinal) {
     case 1u: return bridge_av_get_saved_data_address;
     case 2u: return bridge_av_send_tv_encoder_option;
+    case 4u: return bridge_av_set_saved_data_address;
     default: return NULL;
     }
 }
