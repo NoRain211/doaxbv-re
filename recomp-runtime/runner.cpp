@@ -1,6 +1,7 @@
 #include "host_diagnostics.h"
 #ifdef RECOMP_FULL_PROGRAM
 #include "cri_service_adapter.h"
+#include "audio_output.h"
 #include "d3d_presenter.h"
 #include "fiber_adapter.h"
 #include "input_adapter.h"
@@ -18,6 +19,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <iostream>
@@ -540,6 +542,8 @@ std::vector<AnalogPulse> inputAnalogPulses;
     recomp_runtime.registers.esp = kStackTop;
 #ifdef RECOMP_FULL_PROGRAM
     recomp_cri_service_adapter_reset();
+    std::atexit(recomp_audio_output_shutdown);
+    recomp_audio_output_initialize();
     recomp_fiber_adapter_reset();
     recomp_input_adapter_reset();
     /* The guest frame loop does not depend on wall-clock time (kernel waits

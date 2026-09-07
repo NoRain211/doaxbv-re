@@ -106,6 +106,7 @@ add_executable(recomp_runtime_test
     d3d_vertex_shader_model.c
     d3d_vertex_shader_adapter.c
     d3d_vertex_shader_model_test.c
+    xbox_adpcm.c
     dsound_service_model.c
     dsound_service_adapter.c
     dsound_service_adapter_test.c
@@ -150,7 +151,7 @@ add_executable(recomp_runtime_test
 target_include_directories(recomp_runtime_test PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(recomp_runtime_test PRIVATE
-    RECOMP_D3D_FRAME_ENABLED)
+    RECOMP_D3D_FRAME_ENABLED RECOMP_DSOUND_TEST_CLOCK)
 if(_recomp_test_uses_public_fixture)
     target_compile_definitions(recomp_runtime_test PRIVATE
         RECOMP_PUBLIC_LEAF_FIXTURE)
@@ -378,8 +379,10 @@ if(RECOMP_PROGRAM_DIR)
         d3d_tile_adapter.c
         d3d_vertex_shader_model.c
         d3d_vertex_shader_adapter.c
+        xbox_adpcm.c
         dsound_service_model.c
         dsound_service_adapter.c
+        audio_output_xaudio2.cpp
         cri_service_model.c
         cri_service_adapter.c
         crt_format_model.c
@@ -420,10 +423,20 @@ if(RECOMP_PROGRAM_DIR)
         "${_recomp_program_dir}"
         "${CMAKE_CURRENT_SOURCE_DIR}/../xbe")
     target_link_libraries(recomp_program_runner PRIVATE
-        bcrypt dbghelp d3d11 d3dcompiler dxgi user32 xinput9_1_0)
+        bcrypt dbghelp d3d11 d3dcompiler dxgi user32 xinput9_1_0 xaudio2 ole32)
 endif()
 
+if(WIN32)
+    add_executable(recomp_audio_output_xaudio2_test audio_output_xaudio2_test.cpp)
+endif()
+
+add_executable(recomp_xbox_adpcm_test xbox_adpcm.c xbox_adpcm_test.c)
+
 include(CTest)
+add_test(NAME recomp-runtime-xbox-adpcm COMMAND recomp_xbox_adpcm_test)
+if(TARGET recomp_audio_output_xaudio2_test)
+    add_test(NAME recomp-runtime-audio-output COMMAND recomp_audio_output_xaudio2_test)
+endif()
 if(_recomp_test_uses_public_fixture)
     add_test(NAME recomp-runtime-public-fixture COMMAND recomp_runtime_test)
 else()

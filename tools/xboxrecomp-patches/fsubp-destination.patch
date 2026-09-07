@@ -1,0 +1,13 @@
+diff --git a/tools/recomp/lifter.py b/tools/recomp/lifter.py
+--- a/tools/recomp/lifter.py
++++ b/tools/recomp/lifter.py
+@@ -2197,7 +2197,8 @@ class Lifter:
+                     return [f"fp_top() -= {source}; /* fsub {insn.op_str} */"]
+             return [f"fp_st1() -= fp_top(); fp_pop(); /* fsub */"]
+         if m == "fsubp":
+-            return [f"fp_st1() -= fp_top(); fp_pop(); /* fsubp */"]
++            dest = _fmt_fpu_stack_register(ops[0]) if ops else "fp_st1()"
++            return [f"{dest} -= fp_top(); fp_pop(); /* fsubp */"]
+         if m == "fmul":
+             if ops:
+                 source = _fmt_fpu_operand(ops[-1])

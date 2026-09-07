@@ -144,6 +144,7 @@ int recomp_cri_service_adapter_test(void)
         .adxf_get_pt_stat = adxf_get_pt_stat,
         .adxf_open = adxf_open,
         .mwp_frame_get_status = mwp_frame_get_status,
+        .adxt_get_stat = adxf_get_stat,
     };
     const RecompCriServiceModel *model;
     RecompFunction adapter;
@@ -161,6 +162,7 @@ int recomp_cri_service_adapter_test(void)
     passed &= expect_lookup(0x00187e40u);
     passed &= expect_lookup(0x00189cb0u);
     passed &= expect_lookup(0x00198320u);
+    passed &= expect_lookup(0x00188590u);
     if (recomp_cri_service_lookup_manual(0x001877cfu) != NULL ||
         recomp_cri_service_lookup_manual(0x001877d1u) != NULL ||
         recomp_cri_service_lookup_manual(0x00187b2fu) != NULL ||
@@ -170,7 +172,9 @@ int recomp_cri_service_adapter_test(void)
         recomp_cri_service_lookup_manual(0x00189cafu) != NULL ||
         recomp_cri_service_lookup_manual(0x00189cb1u) != NULL ||
         recomp_cri_service_lookup_manual(0x0019831fu) != NULL ||
-        recomp_cri_service_lookup_manual(0x00198321u) != NULL) {
+        recomp_cri_service_lookup_manual(0x00198321u) != NULL ||
+        recomp_cri_service_lookup_manual(0x0018858fu) != NULL ||
+        recomp_cri_service_lookup_manual(0x00188591u) != NULL) {
         fprintf(stderr, "CRI service adapter: lookup was not exact\n");
         return 0;
     }
@@ -320,6 +324,23 @@ int recomp_cri_service_adapter_test(void)
         TEST_ENTRY_ESP + 4u);
     passed &= expect_u32("sync return EAX", recomp_runtime.registers.eax, 1u);
     passed &= expect_u32("lane 5 handoffs", model->lane5_handoffs, 1u);
+
+    call_order = 0u;
+    recomp_runtime.registers = (RecompRegisters){
+        .eax = 0x11111111u,
+        .ecx = 0x33333333u,
+        .esp = TEST_ENTRY_ESP,
+    };
+    adapter = recomp_cri_service_lookup_manual(0x00188590u);
+    adapter();
+    passed &= expect_u32("ADXT status worker order", call_order, 2498u);
+    passed &= expect_u32("ADXT status entry ESP", stat_entry_esp, TEST_ENTRY_ESP);
+    passed &= expect_u32("ADXT status return ESP",
+        recomp_runtime.registers.esp, TEST_ENTRY_ESP + 4u);
+    passed &= expect_u32("ADXT status return EAX", recomp_runtime.registers.eax, 4u);
+    passed &= expect_u32("ADXT service register isolation",
+        recomp_runtime.registers.ecx, 0x33333333u);
+    passed &= expect_u32("ADXT worker batches", model->lane2_batches, 5u);
 
     recomp_cri_service_adapter_reset();
     return passed;

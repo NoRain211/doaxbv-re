@@ -8,6 +8,7 @@
 
 enum {
     ADXF_GET_STAT_ADDRESS = 0x001877d0u,
+    ADXT_GET_STAT_ADDRESS = 0x00188590u,
     ADXF_OPEN_ADDRESS = 0x00187e40u,
     ADXF_GET_PT_STAT_ADDRESS = 0x00187b30u,
     CRI_SYNC_CALLBACK_ADDRESS = 0x00189cb0u,
@@ -22,6 +23,7 @@ enum {
 void sub_001877D0(void);
 void sub_00187B30(void);
 void sub_00187E40(void);
+void sub_00188590(void);
 void sub_00189970(void);
 void sub_00193E30(void);
 void sub_00193E50(void);
@@ -37,6 +39,7 @@ static const RecompCriServiceHooks default_hooks = {
     .adxf_get_pt_stat = sub_00187B30,
     .adxf_open = sub_00187E40,
     .mwp_frame_get_status = sub_00198320,
+    .adxt_get_stat = sub_00188590,
 };
 #else
 static const RecompCriServiceHooks default_hooks;
@@ -382,6 +385,19 @@ static void recomp_adxf_get_stat_adapter(void)
 #endif
 }
 
+static void recomp_adxt_get_stat_adapter(void)
+{
+    /* ADXT's startup state advances in its registered lane-2 callback.
+       Status-only voice waits must service that worker just like file waits. */
+    RecompCriServiceResult result = run_file_worker_step();
+
+    if (service_hooks.adxt_get_stat == NULL) {
+        recomp_stop(2, "cri-service:adxt-status-unavailable");
+    }
+    require_lane2_service(result);
+    service_hooks.adxt_get_stat();
+}
+
 static void recomp_adxf_get_pt_stat_adapter(void)
 {
     RecompCriServiceResult lane2_result = run_lane2_batch();
@@ -511,6 +527,8 @@ RecompFunction recomp_cri_service_lookup_manual(uint32_t guest_address)
     switch (guest_address) {
     case ADXF_GET_STAT_ADDRESS:
         return recomp_adxf_get_stat_adapter;
+    case ADXT_GET_STAT_ADDRESS:
+        return recomp_adxt_get_stat_adapter;
     case ADXF_GET_PT_STAT_ADDRESS:
         return recomp_adxf_get_pt_stat_adapter;
     case ADXF_OPEN_ADDRESS:

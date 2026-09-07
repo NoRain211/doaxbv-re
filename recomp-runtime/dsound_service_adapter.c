@@ -1,9 +1,17 @@
 #include "dsound_service_adapter.h"
 #include "xbox_memory_layout.h"
+#include "stop_report.h"
+#include "audio_output.h"
+#include "xbox_adpcm.h"
 
 #include <inttypes.h>
 #include <stdio.h>
 #include <string.h>
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <time.h>
+#endif
 
 enum {
     DIRECT_SOUND_CREATE_ADDRESS = 0x001fa27cu,
@@ -27,6 +35,8 @@ enum {
     DIRECT_SOUND_APU_COUNTER_B_GLOBAL = 0x00214070u,
     DIRECT_SOUND_APU_COUNTER_A_SEED = 0xc0u,
     DIRECT_SOUND_APU_COUNTER_B_SEED = 0x40u,
+    DIRECT_SOUND_VOICE_STATE_GLOBAL = 0x002147e8u,
+    DIRECT_SOUND_VOICE_STATE_ALIGNMENT = 0x8000u,
     DIRECT_SOUND_APU_PAGE_POOL_TAG = 0x00214074u,
     DIRECT_SOUND_APU_MIXER_DEVICE_FIELD = 0x34u,
     DIRECT_SOUND_APU_DEVICE_TAIL_FIELD = 0x74u,
@@ -38,6 +48,211 @@ enum {
 };
 
 static RecompDsoundServiceModel dsound_service_model;
+
+typedef struct BufferClock {
+    uint32_t address;
+    uint32_t data, source_size, format;
+    RecompDsoundBufferModel model;
+    RecompDsoundBufferModel output_model;
+} BufferClock;
+
+static BufferClock buffer_clocks[RECOMP_DSOUND_VOICE_STATE_COUNT];
+
+static void retire_buffer(BufferClock *clock)
+{
+    recomp_audio_output_reset_voice((uint32_t)(clock - buffer_clocks));
+    *clock = (BufferClock){0};
+}
+
+static void pump_buffer(BufferClock *clock, uint64_t now)
+{
+    RecompDsoundBufferModel *output = &clock->output_model;
+    uint32_t settings = *recomp_memory_u32(clock->address);
+    if (clock->data != *recomp_memory_u32(settings + 0xb8u) ||
+        clock->source_size != *recomp_memory_u32(settings + 0xbcu) ||
+        clock->format != *recomp_memory_u32(settings + 0xcu)) {
+        retire_buffer(clock);
+        return;
+    }
+    if (!output->playing || now <= output->last_ms || now - output->last_ms < 10u) {
+        return;
+    }
+    uint32_t channels = (clock->format >> 16u) & 0xffu;
+    uint32_t bits = clock->format >> 24u;
+    int adpcm = (clock->format & 0xffffu) == 0x69u;
+    uint32_t offset = 0u;
+    uint32_t bytes = recomp_dsound_buffer_consume(output, now, &offset);
+    if (bytes == 0u || clock->data == 0u ||
+        clock->data > UINT32_MAX - clock->source_size) {
+        return;
+    }
+    /* Host output owns its copy; the decoder may refill the guest ring immediately. */
+    uint8_t pcm[80000];
+    if (bytes > sizeof pcm) {
+        return;
+    }
+    if (adpcm) {
+        uint32_t block_bytes = XBOX_ADPCM_BLOCK_BYTES * channels;
+        uint32_t decoded_bytes = XBOX_ADPCM_BLOCK_SAMPLES * channels * 2u;
+        for (uint32_t written = 0u; written < bytes;) {
+            uint8_t block[XBOX_ADPCM_BLOCK_BYTES * 2];
+            int16_t decoded[XBOX_ADPCM_BLOCK_SAMPLES * 2];
+            uint32_t within = offset % decoded_bytes;
+            uint32_t count = decoded_bytes - within;
+            if (count > bytes - written) count = bytes - written;
+            recomp_guest_load(block, clock->data + offset / decoded_bytes * block_bytes,
+                block_bytes);
+            if (!xbox_adpcm_decode_block(block, block_bytes, channels,
+                    decoded, XBOX_ADPCM_BLOCK_SAMPLES * 2u)) {
+                retire_buffer(clock);
+                return;
+            }
+            memcpy(pcm + written, (uint8_t *)decoded + within, count);
+            written += count;
+            offset += count;
+            if (offset == output->size_bytes) offset = output->loop_start_bytes;
+        }
+        bits = 16u;
+    } else {
+        for (uint32_t written = 0u; written < bytes;) {
+            uint32_t count = output->size_bytes - offset;
+            if (count > bytes - written) count = bytes - written;
+            recomp_guest_load(pcm + written, clock->data + offset, count);
+            written += count;
+            offset += count;
+            if (offset == output->size_bytes) offset = output->loop_start_bytes;
+        }
+    }
+    recomp_audio_output_submit((uint32_t)(clock - buffer_clocks), pcm, bytes,
+        output->sample_rate, channels, bits,
+        (int32_t)*recomp_memory_u32(settings + 0x1cu));
+}
+
+static uint64_t buffer_now_ms(void)
+{
+#ifdef RECOMP_DSOUND_TEST_CLOCK
+    uint64_t recomp_test_dsound_now_ms(void);
+    return recomp_test_dsound_now_ms();
+#elif defined(_WIN32)
+    return GetTickCount64();
+#else
+    struct timespec now;
+    timespec_get(&now, TIME_UTC);
+    return (uint64_t)now.tv_sec * 1000u + (uint64_t)now.tv_nsec / 1000000u;
+#endif
+}
+
+static BufferClock *find_buffer_clock(uint32_t address)
+{
+    for (size_t i = 0; i < sizeof buffer_clocks / sizeof buffer_clocks[0]; ++i) {
+        if (buffer_clocks[i].address == address && address != 0u) {
+            return &buffer_clocks[i];
+        }
+    }
+    return NULL;
+}
+
+static BufferClock *buffer_clock(uint32_t address)
+{
+    BufferClock *clock = find_buffer_clock(address);
+    if (address == 0u) return NULL;
+    uint32_t settings = *recomp_memory_u32(address);
+    uint32_t size = *recomp_memory_u32(settings + 0xbcu);
+    uint32_t data = *recomp_memory_u32(settings + 0xb8u);
+    uint32_t format = *recomp_memory_u32(settings + 0xcu);
+    uint32_t tag = format & 0xffffu;
+    uint32_t channels = (format >> 16u) & 0xffu;
+    uint32_t bits = format >> 24u;
+    uint32_t align = *recomp_memory_u32(settings + 0x14u);
+    uint32_t rate = *recomp_memory_u32(settings + 0x10u);
+    uint32_t loop_start = *recomp_memory_u32(settings + 0xc8u);
+    if (clock != NULL && (clock->data != data || clock->source_size != size ||
+            clock->format != format)) {
+        retire_buffer(clock);
+        clock = NULL;
+    }
+    /* ponytail: full play regions and tail loops cover the active route;
+       extend non-tail loop ends when an observed sound needs them. */
+    if ((tag != 1u && tag != 0x69u) || size == 0u ||
+        *recomp_memory_u32(settings + 0xc0u) != 0u ||
+        *recomp_memory_u32(settings + 0xc4u) != size ||
+        loop_start >= size ||
+        *recomp_memory_u32(settings + 0xccu) != size - loop_start) {
+        if (clock != NULL) retire_buffer(clock);
+        return NULL;
+    }
+    if (channels < 1u || channels > 2u || rate < 1000u || rate > 200000u ||
+        (tag == 1u && ((bits != 8u && bits != 16u) || align != channels * bits / 8u)) ||
+        (tag == 0x69u && (bits != 4u || align != XBOX_ADPCM_BLOCK_BYTES * channels)) ||
+        align == 0u || size % align != 0u || loop_start % align != 0u) {
+        return NULL;
+    }
+    uint64_t decoded_size = tag == 0x69u
+        ? (uint64_t)(size / align) * XBOX_ADPCM_BLOCK_SAMPLES * channels * 2u : size;
+    if (decoded_size > UINT32_MAX) return NULL;
+    uint32_t decoded_loop_start = tag == 0x69u
+        ? loop_start / align * XBOX_ADPCM_BLOCK_SAMPLES * channels * 2u : loop_start;
+    if (clock != NULL) {
+        if (clock->model.loop_start_bytes != decoded_loop_start) {
+            uint64_t now = buffer_now_ms();
+            pump_buffer(clock, now);
+            recomp_dsound_buffer_cursor(&clock->model, now);
+            recomp_audio_output_reset_voice((uint32_t)(clock - buffer_clocks));
+            clock->model.loop_start_bytes = decoded_loop_start;
+            clock->output_model = clock->model;
+        }
+        return clock;
+    }
+    for (size_t i = 0; i < sizeof buffer_clocks / sizeof buffer_clocks[0]; ++i) {
+        if (buffer_clocks[i].address == 0u) {
+            clock = &buffer_clocks[i];
+            if (recomp_dsound_buffer_configure(&clock->model, (uint32_t)decoded_size,
+                    rate, tag == 0x69u ? channels * 2u : align, buffer_now_ms()) != 0u) {
+                return NULL;
+            }
+            clock->address = address;
+            clock->data = data;
+            clock->source_size = size;
+            clock->format = format;
+            clock->model.loop_start_bytes = decoded_loop_start;
+            clock->output_model = clock->model;
+            return clock;
+        }
+    }
+    recomp_stop(2, "dsound-buffer:voice-capacity");
+    return NULL;
+}
+
+static void original_buffer_call(uint32_t address)
+{
+#ifdef RECOMP_FULL_PROGRAM
+    void sub_001F8FD8(void);
+    void sub_001F8FFC(void);
+    void sub_001F9058(void);
+    void sub_001F9074(void);
+    void sub_001F9094(void);
+    void sub_001F9767(void);
+    void sub_001F84B0(void);
+    void sub_001F9E5E(void);
+    switch (address) {
+    case 0x001f8fd8u: sub_001F8FD8(); return;
+    case 0x001f8ffcu: sub_001F8FFC(); return;
+    case 0x001f9058u: sub_001F9058(); return;
+    case 0x001f9074u: sub_001F9074(); return;
+    case 0x001f9094u: sub_001F9094(); return;
+    case 0x001f9767u: sub_001F9767(); return;
+    case 0x001f84b0u: sub_001F84B0(); return;
+    case 0x001f9e5eu: sub_001F9E5E(); return;
+    }
+#elif defined(RECOMP_DSOUND_TEST_CLOCK)
+    if (address == 0x001f9e5eu) {
+        void recomp_test_dsound_set_data(void);
+        recomp_test_dsound_set_data();
+        return;
+    }
+#endif
+    recomp_stop(2, "dsound-buffer:original-unavailable:%08" PRIx32, address);
+}
 
 static uint32_t stack_argument(uint32_t entry_esp, uint32_t index)
 {
@@ -52,6 +267,135 @@ static float stack_float(uint32_t entry_esp, uint32_t index)
     memcpy(&value, &bits, sizeof value);
     return value;
 }
+
+static void buffer_call(uint32_t operation, uint32_t argument_count)
+{
+    uint32_t entry = recomp_runtime.registers.esp;
+    uint32_t address = stack_argument(entry, 0u);
+    BufferClock *clock;
+    uint32_t result = RECOMP_DSOUND_OK;
+    uint64_t now;
+    int continue_output = 0;
+    static uint32_t reported_plays;
+
+    if (address == 0u) {
+        recomp_runtime.registers.eax = RECOMP_DSOUND_POINTER_ERROR;
+        recomp_runtime.registers.esp = entry + 4u + argument_count * 4u;
+        return;
+    }
+    if (operation == 0x001f9e5eu) {
+        clock = find_buffer_clock(address);
+        original_buffer_call(operation);
+        uint32_t settings = *recomp_memory_u32(address);
+        if (clock != NULL && (clock->data != *recomp_memory_u32(settings + 0xb8u) ||
+                clock->source_size != *recomp_memory_u32(settings + 0xbcu))) {
+            retire_buffer(clock);
+        }
+        return;
+    }
+    if (operation == 0x001f84b0u) {
+        clock = find_buffer_clock(address);
+        original_buffer_call(operation);
+        if (clock != NULL && recomp_runtime.registers.eax == 0u) {
+            recomp_audio_output_reset_voice((uint32_t)(clock - buffer_clocks));
+            *clock = (BufferClock){0};
+        }
+        return;
+    }
+    clock = buffer_clock(address);
+    if (operation == 0x001f8fd8u && reported_plays++ < 16u) {
+        uint32_t settings = *recomp_memory_u32(address);
+        fprintf(stderr, "recomp audio: Play buffer=%08" PRIx32
+            " format=%08" PRIx32 " bytes=%" PRIu32 " rate=%" PRIu32
+            " flags=%" PRIu32 " pcm_clock=%u\n", address,
+            *recomp_memory_u32(settings + 0xcu),
+            *recomp_memory_u32(settings + 0xbcu),
+            *recomp_memory_u32(settings + 0x10u), stack_argument(entry, 3u),
+            clock != NULL);
+    }
+    if (clock == NULL) {
+        original_buffer_call(operation);
+        return;
+    }
+    now = buffer_now_ms();
+    pump_buffer(clock, now);
+    switch (operation) {
+    case 0x001f8fd8u:
+        recomp_dsound_buffer_cursor(&clock->model, now);
+        continue_output = clock->model.playing && clock->output_model.playing &&
+            !(stack_argument(entry, 3u) & RECOMP_DSOUND_PLAY_FROMSTART);
+        result = recomp_dsound_buffer_play(
+            &clock->model, stack_argument(entry, 3u), now);
+        break;
+    case 0x001f8ffcu:
+        recomp_dsound_buffer_stop(&clock->model, now);
+        break;
+    case 0x001f9058u: {
+        uint32_t output = stack_argument(entry, 1u);
+        recomp_dsound_buffer_cursor(&clock->model, now);
+        if (output == 0u) {
+            result = RECOMP_DSOUND_POINTER_ERROR;
+        } else {
+            *recomp_memory_u32(output) = clock->model.playing
+                ? 1u | ((clock->model.play_flags & 1u) ? 4u : 0u) : 0u;
+        }
+        break;
+    }
+    case 0x001f9074u: {
+        uint32_t cursor = recomp_dsound_buffer_cursor(&clock->model, now);
+        for (uint32_t i = 1u; i <= 2u; ++i) {
+            uint32_t output = stack_argument(entry, i);
+            if (output != 0u) {
+                /* Output queues lag this clock; they never drive guest progress. */
+                *recomp_memory_u32(output) = (clock->format & 0xffffu) == 0x69u
+                    ? cursor / (XBOX_ADPCM_BLOCK_SAMPLES * clock->model.block_align) *
+                        (XBOX_ADPCM_BLOCK_BYTES * clock->model.block_align / 2u)
+                    : cursor;
+            }
+        }
+        break;
+    }
+    case 0x001f9094u: {
+        uint32_t position = stack_argument(entry, 1u);
+        if ((clock->format & 0xffffu) == 0x69u) {
+            uint32_t block = XBOX_ADPCM_BLOCK_BYTES * clock->model.block_align / 2u;
+            if (position >= clock->source_size || position % block != 0u) {
+                result = RECOMP_DSOUND_INVALID_PARAM;
+                break;
+            }
+            position = position / block * XBOX_ADPCM_BLOCK_SAMPLES * clock->model.block_align;
+        }
+        result = recomp_dsound_buffer_set_position(&clock->model, position, now);
+        break;
+    }
+    case 0x001f9767u:
+        result = recomp_dsound_buffer_set_frequency(
+            &clock->model, stack_argument(entry, 1u), now);
+        break;
+    }
+    if (result == RECOMP_DSOUND_OK && operation != 0x001f9058u &&
+        operation != 0x001f9074u) {
+        if (operation != 0x001f8fd8u || !continue_output) {
+            recomp_audio_output_reset_voice((uint32_t)(clock - buffer_clocks));
+        }
+        if (continue_output) {
+            clock->output_model.play_flags = clock->model.play_flags;
+        } else {
+            clock->output_model = clock->model;
+        }
+    }
+    recomp_runtime.registers.eax = result;
+    recomp_runtime.registers.esp = entry + 4u + argument_count * 4u;
+}
+
+static void buffer_play(void) { buffer_call(0x001f8fd8u, 4u); }
+static void buffer_stop(void) { buffer_call(0x001f8ffcu, 1u); }
+static void buffer_status(void) { buffer_call(0x001f9058u, 2u); }
+static void buffer_position(void) { buffer_call(0x001f9074u, 3u); }
+static void buffer_seek(void) { buffer_call(0x001f9094u, 2u); }
+static void buffer_frequency(void) { buffer_call(0x001f9767u, 2u); }
+static void buffer_set_data(void) { buffer_call(0x001f9e5eu, 3u); }
+static void buffer_release(void) { buffer_call(0x001f84b0u, 1u); }
 
 /* A list the constructors leave empty: both links point at the entry itself,
    which is how the generated walkers recognise the end. */
@@ -112,6 +456,25 @@ static void write_apu_object(const RecompDsoundServiceModel *model)
     }
 }
 
+/* sub_00200468 descriptor 3 allocates this 0x8000-byte, 0x8000-aligned
+   software voice-state table and publishes it at 0x002147E8. sub_001FFBD6
+   then seeds the voice index at +0x7C in each 0x80-byte record. Generated
+   stream cleanup uses the table even under the no-audio policy. */
+static void write_voice_state_table(const RecompDsoundServiceModel *model)
+{
+    uint32_t index;
+
+    recomp_guest_memset(
+        model->voice_state_table, 0, RECOMP_DSOUND_VOICE_STATE_TABLE_SIZE);
+    for (index = 0u; index < RECOMP_DSOUND_VOICE_STATE_COUNT; ++index) {
+        *recomp_memory_u32(
+            model->voice_state_table + index * RECOMP_DSOUND_VOICE_STATE_SIZE +
+            RECOMP_DSOUND_VOICE_STATE_INDEX_OFFSET) = index;
+    }
+    *recomp_memory_u32(DIRECT_SOUND_VOICE_STATE_GLOBAL) =
+        model->voice_state_table;
+}
+
 static void write_created_objects(const RecompDsoundServiceModel *model)
 {
     uint32_t list_head =
@@ -145,6 +508,7 @@ static void write_created_objects(const RecompDsoundServiceModel *model)
         model->device + RECOMP_DSOUND_DEVICE_EFFECTS_HANDLE_OFFSET) =
         RECOMP_DSOUND_DEVICE_EFFECTS_HANDLE_NONE;
     write_apu_object(model);
+    write_voice_state_table(model);
     *recomp_memory_u32(DIRECT_SOUND_MANAGER_GLOBAL) = model->manager;
 }
 
@@ -160,8 +524,19 @@ static void recomp_dsound_create_adapter(void)
     if (output_address != 0u) {
         *recomp_memory_u32(output_address) = 0u;
         resources.manager = xbox_HeapAlloc(RECOMP_DSOUND_MANAGER_SIZE, 16u);
-        resources.device = xbox_HeapAlloc(RECOMP_DSOUND_DEVICE_SIZE, 16u);
-        resources.apu = xbox_HeapAlloc(RECOMP_DSOUND_APU_SIZE, 16u);
+        if (resources.manager != 0u) {
+            resources.device = xbox_HeapAlloc(RECOMP_DSOUND_DEVICE_SIZE, 16u);
+        }
+        if (resources.device != 0u) {
+            resources.apu = xbox_HeapAlloc(RECOMP_DSOUND_APU_SIZE, 16u);
+        }
+        if (resources.apu != 0u) {
+            resources.voice_state_table = xbox_ContiguousAlloc(
+                RECOMP_DSOUND_VOICE_STATE_TABLE_SIZE,
+                0u,
+                UINT32_MAX,
+                DIRECT_SOUND_VOICE_STATE_ALIGNMENT);
+        }
         result = recomp_dsound_create(
             &dsound_service_model, &resources, &public_device);
     }
@@ -175,18 +550,26 @@ static void recomp_dsound_create_adapter(void)
 
     fprintf(
         stderr,
-        "recomp dsound: DirectSoundCreate policy=no-audio result=0x%08"
-        PRIx32 " device=0x%08" PRIx32 " apu=0x%08" PRIx32 "\n",
+        "recomp dsound: DirectSoundCreate policy=host-pcm result=0x%08"
+        PRIx32 " device=0x%08" PRIx32 " apu=0x%08" PRIx32
+        " voices=0x%08" PRIx32 "\n",
         result,
         public_device,
-        dsound_service_model.apu);
+        dsound_service_model.apu,
+        dsound_service_model.voice_state_table);
     recomp_runtime.registers.eax = result;
     recomp_runtime.registers.esp = entry_esp + 16u;
 }
 
 void recomp_dsound_service_adapter_reset(void)
 {
+    for (uint32_t i = 0u; i < RECOMP_DSOUND_VOICE_STATE_COUNT; ++i) {
+        if (buffer_clocks[i].address != 0u) {
+            recomp_audio_output_reset_voice(i);
+        }
+    }
     recomp_dsound_service_reset(&dsound_service_model);
+    memset(buffer_clocks, 0, sizeof buffer_clocks);
 }
 
 const RecompDsoundServiceModel *recomp_dsound_service_adapter_model(void)
@@ -199,10 +582,17 @@ static void recomp_dsound_do_work_adapter(void)
     uint32_t entry_esp = recomp_runtime.registers.esp;
 
     recomp_dsound_do_work(&dsound_service_model);
+    uint64_t now = buffer_now_ms();
+    for (uint32_t i = 0u; i < RECOMP_DSOUND_VOICE_STATE_COUNT; ++i) {
+        if (buffer_clocks[i].address != 0u) {
+            BufferClock *clock = buffer_clock(buffer_clocks[i].address);
+            if (clock != NULL) pump_buffer(clock, now);
+        }
+    }
     if (dsound_service_model.work_count == 1u) {
         fprintf(
             stderr,
-            "recomp dsound: DirectSoundDoWork policy=no-audio-service"
+            "recomp dsound: DirectSoundDoWork policy=host-pcm-service"
             " count=%" PRIu32 "\n",
             dsound_service_model.work_count);
     }
@@ -287,6 +677,14 @@ static void recomp_dsound_commit_deferred_settings_adapter(void)
 RecompFunction recomp_dsound_service_lookup_manual(uint32_t guest_address)
 {
     switch (guest_address) {
+    case 0x001f8fd8u: return buffer_play;
+    case 0x001f8ffcu: return buffer_stop;
+    case 0x001f9058u: return buffer_status;
+    case 0x001f9074u: return buffer_position;
+    case 0x001f9094u: return buffer_seek;
+    case 0x001f9767u: return buffer_frequency;
+    case 0x001f84b0u: return buffer_release;
+    case 0x001f9e5eu: return buffer_set_data;
     case DIRECT_SOUND_CREATE_ADDRESS:
         return recomp_dsound_create_adapter;
     case DIRECT_SOUND_DO_WORK_ADDRESS:

@@ -29,7 +29,7 @@ jobs:
       - name: Configure public runtime tests
         run: cmake -S recomp-runtime -B build/recomp-runtime
       - name: Build public runtime tests
-        run: cmake --build build/recomp-runtime --config Debug --target recomp_runtime_test
+        run: cmake --build build/recomp-runtime --config Debug
       - name: Run public runtime tests
         run: ctest --test-dir build/recomp-runtime -C Debug --output-on-failure
       - name: Prove partial authentication fails closed

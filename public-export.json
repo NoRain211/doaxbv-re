@@ -17,6 +17,7 @@
     "docs/agents/issue-tracker.md",
     "docs/agents/triage-labels.md",
     "docs/building.md",
+    "docs/native-audio.md",
     "docs/public-status.md",
     "docs/wayfinder/research/audio-movie-replacements.md",
     "docs/wayfinder/research/host-shell-redistribution.md",
@@ -27,6 +28,7 @@
     "tools/README.md",
     "tools/public_export.py",
     "tools/xboxrecomp",
+    "tools/xboxrecomp-patches/**",
     "xbe/**"
   ],
   "quarantine": [

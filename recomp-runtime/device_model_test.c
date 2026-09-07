@@ -17,6 +17,11 @@ static uint32_t test_heap_cursor;
 static int test_heap_fail_after;
 static unsigned test_heap_allocations;
 static uint32_t test_heap_freed;
+static unsigned test_contiguous_allocations;
+static uint32_t test_contiguous_size;
+static uint32_t test_contiguous_lowest;
+static uint32_t test_contiguous_highest;
+static uint32_t test_contiguous_alignment;
 
 uint32_t xbox_HeapAlloc(uint32_t size, uint32_t alignment)
 {
@@ -41,12 +46,32 @@ uint32_t xbox_ContiguousAlloc(
     uint32_t highest_address,
     uint32_t alignment)
 {
-    (void)lowest_address;
-    (void)highest_address;
+    ++test_contiguous_allocations;
+    test_contiguous_size = size;
+    test_contiguous_lowest = lowest_address;
+    test_contiguous_highest = highest_address;
+    test_contiguous_alignment = alignment;
     if (alignment < 0x1000u) {
         alignment = 0x1000u;
     }
     return xbox_HeapAlloc(size, alignment);
+}
+
+unsigned recomp_test_contiguous_allocation_count(void)
+{
+    return test_contiguous_allocations;
+}
+
+void recomp_test_contiguous_allocation_arguments(
+    uint32_t *size,
+    uint32_t *lowest_address,
+    uint32_t *highest_address,
+    uint32_t *alignment)
+{
+    *size = test_contiguous_size;
+    *lowest_address = test_contiguous_lowest;
+    *highest_address = test_contiguous_highest;
+    *alignment = test_contiguous_alignment;
 }
 
 void xbox_HeapFree(uint32_t guest_address)
@@ -88,6 +113,11 @@ void recomp_test_heap_reset(uint32_t cursor, int fail_after)
     test_heap_fail_after = fail_after;
     test_heap_allocations = 0u;
     test_heap_freed = 0u;
+    test_contiguous_allocations = 0u;
+    test_contiguous_size = 0u;
+    test_contiguous_lowest = 0u;
+    test_contiguous_highest = 0u;
+    test_contiguous_alignment = 0u;
 }
 
 int recomp_device_model_test(void)

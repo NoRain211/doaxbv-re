@@ -7,6 +7,11 @@ enum {
     RECOMP_DSOUND_MANAGER_SIZE = 0x28u,
     RECOMP_DSOUND_DEVICE_SIZE = 0xa8u,
     RECOMP_DSOUND_APU_SIZE = 0x7e0u,
+    RECOMP_DSOUND_VOICE_STATE_SIZE = 0x80u,
+    RECOMP_DSOUND_VOICE_STATE_COUNT = 0x100u,
+    RECOMP_DSOUND_VOICE_STATE_TABLE_SIZE =
+        RECOMP_DSOUND_VOICE_STATE_SIZE * RECOMP_DSOUND_VOICE_STATE_COUNT,
+    RECOMP_DSOUND_VOICE_STATE_INDEX_OFFSET = 0x7cu,
     RECOMP_DSOUND_MANAGER_DEVICE_OFFSET = 0x08u,
     RECOMP_DSOUND_MANAGER_APU_OFFSET = 0x0cu,
     RECOMP_DSOUND_MANAGER_LIST_FORWARD_OFFSET = 0x10u,
@@ -23,7 +28,41 @@ enum {
     RECOMP_DSOUND_OK = 0x00000000u,
     RECOMP_DSOUND_POINTER_ERROR = 0x80004003u,
     RECOMP_DSOUND_OUT_OF_MEMORY = 0x8007000eu,
+    RECOMP_DSOUND_INVALID_PARAM = 0x80070057u,
+    RECOMP_DSOUND_PLAY_LOOPING = 1u,
+    RECOMP_DSOUND_PLAY_FROMSTART = 2u,
 };
+
+typedef struct RecompDsoundBufferModel {
+    uint32_t size_bytes;
+    uint32_t sample_rate;
+    uint32_t original_sample_rate;
+    uint32_t block_align;
+    uint32_t cursor_bytes;
+    uint32_t loop_start_bytes;
+    uint32_t frame_remainder;
+    uint32_t play_flags;
+    uint32_t playing;
+    uint64_t last_ms;
+} RecompDsoundBufferModel;
+
+uint32_t recomp_dsound_buffer_configure(
+    RecompDsoundBufferModel *model, uint32_t size_bytes,
+    uint32_t sample_rate, uint32_t block_align, uint64_t now_ms);
+uint32_t recomp_dsound_buffer_cursor(
+    RecompDsoundBufferModel *model, uint64_t now_ms);
+/* Consume elapsed PCM on a separate output clock; wrap at size_bytes to
+   loop_start_bytes when looping. A span can cover multiple loop iterations. */
+uint32_t recomp_dsound_buffer_consume(
+    RecompDsoundBufferModel *model, uint64_t now_ms, uint32_t *offset_bytes);
+uint32_t recomp_dsound_buffer_play(
+    RecompDsoundBufferModel *model, uint32_t flags, uint64_t now_ms);
+void recomp_dsound_buffer_stop(
+    RecompDsoundBufferModel *model, uint64_t now_ms);
+uint32_t recomp_dsound_buffer_set_position(
+    RecompDsoundBufferModel *model, uint32_t position_bytes, uint64_t now_ms);
+uint32_t recomp_dsound_buffer_set_frequency(
+    RecompDsoundBufferModel *model, uint32_t sample_rate, uint64_t now_ms);
 
 typedef struct RecompDsoundVector {
     float x;
@@ -41,6 +80,7 @@ typedef struct RecompDsoundServiceModel {
     uint32_t manager;
     uint32_t device;
     uint32_t apu;
+    uint32_t voice_state_table;
     uint32_t public_device;
     uint32_t manager_reference_count;
     uint32_t device_reference_count;
@@ -57,6 +97,7 @@ typedef struct RecompDsoundCreateResources {
     uint32_t manager;
     uint32_t device;
     uint32_t apu;
+    uint32_t voice_state_table;
 } RecompDsoundCreateResources;
 
 void recomp_dsound_service_reset(RecompDsoundServiceModel *model);

@@ -12,6 +12,7 @@ void recomp_input_pulse_source_init(
     source->pulse_poll_count = 0u;
     source->a_poll_count = 0u;
     source->buttons_poll_count = 0u;
+    source->analog_poll_count = 0u;
     source->sample_count = 0u;
     (void)recomp_input_pulse_source_add_poll(source, pulse_poll);
 }
