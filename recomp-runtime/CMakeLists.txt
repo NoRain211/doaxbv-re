@@ -76,7 +76,7 @@ if(RECOMP_FUNCTION_SOURCE)
     set(_recomp_test_uses_public_fixture FALSE)
 endif()
 
-set(RECOMP_PROGRAM_EBP_EXPECTED 11147 CACHE STRING
+set(RECOMP_PROGRAM_EBP_EXPECTED 11052 CACHE STRING
     "Expected generated EBP prologue override count")
 
 add_executable(recomp_runtime_test
@@ -96,6 +96,7 @@ add_executable(recomp_runtime_test
     d3d_frame_model_test.c
     d3d_frame_adapter.c
     d3d_frame_adapter_test.c
+    d3d_vblank.cpp
     d3d_presenter_memory.c
     d3d_presenter_memory_test.c
     d3d_render_state_model.c
@@ -390,6 +391,7 @@ if(RECOMP_PROGRAM_DIR)
         d3d_draw_adapter.c
         d3d_frame_model.c
         d3d_frame_adapter.c
+        d3d_vblank.cpp
         d3d_presenter_d3d11.cpp
         d3d_render_state_model.c
         d3d_render_state_adapter.c

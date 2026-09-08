@@ -325,6 +325,96 @@ static bool testOffscreenRendering(
     return true;
 }
 
+static bool testCompressedMips(RecompD3dPresenter *presenter,
+    ID3D11Texture2D *color, ID3D11Texture2D *readback)
+{
+    struct Vertex { float x, y, z, rhw; uint32_t color; float u, v; };
+    Vertex vertices[4]{};
+    const uint16_t indices[] = {0, 1, 2, 3};
+    for (uint32_t i = 0; i < 4; ++i) {
+        vertices[i] = {i & 1u ? 3.5f : -0.5f, i & 2u ? 3.5f : -0.5f,
+            0, 1, 0xffffffffu, i & 1u ? 8.0f : 0.0f, i & 2u ? 8.0f : 0.0f};
+    }
+    uint8_t pixels[56]{};
+    const uint16_t colors[] = {0xf800, 0xf800, 0xf800, 0xf800, 0x07e0, 0x001f, 0xffff};
+    for (uint32_t block = 0; block < 7; ++block) {
+        std::memcpy(pixels + block * 8, &colors[block], 2);
+        std::memcpy(pixels + block * 8 + 2, &colors[block], 2);
+    }
+    RecompD3dPresenterDrawCommand draw{};
+    draw.fvf = 0x144;
+    draw.vertex_stride = sizeof(Vertex);
+    draw.vertex_count = draw.index_count = 4;
+    draw.triangle_count = 2;
+    draw.primitive_type = RECOMP_D3D_PT_TRIANGLESTRIP;
+    draw.vertex_bytes = vertices;
+    draw.index_bytes = indices;
+    draw.blend.color_write_mask = 15;
+    draw.has_texture = true;
+    draw.texture.data = 0x00650000;
+    draw.texture.format_byte = RECOMP_D3D_TEXTURE_FORMAT_DXT1;
+    draw.texture.bits_per_pixel = 4;
+    draw.texture.width = draw.texture.height = 8;
+    draw.texture.mip_levels = 4;
+    draw.texture_bytes = pixels;
+    draw.texture_byte_count = sizeof pixels;
+    const uint32_t white[] = {0xffffffff,0xffffffff,0xffffffff,0xffffffff};
+    if (submitDraw(presenter, draw) != RECOMP_D3D_PRESENTER_OK ||
+        !checkPixels(presenter, color, readback, "minification samples guest mip tail", white)) return false;
+    --draw.texture_byte_count;
+    if (lookupTexture(presenter, draw) != nullptr) return false;
+    draw.texture_byte_count = sizeof pixels;
+    draw.texture.mip_levels = 1;
+    const uint32_t red[] = {0xffff0000,0xffff0000,0xffff0000,0xffff0000};
+    return submitDraw(presenter, draw) == RECOMP_D3D_PRESENTER_OK &&
+        checkPixels(presenter, color, readback, "mip count changes cache identity", red);
+}
+
+static bool testAlphaMask(RecompD3dPresenter *presenter,
+    ID3D11Texture2D *color, ID3D11Texture2D *readback)
+{
+    struct Vertex { float x, y, z, rhw; uint32_t color; float uv[2][2]; };
+    static_assert(sizeof(Vertex) == 36u, "two UV sets");
+    Vertex vertices[4]{};
+    const uint16_t indices[] = {0, 1, 2, 3};
+    for (uint32_t i = 0; i < 4; ++i) {
+        vertices[i] = {i & 1u ? 3.5f : -0.5f, i & 2u ? 3.5f : -0.5f,
+            0, 1, 0x80808080u, {{i & 1u ? 1.0f : 0.0f, i & 2u ? 1.0f : 0.0f},
+                {i & 1u ? 0.0f : 1.0f, i & 2u ? 1.0f : 0.0f}}};
+    }
+    const uint32_t pixels[] = {0x13ff0000, 0x1300ff00, 0x130000ff, 0x13ffff00};
+    const uint8_t mask[] = {0, 1, 2, 3};
+    uint32_t palette[256] = {0x00123456, 0x80123456, 0xff123456, 0x40123456};
+    RecompD3dPresenterDrawCommand draw{};
+    draw.fvf = 0x244;
+    draw.vertex_stride = sizeof(Vertex);
+    draw.vertex_count = draw.index_count = 4;
+    draw.triangle_count = 2;
+    draw.primitive_type = RECOMP_D3D_PT_TRIANGLESTRIP;
+    draw.vertex_bytes = vertices;
+    draw.index_bytes = indices;
+    draw.blend.color_write_mask = 15;
+    draw.has_texture = draw.has_alpha_mask = true;
+    draw.texture = {};
+    draw.texture.data = 0x00630000;
+    draw.texture.format_byte = RECOMP_D3D_TEXTURE_FORMAT_A8R8G8B8;
+    draw.texture.bits_per_pixel = 32;
+    draw.texture.width = 4; draw.texture.height = 1;
+    draw.texture_bytes = pixels;
+    draw.texture_byte_count = sizeof pixels;
+    draw.alpha_mask = draw.texture;
+    draw.alpha_mask.data = 0x00640000;
+    draw.alpha_mask.format_byte = RECOMP_D3D_TEXTURE_FORMAT_P8;
+    draw.alpha_mask.bits_per_pixel = 8;
+    draw.alpha_mask_bytes = mask;
+    draw.alpha_mask_byte_count = sizeof mask;
+    draw.alpha_mask_palette = palette;
+    draw.alpha_mask_palette_byte_count = sizeof palette;
+    const uint32_t expected[] = {0x00808000, 0x40000080, 0x80008000, 0x20800000};
+    return submitDraw(presenter, draw) == RECOMP_D3D_PRESENTER_OK &&
+        checkPixels(presenter, color, readback, "independent UV color and palette alpha", expected);
+}
+
 static bool testFourTapFilter(
     RecompD3dPresenter *presenter,
     ID3D11Texture2D *color,
@@ -1244,6 +1334,8 @@ int main()
         !testOffscreenRendering(&presenter, color, readback, false)) {
         status = 70;
     }
+    if (status == 0 && !testCompressedMips(&presenter, color, readback)) status = 92;
+    if (status == 0 && !testAlphaMask(&presenter, color, readback)) status = 91;
     if (status == 0 && !testFourTapFilter(&presenter, color, readback)) status = 87;
     if (status == 0 && !testPretransformedGlyphs(&presenter, color, readback)) {
         status = 85;

@@ -368,9 +368,6 @@ static bool swizzled_byte_count(
     const RecompD3dTextureDesc *desc,
     uint32_t *out)
 {
-    uint32_t blocks_wide;
-    uint32_t blocks_high;
-
     if (desc->linear && desc->format_byte == 0x12u) {
         uint64_t row_bytes = (uint64_t)desc->width * 4u;
         uint64_t bytes;
@@ -402,14 +399,11 @@ static bool swizzled_byte_count(
         desc->format_byte != RECOMP_D3D_TEXTURE_FORMAT_DXT5) {
         return false;
     }
-    blocks_wide = (desc->width + 3u) / 4u;
-    blocks_high = (desc->height + 3u) / 4u;
-    *out = blocks_wide * blocks_high *
-        (desc->format_byte == RECOMP_D3D_TEXTURE_FORMAT_DXT1 ? 8u : 16u);
-    return true;
+    *out = recomp_d3d_texture_compressed_mip_span(desc);
+    return *out != 0u;
 }
 
-static bool attach_stage0_palette(RecompD3dPresenterDrawCommand *draw)
+static bool attach_palette(uint32_t stage, RecompD3dPresenterDrawCommand *draw)
 {
     const uint8_t *bytes = guest_span(D3D_DEVICE_GLOBAL, 4u);
     uint32_t device, palette, common, data;
@@ -417,8 +411,8 @@ static bool attach_stage0_palette(RecompD3dPresenterDrawCommand *draw)
     if (bytes == NULL) return false;
     memcpy(&device, bytes, sizeof device);
     /* Original SetPalette (001E45D0) stores stage 0 at device + 0xB48. */
-    if (device == 0u || (uint64_t)device + 0xb48u > UINT32_MAX) return false;
-    bytes = guest_span(device + 0xb48u, 4u);
+    if (device == 0u || (uint64_t)device + 0xb48u + stage * 4u > UINT32_MAX) return false;
+    bytes = guest_span(device + 0xb48u + stage * 4u, 4u);
     if (bytes == NULL) return false;
     memcpy(&palette, bytes, sizeof palette);
     if (palette == 0u) return false;
@@ -436,9 +430,9 @@ static bool attach_stage0_palette(RecompD3dPresenterDrawCommand *draw)
     return true;
 }
 
-static void attach_stage0_texture(RecompD3dPresenterDrawCommand *draw)
+static void attach_texture(uint32_t stage, RecompD3dPresenterDrawCommand *draw)
 {
-    const RecompD3dTextureDesc *desc = recomp_d3d_texture_adapter_stage(0u);
+    const RecompD3dTextureDesc *desc = recomp_d3d_texture_adapter_stage(stage);
     const uint8_t *bytes;
     uint32_t byte_count;
 
@@ -459,7 +453,7 @@ static void attach_stage0_texture(RecompD3dPresenterDrawCommand *draw)
         return;
     }
     if (desc->format_byte == RECOMP_D3D_TEXTURE_FORMAT_P8 &&
-        !attach_stage0_palette(draw)) {
+        !attach_palette(stage, draw)) {
         ++draw_unsupported_formats[RECOMP_D3D_TEXTURE_FORMAT_P8];
         return;
     }
@@ -718,7 +712,7 @@ static bool attach_draw_state(uint32_t device, RecompD3dPresenterDrawCommand *dr
         }
     }
     if (!recomp_d3d_frame_adapter_target(&draw->target)) return false;
-    attach_stage0_texture(draw);
+    attach_texture(0u, draw);
     attach_backbuffer_texture(device, draw);
     return true;
 }
@@ -729,7 +723,7 @@ static struct {
     bool configured, done;
     const char *path;
     FILE *file;
-    uint32_t at, rows, draws, accepted, scans, partial;
+    uint32_t at, fvf, rows, draws, accepted, scans, partial;
     char buffer[65536];
 } draw_capture;
 
@@ -738,7 +732,7 @@ typedef struct CaptureBounds {
     uint32_t finite, nonfinite;
 } CaptureBounds;
 
-static bool capture_open(uint32_t present)
+static bool capture_open(uint32_t present, uint32_t fvf)
 {
     if (!draw_capture.configured) {
         const char *at = getenv("RECOMP_D3D_DRAW_CAPTURE_AT");
@@ -759,6 +753,13 @@ static bool capture_open(uint32_t present)
             return false;
         }
         draw_capture.at = (uint32_t)value;
+        const char *filter = getenv("RECOMP_D3D_DRAW_CAPTURE_FVF");
+        if (filter != NULL) draw_capture.fvf = (uint32_t)strtoul(filter, NULL, 0);
+    }
+    if (!draw_capture.done && draw_capture.fvf != 0u) {
+        if (fvf != draw_capture.fvf) return false;
+        draw_capture.at = present;
+        draw_capture.fvf = 0u;
     }
     if (draw_capture.done || present != draw_capture.at) {
         return false;
@@ -842,7 +843,7 @@ static void capture_draw(
     const char *outcome)
 {
     const uint32_t present = recomp_d3d_frame_adapter_swap_counter() + 1u;
-    if (!capture_open(present)) return;
+    if (!capture_open(present, draw_state.fvf)) return;
 
     const RecompD3dTextureDesc *texture;
     RecompD3dVertexLayout layout;
@@ -1072,7 +1073,7 @@ static void capture_draw(
 
 void recomp_d3d_draw_adapter_capture_present(uint32_t present, uint32_t presenter_error)
 {
-    if (!capture_open(present)) return;
+    if (!capture_open(present, 0u)) return;
     fprintf(draw_capture.file,
         "{\"kind\":\"end\",\"present\":%u,\"present_error\":%u,\"rows\":%u,"
         "\"accepted\":%u,\"declined\":%u,\"rows_dropped\":%u,\"index_scans\":%u,\"partial_bounds\":%u}\n",
@@ -1589,6 +1590,67 @@ finished:
         capture_command, decline != NULL ? decline : "accepted");
 }
 
+static bool attach_alpha_mask(uint32_t device, RecompD3dPresenterDrawCommand *draw)
+{
+    /* Measured fixed-function stages: RGB = stage1 * diffuse,
+       alpha = stage0 * diffuse. Stage 2 is disabled. */
+    static const uint32_t expected[][2] = {
+        {0x30,3}, {0x38,2}, {0x3c,0}, {0x40,4}, {0x48,2}, {0x4c,0}, {0x70,0},
+        {0xb0,4}, {0xb8,2}, {0xbc,0}, {0xc0,1}, {0xc8,2}, {0xcc,0}, {0xf0,1},
+        {0x130,1}};
+    uint32_t value;
+    if (!capture_word(device, 0x370u, &value) || value != 0u) return false;
+    for (uint32_t i = 0; i < sizeof expected / sizeof expected[0]; ++i) {
+        if (!capture_word(0x001f2988u, expected[i][0], &value) || value != expected[i][1]) return false;
+    }
+    for (uint32_t stage = 0; stage < 2; ++stage) {
+        const uint32_t offsets[] = {0, 4, 12, 16};
+        for (uint32_t i = 0; i < 4; ++i) {
+            if (!capture_word(0x001f2988u + stage * 0x80u, offsets[i], &value) ||
+                value != (i < 2 ? 3u : 2u)) return false;
+        }
+    }
+    draw->alpha_mask = draw->texture;
+    draw->alpha_mask_bytes = draw->texture_bytes;
+    draw->alpha_mask_byte_count = draw->texture_byte_count;
+    draw->alpha_mask_palette = draw->palette_bytes;
+    draw->alpha_mask_palette_byte_count = draw->palette_byte_count;
+    if (!draw->has_texture || !draw->alpha_mask_bytes || draw->texture.depth) return false;
+    draw->has_texture = false;
+    draw->texture_bytes = draw->palette_bytes = NULL;
+    draw->texture_byte_count = draw->palette_byte_count = 0u;
+    attach_texture(1u, draw);
+    if (!draw->has_texture || draw->texture.depth) return false;
+    draw->has_alpha_mask = true;
+    return true;
+}
+
+static void capture_up(uint32_t device, uint32_t fvf, uint32_t stride, uint32_t vertices, const char *decline)
+{
+    if (!capture_open(recomp_d3d_frame_adapter_swap_counter() + 1u, fvf) ||
+        draw_capture.rows >= CAPTURE_ROWS) return;
+    ++draw_capture.rows;
+    ++draw_capture.draws;
+    if (decline == NULL) ++draw_capture.accepted;
+    fprintf(draw_capture.file, "{\"kind\":\"up\",\"fvf\":%u,\"stride\":%u,\"vertices\":%u,\"pixel_shader\":", fvf, stride, vertices);
+    capture_word_json(device, 0x370u);
+    fputs(",\"stages\":[", draw_capture.file);
+    for (uint32_t stage = 0u; stage < 3u; ++stage) {
+        if (stage != 0u) fputc(',', draw_capture.file);
+        fputs("{\"texture\":", draw_capture.file);
+        capture_word_json(device, 0xb38u + stage * 4u);
+        fputs(",\"palette\":", draw_capture.file);
+        capture_word_json(device, 0xb48u + stage * 4u);
+        fputs(",\"state\":[", draw_capture.file);
+        for (uint32_t word = 0u; word < 32u; ++word) {
+            if (word != 0u) fputc(',', draw_capture.file);
+            capture_word_json(0x001f2988u + stage * 0x80u, word * 4u);
+        }
+        fputs("]}", draw_capture.file);
+    }
+    fputs("]}\n", draw_capture.file);
+}
+
 static void recomp_d3d_draw_vertices_up_adapter(void)
 {
     const uint32_t entry_esp = recomp_runtime.registers.esp;
@@ -1600,7 +1662,7 @@ static void recomp_d3d_draw_vertices_up_adapter(void)
     static uint32_t reported;
     RecompD3dPresenterCommand command = {0};
     const uint8_t *device_bytes, *vertex_bytes;
-    uint32_t device, fvf;
+    uint32_t device = 0u, fvf = 0u;
     const char *decline = NULL;
 
     /* Preserve the driver's UP state, push-buffer/fence work, and RET 0x10. */
@@ -1618,7 +1680,8 @@ static void recomp_d3d_draw_vertices_up_adapter(void)
     memcpy(&fvf, device_bytes + D3D_VERTEX_SHADER_HANDLE_OFFSET, sizeof fvf);
     if (!((fvf == 0x104u && stride == 24u) ||
           (fvf == 0x144u && stride == 28u) ||
-          (fvf == 0x404u && stride == 48u))) {
+          (fvf == 0x404u && stride == 48u) ||
+          (fvf == 0x344u && stride == 36u))) {
         decline = "up-fvf";
         goto finished;
     }
@@ -1642,12 +1705,17 @@ static void recomp_d3d_draw_vertices_up_adapter(void)
     command.data.draw.triangle_count = 2u;
     command.data.draw.vertex_count = 4u;
     command.data.draw.vertex_stride = stride;
-    command.data.draw.fvf = fvf;
+    /* The disabled third stage has no supplied UVs in these UP vertices. */
+    command.data.draw.fvf = fvf == 0x344u ? 0x244u : fvf;
     command.data.draw.vertex_bytes = vertex_bytes;
     command.data.draw.index_bytes = indices;
     /* XYZRHW is already in screen space; the presenter reverses its viewport. */
     if (!attach_draw_state(device, &command.data.draw)) {
         decline = "up-render-target";
+        goto finished;
+    }
+    if (fvf == 0x344u && !attach_alpha_mask(device, &command.data.draw)) {
+        decline = "up-alpha-mask";
         goto finished;
     }
     if (recomp_d3d_presenter_submit(recomp_d3d_frame_adapter_presenter(), &command) !=
@@ -1665,6 +1733,7 @@ static void recomp_d3d_draw_vertices_up_adapter(void)
             command.data.draw.has_texture ? 1 : 0, command.data.draw.texture.format_byte);
     }
 finished:
+    if (device != 0u) capture_up(device, fvf, stride, vertices, decline);
     if (decline != NULL) report_decline(decline);
 }
 

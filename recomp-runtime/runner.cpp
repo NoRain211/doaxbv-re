@@ -807,18 +807,8 @@ std::vector<AnalogPulse> inputAnalogPulses;
     recomp_audio_output_initialize();
     recomp_fiber_adapter_reset();
     recomp_input_adapter_reset();
-    /* The guest frame loop does not depend on wall-clock time (kernel waits
-       are immediate), so DXGI vsync is unintended host pacing. Run presents
-       unthrottled so natural frame-driven transitions are reachable inside
-       the gate budget. This removes pacing; it does not force guest state.
-
-       Unthrottled presenting is correct for a gate and wrong for watching.
-       The guest presents as fast as the host will retire frames -- measured
-       at 255 presents/sec -- into a windowed DXGI_SWAP_EFFECT_DISCARD chain
-       on a 60 Hz output. Four or more presents land inside one scanout, so
-       the display shows bands from different frames and the image appears to
-       roll vertically. --vsync paces Present() to the output refresh for a
-       human observer; it changes host pacing only, never guest state. */
+    /* The guest Swap seam paces updates independently of the host
+       monitor. --vsync additionally synchronizes presentation to scanout. */
     recomp_d3d_presenter_set_immediate_present(!vsyncPresent);
     if (inputStartPulseEnabled) {
         recomp_input_pulse_source_init(

@@ -106,6 +106,13 @@ typedef struct RecompD3dPresenterDrawCommand {
     /* Bound P8 palette in guest ARGB32 order, valid during the submit. */
     const void *palette_bytes;
     uint32_t palette_byte_count;
+    /* Separate stage-0 alpha mask; stage-1 color uses the second UV set. */
+    bool has_alpha_mask;
+    RecompD3dTextureDesc alpha_mask;
+    const void *alpha_mask_bytes;
+    uint32_t alpha_mask_byte_count;
+    const void *alpha_mask_palette;
+    uint32_t alpha_mask_palette_byte_count;
     RecompD3dPresenterTarget target;
 } RecompD3dPresenterDrawCommand;
 

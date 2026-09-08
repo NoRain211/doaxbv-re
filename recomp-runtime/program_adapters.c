@@ -291,6 +291,8 @@ void sub_0018322D(void)
 
     call0(0x00186c00u);
     call0(0x00186ba8u);
+    /* Default to Digital; loading saved settings still restores the chosen mode. */
+    *recomp_memory_i8(0x003a4c38u) = 0;
     call3(0x000bb290u, 0u, 0u, 0u);
     recomp_runtime.registers.esp += 12u;
     call3(0x00186396u, 1u, 1u, 0u);

@@ -11,3 +11,8 @@ those owners.
 The GPL-3.0-or-later license applies only to material whose copyright holders
 have made it available under those terms. It does not grant rights to the game
 or third-party material.
+
+This project has been developed with substantial use of large language models
+(LLMs), including AI coding agents, for code, reverse-engineering analysis,
+debugging, tests, and documentation. LLM-produced work can contain mistakes;
+passing tests does not establish complete game accuracy or compatibility.

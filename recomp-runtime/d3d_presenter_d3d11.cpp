@@ -13,6 +13,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <new>
+#include <memory>
 #include <vector>
 
 namespace {
@@ -42,7 +43,9 @@ constexpr char kDrawShaderPrologue[] =
     "    float4 texture_flags;\n"
     "}\n"
     "Texture2D guest_texture : register(t0);\n"
-    "SamplerState guest_sampler : register(s0);\n";
+    "SamplerState guest_sampler : register(s0);\n"
+    "Texture2D alpha_mask : register(t1);\n"
+    "SamplerState mask_sampler : register(s1);\n";
 
 /* Builds the draw shader for one decoded vertex layout. Only the components
    the layout actually carries appear in VSIn, so the input layout and the
@@ -62,7 +65,8 @@ void buildDrawShaderSource(
     const char *extra_coords = four_coords
         ? "    float2 texcoord1 : TEXCOORD1;\n"
           "    float2 texcoord2 : TEXCOORD2;\n"
-          "    float2 texcoord3 : TEXCOORD3;\n" : "";
+          "    float2 texcoord3 : TEXCOORD3;\n"
+        : layout.texcoord_count == 2u ? "    float2 texcoord1 : TEXCOORD1;\n" : "";
 
     char position[768];
     if (layout.pretransformed) {
@@ -160,7 +164,8 @@ void buildDrawShaderSource(
         four_coords
             ? "    output.texcoord1 = input.texcoord1;\n"
               "    output.texcoord2 = input.texcoord2;\n"
-              "    output.texcoord3 = input.texcoord3;\n" : "",
+              "    output.texcoord3 = input.texcoord3;\n"
+            : layout.texcoord_count == 2u ? "    output.texcoord1 = input.texcoord1;\n" : "",
         four_coords
             ? "    if (texture_flags.z > 0.5f) {\n"
               "        float4 t0 = guest_texture.Sample(guest_sampler, input.texcoord * texture_flags.xy);\n"
@@ -169,6 +174,12 @@ void buildDrawShaderSource(
               "        float4 t3 = guest_texture.Sample(guest_sampler, input.texcoord3 * texture_flags.xy);\n"
               "        shaded = 0.5f * (saturate((128.0f / 255.0f) * (t0 + t1))\n"
               "                        + saturate((128.0f / 255.0f) * (t2 + t3)));\n"
+              "    } else\n"
+            : layout.texcoord_count == 2u
+            ? "    if (texture_flags.w > 0.5f) {\n"
+              "        float3 rgb = guest_texture.Sample(guest_sampler, input.texcoord1 * texture_flags.xy).rgb;\n"
+              "        float alpha = alpha_mask.Sample(mask_sampler, input.texcoord * lighting_flags.zw).a;\n"
+              "        shaded = input.color * float4(rgb, alpha);\n"
               "    } else\n" : "",
         /* The fixed-function diffuse default is white. Preserve texture alpha
            before the shared alpha test and SRC_ALPHA blending. */
@@ -244,6 +255,7 @@ struct TextureEntry {
     uint32_t format_byte;
     uint32_t width;
     uint32_t height;
+    uint32_t mip_levels;
     uint8_t palette[kPaletteBytes];
     ID3D11ShaderResourceView *view;
 };
@@ -967,6 +979,7 @@ bool createDrawPipeline(
                 layout.diffuse_offset, D3D11_INPUT_PER_VERTEX_DATA, 0u};
         }
         const uint32_t texture_coords = layout.texcoord_count == 4u ? 4u
+            : layout.texcoord_count == 2u ? 2u
             : (layout.texcoord_count != 0u ? 1u : 0u);
         for (uint32_t i = 0u; i < texture_coords; ++i) {
             elements[count++] = {
@@ -1417,6 +1430,15 @@ ID3D11ShaderResourceView *lookupTexture(
     const RecompD3dTextureDesc &desc = draw.texture;
     const bool palettized = desc.format_byte == RECOMP_D3D_TEXTURE_FORMAT_P8;
     const bool linear_bgra = desc.format_byte == 0x12u;
+    const bool compressed = desc.format_byte == RECOMP_D3D_TEXTURE_FORMAT_DXT1 ||
+        desc.format_byte == RECOMP_D3D_TEXTURE_FORMAT_DXT3 || desc.format_byte == RECOMP_D3D_TEXTURE_FORMAT_DXT5;
+    const uint32_t levels = compressed && desc.mip_levels ? desc.mip_levels : 1u;
+    if (compressed) {
+        const uint32_t span = recomp_d3d_texture_compressed_mip_span(&desc);
+        if (span == 0u || span > draw.texture_byte_count ||
+            desc.width > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION ||
+            desc.height > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION) return nullptr;
+    }
 
     if (draw.texture_is_backbuffer) return lookupBackBufferTexture(presenter, desc);
 
@@ -1442,7 +1464,7 @@ ID3D11ShaderResourceView *lookupTexture(
 
         if (entry.used && entry.data == desc.data &&
             entry.format_byte == desc.format_byte &&
-            entry.width == desc.width && entry.height == desc.height &&
+            entry.width == desc.width && entry.height == desc.height && entry.mip_levels == levels &&
             (!palettized || std::memcmp(entry.palette, draw.palette_bytes, kPaletteBytes) == 0)) {
             if (linear_bgra) {
                 ID3D11Resource *resource = nullptr;
@@ -1464,14 +1486,15 @@ ID3D11ShaderResourceView *lookupTexture(
     D3D11_TEXTURE2D_DESC texture_desc{};
     texture_desc.Width = desc.width;
     texture_desc.Height = desc.height;
-    texture_desc.MipLevels = 1u;
+    texture_desc.MipLevels = levels;
     texture_desc.ArraySize = 1u;
     texture_desc.Format = format;
     texture_desc.SampleDesc.Count = 1u;
     texture_desc.Usage = linear_bgra ? D3D11_USAGE_DEFAULT : D3D11_USAGE_IMMUTABLE;
     texture_desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
 
-    D3D11_SUBRESOURCE_DATA initial{};
+    std::vector<D3D11_SUBRESOURCE_DATA> subresources(levels);
+    D3D11_SUBRESOURCE_DATA &initial = subresources[0];
     std::vector<uint8_t> unswizzled;
 
     if (linear_bgra) {
@@ -1515,17 +1538,20 @@ ID3D11ShaderResourceView *lookupTexture(
         initial.pSysMem = unswizzled.data();
         initial.SysMemPitch = desc.width * texel_bytes;
     } else {
-        const uint32_t blocks_wide = (desc.width + 3u) / 4u;
-        const uint32_t block_bytes =
-            desc.format_byte == RECOMP_D3D_TEXTURE_FORMAT_DXT1 ? 8u : 16u;
-
-        initial.pSysMem = draw.texture_bytes;
-        initial.SysMemPitch = blocks_wide * block_bytes;
+        const uint32_t block_bytes = desc.format_byte == RECOMP_D3D_TEXTURE_FORMAT_DXT1 ? 8u : 16u;
+        uint32_t width = desc.width, height = desc.height, offset = 0u;
+        for (uint32_t level = 0; level < levels; ++level) {
+            subresources[level].pSysMem = static_cast<const uint8_t *>(draw.texture_bytes) + offset;
+            subresources[level].SysMemPitch = ((width + 3u) / 4u) * block_bytes;
+            offset += subresources[level].SysMemPitch * ((height + 3u) / 4u);
+            width = width > 1u ? width / 2u : 1u;
+            height = height > 1u ? height / 2u : 1u;
+        }
     }
 
     ID3D11Texture2D *texture = nullptr;
     if (FAILED(presenter->device->CreateTexture2D(
-            &texture_desc, &initial, &texture))) {
+            &texture_desc, subresources.data(), &texture))) {
         return nullptr;
     }
 
@@ -1550,6 +1576,7 @@ ID3D11ShaderResourceView *lookupTexture(
     entry.format_byte = desc.format_byte;
     entry.width = desc.width;
     entry.height = desc.height;
+    entry.mip_levels = levels;
     if (palettized) std::memcpy(entry.palette, draw.palette_bytes, kPaletteBytes);
     entry.view = view;
     return view;
@@ -1717,6 +1744,23 @@ RecompD3dPresenterError submitDraw(
     const UINT index_size = draw_index_count * 2u;
     ID3D11ShaderResourceView *texture_view =
         draw.has_texture ? lookupTexture(presenter, draw) : nullptr;
+    /* A second cache lookup can evict the first entry. Keep its view alive
+       until the context takes its own reference. */
+    if (draw.has_alpha_mask && texture_view != nullptr) texture_view->AddRef();
+    const auto release_view = [](ID3D11ShaderResourceView *view) { if (view) view->Release(); };
+    std::unique_ptr<ID3D11ShaderResourceView, decltype(release_view)> retained(draw.has_alpha_mask ? texture_view : nullptr, release_view);
+    ID3D11ShaderResourceView *mask_view = nullptr;
+    if (draw.has_alpha_mask) {
+        if (layout.texcoord_count != 2u) return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+        RecompD3dPresenterDrawCommand mask{};
+        mask.texture = draw.alpha_mask;
+        mask.texture_bytes = draw.alpha_mask_bytes;
+        mask.texture_byte_count = draw.alpha_mask_byte_count;
+        mask.palette_bytes = draw.alpha_mask_palette;
+        mask.palette_byte_count = draw.alpha_mask_palette_byte_count;
+        mask_view = lookupTexture(presenter, mask);
+        if (mask_view == nullptr || texture_view == nullptr) return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+    }
     if (draw.four_tap_filter && texture_view == nullptr) {
         return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
     }
@@ -1769,6 +1813,11 @@ RecompD3dPresenterError submitDraw(
     draw_constants[81] = draw.texture.linear && draw.texture.height != 0u
         ? 1.0f / draw.texture.height : 1.0f;
     draw_constants[82] = draw.four_tap_filter ? 1.0f : 0.0f;
+    draw_constants[78] = draw.alpha_mask.linear && draw.alpha_mask.width
+        ? 1.0f / draw.alpha_mask.width : 1.0f;
+    draw_constants[79] = draw.alpha_mask.linear && draw.alpha_mask.height
+        ? 1.0f / draw.alpha_mask.height : 1.0f;
+    draw_constants[83] = draw.has_alpha_mask ? 1.0f : 0.0f;
 
     if (!ensureDynamicBuffer(
             presenter,
@@ -1803,10 +1852,12 @@ RecompD3dPresenterError submitDraw(
     presenter->context->PSSetShader(pipeline->pixel_shader, nullptr, 0u);
     presenter->context->PSSetConstantBuffers(
         0u, 1u, &presenter->draw_constant_buffer);
-    presenter->context->PSSetShaderResources(0u, 1u, &texture_view);
-    ID3D11SamplerState *sampler = draw.four_tap_filter
-        ? presenter->filter_sampler : presenter->draw_sampler;
-    presenter->context->PSSetSamplers(0u, 1u, &sampler);
+    ID3D11ShaderResourceView *views[] = {texture_view, mask_view};
+    presenter->context->PSSetShaderResources(0u, 2u, views);
+    ID3D11SamplerState *samplers[] = {
+        draw.four_tap_filter || draw.has_alpha_mask ? presenter->filter_sampler : presenter->draw_sampler,
+        presenter->filter_sampler};
+    presenter->context->PSSetSamplers(0u, 2u, samplers);
     presenter->context->RSSetState(presenter->draw_rasterizer_state);
     ID3D11DepthStencilState *depth_state = lookupDepthState(presenter, draw.depth);
     if (depth_state == nullptr) {

@@ -42,6 +42,7 @@ typedef struct RecompD3dTextureDesc {
     uint32_t height;
     uint32_t pitch;
     uint32_t data;
+    uint32_t mip_levels;
 } RecompD3dTextureDesc;
 
 typedef struct RecompD3dTextureCensusEntry {
@@ -80,6 +81,8 @@ bool recomp_d3d_texture_describe(
     uint32_t data,
     uint32_t descriptor_byte,
     RecompD3dTextureDesc *out);
+uint32_t recomp_d3d_texture_compressed_mip_span(
+    const RecompD3dTextureDesc *desc);
 void recomp_d3d_texture_census_record(
     RecompD3dTextureCensus *census,
     const RecompD3dTextureDesc *desc,

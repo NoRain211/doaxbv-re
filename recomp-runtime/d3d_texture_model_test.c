@@ -108,6 +108,7 @@ static int describe_test(void)
     passed &= expect_u32("swizzled width", desc.width, 32u);
     passed &= expect_u32("swizzled height", desc.height, 64u);
     passed &= expect_u32("swizzled bpp", desc.bits_per_pixel, 4u);
+    passed &= expect_u32("swizzled mip levels", desc.mip_levels, 1u);
     passed &= !desc.linear && !desc.render_target && !desc.depth;
 
     /* Linear D24S8 must report as a depth format. */
@@ -210,6 +211,63 @@ static int describe_swizzle(void)
     return passed;
 }
 
+static int compressed_mip_span_test(void)
+{
+    RecompD3dTextureDesc desc = {0};
+    int passed = 1;
+
+    desc.format_byte = RECOMP_D3D_TEXTURE_FORMAT_DXT1;
+    desc.width = 256u;
+    desc.height = 256u;
+    desc.mip_levels = 9u;
+    passed &= expect_u32(
+        "DXT1 256x256 mip span",
+        recomp_d3d_texture_compressed_mip_span(&desc), 43704u);
+
+    desc.width = 128u;
+    desc.height = 256u;
+    desc.mip_levels = 8u;
+    passed &= expect_u32(
+        "DXT1 128x256 mip span",
+        recomp_d3d_texture_compressed_mip_span(&desc), 21856u);
+
+    desc.mip_levels = 9u;
+    passed &= expect_u32(
+        "DXT1 128x256 full mip span",
+        recomp_d3d_texture_compressed_mip_span(&desc), 21864u);
+
+    desc.mip_levels = 0u;
+    passed &= expect_u32(
+        "DXT1 zero mip fallback",
+        recomp_d3d_texture_compressed_mip_span(&desc), 16384u);
+
+    desc.mip_levels = 10u;
+    passed &= expect_u32(
+        "DXT1 excessive mip count",
+        recomp_d3d_texture_compressed_mip_span(&desc), 0u);
+
+    desc.width = 96u;
+    desc.mip_levels = 1u;
+    passed &= expect_u32(
+        "DXT1 non-power-of-two width",
+        recomp_d3d_texture_compressed_mip_span(&desc), 0u);
+
+    desc.format_byte = RECOMP_D3D_TEXTURE_FORMAT_DXT5;
+    desc.width = 0x80000000u;
+    desc.height = 0x80000000u;
+    passed &= expect_u32(
+        "DXT5 overflowing mip span",
+        recomp_d3d_texture_compressed_mip_span(&desc), 0u);
+
+    desc.format_byte = RECOMP_D3D_TEXTURE_FORMAT_A8R8G8B8;
+    desc.width = 256u;
+    desc.height = 256u;
+    passed &= expect_u32(
+        "uncompressed mip span",
+        recomp_d3d_texture_compressed_mip_span(&desc), 0u);
+    return passed;
+}
+
 int recomp_d3d_texture_model_test(void)
 {
     static uint8_t static_memory[TEST_STATIC_SIZE];
@@ -233,6 +291,7 @@ int recomp_d3d_texture_model_test(void)
     int passed = 1;
 
     passed &= describe_test();
+    passed &= compressed_mip_span_test();
     passed &= describe_swizzle();
     passed &= !recomp_d3d_set_texture(
         &isolated, RECOMP_D3D_TEXTURE_STAGE_COUNT, 0u);

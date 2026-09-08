@@ -53,6 +53,16 @@ Read `CONTRIBUTING.md` before opening a change. In particular, never commit
 game-derived bytes, generated game C, extracted assets or filenames, or private
 run output.
 
+## LLM use
+
+This project has been developed with substantial use of large language models
+(LLMs), including AI coding agents, for code, reverse-engineering analysis,
+debugging, tests, and documentation. LLM-produced work can contain mistakes;
+passing tests does not establish complete game accuracy or compatibility. Any
+Alpha release is experimental with known bugs and unverified behavior. See
+`docs/public-status.md` and the issue tracker for what has actually been
+tested.
+
 ## License
 
 Original project code and documentation are licensed under

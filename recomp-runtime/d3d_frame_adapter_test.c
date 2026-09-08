@@ -1,5 +1,7 @@
 #include "d3d_frame_adapter.h"
 #include "d3d_presenter_memory_test.h"
+#include "d3d_vblank.h"
+#include "xapi_time_adapter.h"
 #include "program_manual.h"
 #include "runtime.h"
 
@@ -120,6 +122,7 @@ int recomp_d3d_frame_adapter_test(void)
         fprintf(stderr, "D3D frame adapter: manual lookup chain failed\n");
         passed = 0;
     }
+
 
     prepare_stack(call_memory, clear_args, 6u);
     recomp_runtime.registers.eax = 0xa5a5a5a5u;
@@ -242,6 +245,18 @@ int recomp_d3d_frame_adapter_test(void)
         *recomp_memory_u32(TEST_DEVICE + 0x21b4u) = 0u;
         passed &= expect_u32(
             "missing target rejected", recomp_d3d_frame_adapter_target(&target), 0u);
+    }
+
+    {
+        const uint64_t before = recomp_xapi_performance_counter();
+        recomp_d3d_vblank_reset();
+        for (unsigned i = 0; i < 3; ++i) {
+            prepare_stack(call_memory, swap_args, 1u);
+            swap();
+        }
+        const uint64_t elapsed = recomp_xapi_performance_counter() - before;
+        passed &= expect_u32("Swap paces without host presentation blocking",
+            elapsed >= recomp_xapi_performance_frequency() / 20u - 3u, 1u);
     }
 
     recomp_d3d_frame_adapter_reset();

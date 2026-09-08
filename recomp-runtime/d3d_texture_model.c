@@ -166,6 +166,10 @@ bool recomp_d3d_texture_describe(
     }
 
     desc.format_byte = (format_dword >> 8u) & 0xffu;
+    desc.mip_levels = (format_dword >> 16u) & 0x0fu;
+    if (desc.mip_levels == 0u) {
+        desc.mip_levels = 1u;
+    }
     /* The guest's format descriptor packs bits-per-pixel into bits 2-5 and
        flags render-target and depth capability above them. */
     desc.bits_per_pixel = descriptor_byte & 0x3cu;
@@ -188,6 +192,59 @@ bool recomp_d3d_texture_describe(
 
     *out = desc;
     return true;
+}
+
+uint32_t recomp_d3d_texture_compressed_mip_span(
+    const RecompD3dTextureDesc *desc)
+{
+    uint32_t levels;
+    uint32_t max_dim;
+    uint32_t max_levels = 1u;
+    uint32_t block_bytes;
+    uint64_t total = 0u;
+    uint32_t level;
+
+    if (desc == NULL || !is_power_of_two(desc->width) ||
+        !is_power_of_two(desc->height)) {
+        return 0u;
+    }
+    switch (desc->format_byte) {
+    case RECOMP_D3D_TEXTURE_FORMAT_DXT1:
+        block_bytes = 8u;
+        break;
+    case RECOMP_D3D_TEXTURE_FORMAT_DXT3:
+    case RECOMP_D3D_TEXTURE_FORMAT_DXT5:
+        block_bytes = 16u;
+        break;
+    default:
+        return 0u;
+    }
+
+    levels = desc->mip_levels == 0u ? 1u : desc->mip_levels;
+    max_dim = desc->width > desc->height ? desc->width : desc->height;
+    while (max_dim > 1u) {
+        max_dim >>= 1u;
+        ++max_levels;
+    }
+    if (levels > max_levels) {
+        return 0u;
+    }
+
+    for (level = 0u; level < levels; ++level) {
+        const uint32_t shifted_width = desc->width >> level;
+        const uint32_t shifted_height = desc->height >> level;
+        const uint32_t width = shifted_width == 0u ? 1u : shifted_width;
+        const uint32_t height = shifted_height == 0u ? 1u : shifted_height;
+        const uint64_t blocks_wide = ((uint64_t)(width - 1u) / 4u) + 1u;
+        const uint64_t blocks_high = ((uint64_t)(height - 1u) / 4u) + 1u;
+        const uint64_t level_bytes = blocks_wide * blocks_high * block_bytes;
+
+        total += level_bytes;
+        if (total > UINT32_MAX) {
+            return 0u;
+        }
+    }
+    return (uint32_t)total;
 }
 
 static bool texture_desc_equal(

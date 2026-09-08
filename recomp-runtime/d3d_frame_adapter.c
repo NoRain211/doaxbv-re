@@ -2,6 +2,7 @@
 #include "cri_service_adapter.h"
 #include "d3d_draw_adapter.h"
 #include "d3d_frame_model.h"
+#include "d3d_vblank.h"
 #include "d3d_presenter.h"
 #include "d3d_render_state_adapter.h"
 #include "d3d_texture_adapter.h"
@@ -70,6 +71,7 @@ void recomp_d3d_frame_adapter_initialize(
             (unsigned)presenter_error);
     }
     frame_device_address = device_address;
+    recomp_d3d_vblank_reset();
 }
 
 void recomp_d3d_frame_adapter_reset(void)
@@ -347,6 +349,9 @@ void recomp_d3d_swap_adapter(void)
             (unsigned)result.error);
         recomp_stop(2, "d3d-swap:model:%u", (unsigned)result.error);
     }
+    /* Animation and gameplay fibers each advance once per Swap. Host VSync
+       follows the monitor's refresh rate, not the guest's 60 Hz cadence. */
+    recomp_d3d_wait_vblank();
     presenter_error = recomp_d3d_presenter_submit(
         presenter, &result.command);
     recomp_d3d_draw_adapter_capture_present(

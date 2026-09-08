@@ -105,8 +105,10 @@ observable; they do not implement or validate the missing guest code.
 Configure authenticates the snapshot manifest, then derives private build
 copies that initialize every `uint32_t ebp;` prologue local from `g_seh_ebp`.
 The lifter leaves that local undefined for `push ebp; mov ebp, esp` frames.
-The current authenticated snapshot requires exactly 11,100 replacements.
-Historical snapshots have different counts. The private snapshot is never
+The count depends on the locally generated snapshot, so configure fails closed
+with the applied count and the expected value must be overridden when a
+receipt-derived count differs. A locally reproduced snapshot validated 11,052
+replacements; the default matches that receipt. The private snapshot is never
 modified.
 
 Two diagnostics keep host stops self-describing. `host_diagnostics.cpp` routes
