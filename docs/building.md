@@ -24,6 +24,25 @@ dispatch behavior; it is not generated game code and proves no game parity.
 
 ## Extract a user-owned ISO
 
+For drag and drop on Windows, download the `DOAXBV-0.0.1-ExtractIso` ZIP
+from the [0.0.1 release](https://github.com/NoRain211/doaxbv-re/releases/tag/v0.0.1).
+Extract the entire ZIP, install Python 3.12 or newer, then drop one ISO onto
+`ExtractIso.cmd`. The window stays open with the result. Each attempt uses a
+`private/imported-disc/disc` folder beside the launcher. Existing output is
+never overwritten; for another extraction, use a fresh copy of the package
+or the explicit `--output` option below.
+This package includes XboxDev extract-xiso `build-202505152050` and its license.
+This product includes software developed by in <in@fishtank.com>.
+
+In a source checkout, the same launcher finds `tools/artifacts/extract-xiso.exe`
+or uses extract-xiso from PATH. For explicit paths and output, use the command below.
+
+After building a playable runner, double-click `RunGame.cmd`. It looks for
+`recomp_program_runner.exe` beside the launcher, or in
+`build/recomp-program/Release`, and uses the completed extraction receipt.
+It starts with VSync and 20% game volume, saving stdout/stderr under `private/`.
+The extraction package does not include a game runner or generate one.
+
 Install Python 3.12 or newer and obtain `extract-xiso` from the
 [XboxDev project](https://github.com/XboxDev/extract-xiso). Its source and build
 instructions are available there; this repository does not bundle or download

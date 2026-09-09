@@ -34,6 +34,12 @@ and keep all derived game data local.
 
 ## ISO extraction
 
+Windows users can drop one ISO onto the root `ExtractIso.cmd` launcher.
+Python 3.12 or newer is required. The launcher finds an extractor in
+`tools/artifacts/extract-xiso.exe` or on PATH and extracts to
+`private/imported-disc/disc`, refusing existing output. `RunGame.cmd` launches
+a separately built runner against that completed extraction.
+
 `extract_iso.py` wraps a separately installed XboxDev `extract-xiso` executable
 in extraction mode. See [usage and boundaries](../docs/building.md#extract-a-user-owned-iso).
 `test_extract_iso.py` uses synthetic listings and can additionally exercise a

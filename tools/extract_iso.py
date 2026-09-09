@@ -107,11 +107,15 @@ def extract(iso, output, tool):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("iso", type=Path)
-    parser.add_argument("--output", type=Path, required=True,
+    parser.add_argument("--output", type=Path,
                         help="New directory under this repository's private/")
-    parser.add_argument("--extractor", default="extract-xiso",
+    bundled = Path(__file__).resolve().parent / "artifacts" / "extract-xiso.exe"
+    parser.add_argument("--extractor", default=str(bundled) if bundled.is_file() else "extract-xiso",
                         help="Path to XboxDev extract-xiso (default: PATH)")
     args = parser.parse_args()
+    if args.output is None:
+        args.output = Path(__file__).resolve().parents[1] / "private" / "imported-disc"
+    print(f"Extracting to {args.output}. Large images can take several minutes.", flush=True)
     try:
         disc = extract(args.iso, args.output, args.extractor)
     except (OSError, ValueError, UnicodeError, subprocess.CalledProcessError) as error:

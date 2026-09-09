@@ -1,12 +1,17 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Synthetic listing checks; optionally exercise a real extract-xiso binary."""
 import os
+import json
+import shutil
+import sys
 from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from extract_iso import extract, listing_files, sha256
+from run_game import launch
 
 
 def listing(entries, count=1):
@@ -14,6 +19,28 @@ def listing(entries, count=1):
 
 
 class ExtractionTests(unittest.TestCase):
+    def test_launch_prerequisites_and_command(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            with self.assertRaisesRegex(ValueError, "No playable runner"):
+                launch(root)
+            (root / "recomp_program_runner.exe").touch()
+            imported = root / "private/imported-disc"
+            disc = imported / "disc"
+            disc.mkdir(parents=True)
+            with self.assertRaises(OSError):
+                launch(root)
+            (imported / "receipt.json").write_text(json.dumps({"status": "extracted"}))
+            (disc / "synthetic.xbe").touch()
+            with patch("run_game.subprocess.run") as run:
+                run.return_value.returncode = 7
+                self.assertEqual(launch(root), 7)
+                self.assertEqual(run.call_args.args[0],
+                                 [str(root / "recomp_program_runner.exe"), "--xbe",
+                                  str(disc / "synthetic.xbe"), "--vsync"])
+                self.assertEqual(run.call_args.kwargs["env"]["RECOMP_AUDIO_GAIN"], "0.2")
+                self.assertEqual(run.call_args.kwargs["cwd"], disc)
+
     def test_paths_and_complete_listing(self):
         self.assertEqual(listing_files(listing("/sub/ (0 bytes)\n/sub/a.txt (3 bytes)")),
                          {"sub/a.txt": 3})
@@ -44,6 +71,17 @@ class ExtractionTests(unittest.TestCase):
             output = root / "result"
             disc = extract(iso, output, tool)
             self.assertEqual((disc / "sub/payload.txt").read_bytes(), b"synthetic payload\n")
+            # Exercise the same defaults as a dropped ISO, including spaces in paths.
+            package = root / "drop package"
+            artifacts = package / "tools/artifacts"
+            artifacts.mkdir(parents=True)
+            shutil.copy2(tool, artifacts / "extract-xiso.exe")
+            script = package / "tools/extract_iso.py"
+            shutil.copy2(Path(__file__).with_name("extract_iso.py"), script)
+            subprocess.run([sys.executable, str(script), str(iso)], check=True,
+                           cwd=root, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            self.assertEqual((package / "private/imported-disc/disc/sub/payload.txt").read_bytes(),
+                             b"synthetic payload\n")
             self.assertEqual(before, sha256(iso))
             self.assertTrue((output / "receipt.json").exists())
             with self.assertRaises(FileExistsError):
