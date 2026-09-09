@@ -7,6 +7,8 @@
    run asserts where it stopped rather than a human reading the log and
    deciding. Without --expect-stop the historical exit codes are preserved.
    With it, the run exits 0 only when the stop matches, and 3 otherwise.
+   Logs always preserve the original fallback_code and classify kind separately
+   from expectation result/exit_code. A runtime-stop is not a host-crash.
 
    Stop identifiers, matched by prefix so "import:" accepts any import stop:
 

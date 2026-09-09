@@ -1,11 +1,28 @@
 #include "host_diagnostics.h"
 
+#include <cstdio>
+
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+
+namespace {
+LONG CALLBACK reportUnhandledException(EXCEPTION_POINTERS *info)
+{
+    std::fprintf(stderr,
+        "recomp host: event=host-crash kind=unhandled-exception"
+        " exception_code=0x%08lx address=%p expectation_applied=false\n",
+        static_cast<unsigned long>(info->ExceptionRecord->ExceptionCode),
+        info->ExceptionRecord->ExceptionAddress);
+    std::fflush(stderr);
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+}
+#endif
+
 #if defined(_MSC_VER) && defined(_DEBUG)
 
 #include "runtime.h"
-
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
 
 #include <crtdbg.h>
 #include <dbghelp.h>
@@ -74,7 +91,7 @@ const char *exceptionName(DWORD code)
     }
 }
 
-LONG CALLBACK reportFatalException(EXCEPTION_POINTERS *info)
+LONG CALLBACK reportObservedException(EXCEPTION_POINTERS *info)
 {
     const DWORD code = info->ExceptionRecord->ExceptionCode;
 
@@ -88,7 +105,7 @@ LONG CALLBACK reportFatalException(EXCEPTION_POINTERS *info)
 
     std::fprintf(
         stderr,
-        "recomp host: %s (0x%08lx) at 0x%p",
+        "recomp host: event=exception-observed terminal=unknown %s (0x%08lx) at 0x%p",
         exceptionName(code),
         static_cast<unsigned long>(code),
         info->ExceptionRecord->ExceptionAddress);
@@ -133,7 +150,7 @@ int __cdecl reportRuntimeCheck(
 
     std::fprintf(
         stderr,
-        "recomp host: runtime check %d in %ls:%d module=%ls: %ls",
+        "recomp host: event=runtime-check terminal=false runtime check %d in %ls:%d module=%ls: %ls",
         errorType,
         filename != nullptr ? filename : L"<unknown>",
         line,
@@ -158,6 +175,9 @@ void recomp_install_host_diagnostics(void)
     /* A hard crash discards buffered output, which loses exactly the lines
        that say how far execution got. */
     setvbuf(stderr, nullptr, _IONBF, 0);
+#ifdef _WIN32
+    SetUnhandledExceptionFilter(reportUnhandledException);
+#endif
     SymSetOptions(SYMOPT_DEFERRED_LOADS | SYMOPT_UNDNAME);
     SymInitialize(GetCurrentProcess(), nullptr, TRUE);
     const int reports[] = {_CRT_WARN, _CRT_ERROR, _CRT_ASSERT};
@@ -166,7 +186,7 @@ void recomp_install_host_diagnostics(void)
         _CrtSetReportFile(report, _CRTDBG_FILE_STDERR);
     }
     _RTC_SetErrorFuncW(reportRuntimeCheck);
-    AddVectoredExceptionHandler(1u, reportFatalException);
+    AddVectoredExceptionHandler(1u, reportObservedException);
 }
 
 #else
@@ -176,6 +196,9 @@ void recomp_install_host_diagnostics(void)
 void recomp_install_host_diagnostics(void)
 {
     setvbuf(stderr, nullptr, _IONBF, 0);
+#ifdef _WIN32
+    SetUnhandledExceptionFilter(reportUnhandledException);
+#endif
 }
 
 #endif

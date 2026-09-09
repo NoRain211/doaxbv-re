@@ -125,3 +125,28 @@ kernel adapters. The initial startup set contains the Ghidra-recovered
 critical-section fields and handles ordinal 258 thread termination. Contention
 stops the runner. This is a single-thread bring-up policy, not an Xbox
 scheduler model.
+
+## Reading stop and crash logs
+
+Every controlled stop writes `event=runtime-stop` to stderr and, when enabled,
+the milestone log. `kind` is `normal-exit`, `diagnostic-boundary`, or
+`runtime-error`. `fallback_code` preserves the original status; `exit_code`
+records the actual process status after `--expect-stop`. The separate `result`
+field is `unchecked`, `match`, or `mismatch`. A matched runtime error can exit
+zero; a normal user close can exit three for an expectation mismatch. Neither
+an expectation match nor exit zero alone proves successful gameplay.
+
+Windows unhandled exceptions write `event=host-crash kind=unhandled-exception`
+in Release and Debug, with the exception code and address. Expected-stop rules
+do not apply to these crashes. Debug `event=exception-observed terminal=unknown`
+means an exception was observed before its final handling decision; a subsequent
+handler may recover. Debug `event=runtime-check terminal=false` reports a CRT
+check while execution continues. Do not classify either diagnostic as a crash
+without a terminal event or external evidence of process termination.
+
+These are local stderr logs, not automatic uploads. Forced termination,
+fail-fast, and failures that bypass Windows' unhandled-exception filter may
+leave no terminal log; absence of a crash event is not proof of a clean exit.
+Bug reports should include the exact build identity and configuration, stop
+line, process exit status and reproduction steps. Review logs for private
+paths or game-derived data before sharing them.

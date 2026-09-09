@@ -15,6 +15,7 @@ static char expected_stop[MAX_STOP_ID];
 static char configured_boundary[MAX_STOP_ID];
 static char milestone_path[MAX_PATH];
 static int have_expectation;
+static int boundary_reached;
 static unsigned long kernel_calls;
 
 void recomp_stop_configure(const char *expected, const char *milestone_log)
@@ -40,6 +41,7 @@ void recomp_stop_at_boundary(const char *stop_id)
 {
     if (configured_boundary[0] != '\0' && stop_id != NULL &&
         strcmp(stop_id, configured_boundary) == 0) {
+        boundary_reached = 1;
         recomp_stop(0, "%s", stop_id);
     }
 }
@@ -49,7 +51,9 @@ void recomp_stop_note_kernel_call(void)
     ++kernel_calls;
 }
 
-static void append_milestone(const char *stop_id, const char *result)
+static void append_milestone(
+    const char *stop_id, const char *result, const char *kind,
+    int fallback_code, int exit_code)
 {
     FILE *log;
     char stamp[32];
@@ -78,12 +82,13 @@ static void append_milestone(const char *stop_id, const char *result)
 
     fprintf(
         log,
-        "%s\tstop=%s\texpected=%s\tresult=%s\tkernel_calls=%lu\n",
+        "%s\tstop=%s\texpected=%s\tresult=%s\tkernel_calls=%lu"
+        "\tevent=runtime-stop\tkind=%s\tfallback_code=%d\texit_code=%d\n",
         stamp,
         stop_id,
         have_expectation ? expected_stop : "-",
         result,
-        kernel_calls);
+        kernel_calls, kind, fallback_code, exit_code);
     fclose(log);
 }
 
@@ -94,6 +99,7 @@ void recomp_stop(int fallback_code, const char *stop_id_format, ...)
     int matched;
     int code;
     const char *result;
+    const char *kind;
 
     va_start(args, stop_id_format);
     vsnprintf(stop_id, sizeof stop_id, stop_id_format, args);
@@ -106,16 +112,16 @@ void recomp_stop(int fallback_code, const char *stop_id_format, ...)
     code = have_expectation ? (matched ? 0 : 3) : fallback_code;
     result = have_expectation ? (matched ? "match" : "mismatch") : "unchecked";
 
-    append_milestone(stop_id, result);
+    kind = boundary_reached ? "diagnostic-boundary"
+        : fallback_code == 0 ? "normal-exit" : "runtime-error";
+    append_milestone(stop_id, result, kind, fallback_code, code);
 
-    if (have_expectation) {
-        fprintf(
-            stderr,
-            "recomp stop: %s expected=%s result=%s kernel_calls=%lu\n",
-            stop_id,
-            expected_stop,
-            result,
-            kernel_calls);
-    }
+    fprintf(
+        stderr,
+        "recomp stop: %s expected=%s result=%s kernel_calls=%lu"
+        " event=runtime-stop kind=%s fallback_code=%d exit_code=%d\n",
+        stop_id, have_expectation ? expected_stop : "-", result,
+        kernel_calls, kind, fallback_code, code);
+    fflush(stderr);
     exit(code);
 }

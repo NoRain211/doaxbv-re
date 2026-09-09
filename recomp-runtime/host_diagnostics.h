@@ -5,8 +5,9 @@
 extern "C" {
 #endif
 
-/* Routes host CRT runtime-check failures to stderr and names the generated
-   function that raised them. Runtime checks stay enabled. */
+/* Windows unhandled exceptions emit host-crash events in Release and Debug.
+   Debug additionally logs observed exceptions (terminal=unknown) and continuing
+   CRT runtime checks (terminal=false); neither alone establishes a crash. */
 void recomp_install_host_diagnostics(void);
 
 #ifdef __cplusplus
