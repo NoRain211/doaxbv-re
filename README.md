@@ -14,7 +14,9 @@ remain incomplete. See [current status](docs/public-status.md) and the
 The public source builds the runtime tests without game files. It does **not
 yet provide a complete ISO-to-playable-build workflow**: reproducing the
 accepted game build still requires unpublished generation prerequisites.
-See [building instructions and limitations](docs/building.md).
+A [local ISO extraction script](docs/building.md#extract-a-user-owned-iso) is
+available; generation and compilation prerequisites remain separate. See
+[building instructions and limitations](docs/building.md).
 
 The repository contains no game binary, generated game C, assets, BIOS data,
 saves, or private run evidence. Users must supply their own legally obtained

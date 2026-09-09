@@ -31,3 +31,11 @@ candidate-specific leaf gates, and an NV097 capsule raster tool. They embed
 game-specific evidence or obsolete workflow assumptions and are not public
 tooling. New import or analysis tools must expose a game-independent interface
 and keep all derived game data local.
+
+## ISO extraction
+
+`extract_iso.py` wraps a separately installed XboxDev `extract-xiso` executable
+in extraction mode. See [usage and boundaries](../docs/building.md#extract-a-user-owned-iso).
+`test_extract_iso.py` uses synthetic listings and can additionally exercise a
+real extractor when `EXTRACT_XISO_TEST_TOOL` names its executable. Neither tool
+contains game data or replaces the remaining local generation pipeline.

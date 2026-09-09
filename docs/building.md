@@ -14,6 +14,36 @@ The test executable links `runtime_public_fixture.c` at the same dispatch seam
 used by a generated function. The fixture exercises guest register, memory, and
 dispatch behavior; it is not generated game code and proves no game parity.
 
+## Extract a user-owned ISO
+
+Install Python 3.12 or newer and obtain `extract-xiso` from the
+[XboxDev project](https://github.com/XboxDev/extract-xiso). Its source and build
+instructions are available there; this repository does not bundle or download
+that executable. Add it to PATH or supply its path explicitly:
+
+```powershell
+python tools/extract_iso.py "D:/My Games/game.iso" `
+  --extractor "C:/Tools/extract-xiso.exe" `
+  --output private/imported-disc
+```
+
+The script lists the image first, checks its paths, extracts into
+`private/imported-disc/disc`, and verifies file names and sizes against the
+listing. It uses extraction mode only; it does not rewrite the image or patch
+executables. The source image's SHA-256 must remain unchanged. Extraction logs
+and a completion receipt stay beside the disc directory, under ignored
+`private/`. Keep them private because they contain derived filenames and hashes.
+
+The output directory must be new and beneath this checkout's `private/`;
+existing directories and symlink/junction destinations are rejected. Failure
+or interruption leaves partial output for inspection, with no completion
+receipt. Use a new destination for another attempt. Do not use partial output.
+
+This accepts Xbox images supported by extract-xiso, not arbitrary PC ISO
+files, and does not read a physical DVD drive. A successful extraction does
+not authenticate a supported game revision or produce the generated game
+program. The remaining generation limitations below still apply.
+
 ## Authenticated local route
 
 Contributors who own the game may generate source locally with the pinned
