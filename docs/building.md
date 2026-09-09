@@ -2,13 +2,21 @@
 
 ## Public test route
 
-The public route requires no game files or generated source:
+Install Git, CMake 3.20 or newer, and Visual Studio 2022 (or Build Tools)
+with Desktop development with C++ and a Windows SDK. In PowerShell:
 
 ```powershell
-cmake -S recomp-runtime -B build/recomp-runtime
-cmake --build build/recomp-runtime --config Debug
-ctest --test-dir build/recomp-runtime -C Debug --output-on-failure
+git clone --branch v0.0.1 --recurse-submodules https://github.com/NoRain211/doaxbv-re.git
+cd doaxbv-re
+cmake -S recomp-runtime -B build/recomp-runtime -G "Visual Studio 17 2022"
+cmake --build build/recomp-runtime --config Release --parallel 2
+ctest --test-dir build/recomp-runtime -C Release --output-on-failure
 ```
+
+For a downloaded source ZIP, open PowerShell in its extracted root and start
+at the CMake command. These commands require no game files and produce tests
+in `build/recomp-runtime/Release`, **not a playable game executable**.
+The submodule is for lifter work; the public tests do not require it.
 
 The test executable links `runtime_public_fixture.c` at the same dispatch seam
 used by a generated function. The fixture exercises guest register, memory, and
@@ -78,19 +86,31 @@ The end-to-end shape, all through the lifter's supported module entry points
 A locally reproduced build through this chain has passed the runtime test
 suite; it is not claimed to reproduce the accepted executable byte for byte.
 
-### Configure the runner
+### Build a runner from an already-generated program
 
-Supply generated inputs only with their exact receipt hashes:
+This requires a complete validated generated program and its build receipt.
+A fresh public checkout plus an ISO cannot yet produce those inputs through
+the public workflow. The placeholders below are not supplied by ISO extraction.
+The accepted game build uses Visual Studio 2019 Build Tools with its C++
+workload and Windows SDK, targeting Win32:
 
 ```powershell
-cmake -S recomp-runtime -B build/recomp-authenticated `
-  -DRECOMP_FUNCTION_SOURCE="<local-generated-function.c>" `
-  -DRECOMP_FUNCTION_SHA256="<sha256>"
+cmake -S recomp-runtime -B build/recomp-program -G "Visual Studio 16 2019" -A Win32 `
+  -DRECOMP_PROGRAM_DIR="<absolute-generated-program-directory>" `
+  -DRECOMP_PROGRAM_MANIFEST_SHA256="<generated-manifest-sha256>" `
+  -DRECOMP_PROGRAM_EBP_EXPECTED="<receipt-ebp-count>"
+cmake --build build/recomp-program --config Release --parallel 2 --target recomp_program_runner
+$env:RECOMP_AUDIO_GAIN = "0.2"
+./build/recomp-program/Release/recomp_program_runner.exe --xbe "<absolute-extracted-xbe-path>" --vsync
 ```
 
-Supplying only one value, a mismatched hash, an incomplete program snapshot,
+Supplying a mismatched hash, an incomplete program snapshot,
 or a wrong manifest fails configuration. The public fixture does not weaken or
 replace those authenticated gates.
+
+The manifest hash identifies the generated program, not the ISO. Use a new
+build directory when changing generator or architecture. Keep the XBE beside
+its extracted game files in a writable private directory.
 
 The complete runner additionally needs a locally generated program directory,
 its manifest identity, and a user-owned XBE at runtime. None belongs in Git.

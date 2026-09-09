@@ -27,22 +27,22 @@ game copy and keep all derived game files outside Git.
 Requirements:
 
 - Windows 10 or 11
-- Visual Studio with the C and C++ toolchain
+- Git
+- Visual Studio 2022 or Build Tools with Desktop development with C++ and a Windows SDK
 - CMake 3.20 or newer
 
 Clone with the pinned lifter:
 
 ```powershell
 git clone --recurse-submodules https://github.com/NoRain211/doaxbv-re.git
+cd doaxbv-re
+cmake -S recomp-runtime -B build/recomp-runtime -G "Visual Studio 17 2022"
+cmake --build build/recomp-runtime --config Release --parallel 2
+ctest --test-dir build/recomp-runtime -C Release --output-on-failure
 ```
 
-```powershell
-cmake -S recomp-runtime -B build/recomp-runtime
-cmake --build build/recomp-runtime --config Debug --parallel 2
-ctest --test-dir build/recomp-runtime -C Debug --output-on-failure
-```
-
-These tests use a hand-written fixture at the generated-function seam. They do
+These commands build test executables in `build/recomp-runtime/Release`, not a
+playable game executable. These tests use a hand-written fixture at the generated-function seam. They do
 not require or contain generated game code. See `docs/building.md` for the
 authenticated local-input requirements. The tested playable runner is 32-bit
 on Windows; public test success does not establish a working 64-bit game build.
