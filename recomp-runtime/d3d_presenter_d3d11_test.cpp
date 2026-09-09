@@ -1228,6 +1228,88 @@ static LRESULT CALLBACK closeOnShowWindowProc(
     return presenterWindowProc(window, message, wparam, lparam);
 }
 
+/* Regression for the portrait-support pipeline-capacity bug: the real r353
+   stream creates eight distinct FVF layouts with 0x244 displacing 0x118. The
+   ninth distinct FVF (0x118) used to be rejected permanently; it must evict
+   the oldest layout, draw, and the evicted layout must rebuild on return. */
+static bool testDrawPipelineEviction(
+    RecompD3dPresenter *borrowed)
+{
+    RecompD3dPresenter presenter{};
+    presenter.config = borrowed->config;
+    presenter.owner_thread = GetCurrentThreadId();
+    presenter.device = borrowed->device;
+    presenter.device->AddRef();
+    presenter.context = borrowed->context;
+    presenter.context->AddRef();
+    ID3D11Texture2D *color = nullptr;
+    ID3D11Texture2D *readback = nullptr;
+    bool passed = createTestTargets(&presenter, &color, &readback);
+
+    const uint16_t indices[] = {0u, 1u, 2u, 3u};
+    RecompD3dPresenterDrawCommand draw{};
+    draw.blend.color_write_mask = 15u;
+    draw.primitive_type = RECOMP_D3D_PT_TRIANGLESTRIP;
+    draw.index_count = draw.vertex_count = 4u;
+    draw.triangle_count = 2u;
+    draw.index_bytes = indices;
+    draw.has_transform = true;
+    draw.transform[0] = draw.transform[5] =
+        draw.transform[10] = draw.transform[15] = 1.0f;
+    const RecompD3dPresenterClearCommand clear = {
+        true, true, false, 0xff0000ffu, 1.0f, 0u};
+    const uint32_t order[] = {
+        0x104u, 0x144u, 0x112u, 0x142u, 0x404u, 0x244u, 0x11au, 0x116u,
+        0x118u, 0x104u};
+    for (uint32_t i = 0u; i < sizeof order / sizeof order[0] && passed; ++i) {
+        RecompD3dVertexLayout layout{};
+        passed = recomp_d3d_fvf_layout(order[i], &layout);
+        if (!passed) break;
+        float vertices[64]{};
+        for (uint32_t v = 0u; v < 4u; ++v) {
+            float *p = vertices + v * (layout.stride / sizeof(float));
+            p[0] = v & 1u ? 1.0f : -1.0f;
+            p[1] = v & 2u ? 1.0f : -1.0f;
+            if (layout.pretransformed) {
+                p[0] = v & 1u ? 3.5f : -0.5f;
+                p[1] = v & 2u ? 3.5f : -0.5f;
+            }
+            p[2] = 0.25f;
+            if (layout.pretransformed || layout.blend_weight_count) p[3] = 1.0f;
+            if (layout.normal_offset != RECOMP_D3D_FVF_ABSENT) {
+                p[layout.normal_offset / sizeof(float) + 1u] = 1.0f;
+            }
+            if (layout.diffuse_offset != RECOMP_D3D_FVF_ABSENT) {
+                const uint32_t white = 0xffffffffu;
+                std::memcpy(reinterpret_cast<uint8_t *>(p) + layout.diffuse_offset,
+                    &white, sizeof white);
+            }
+        }
+        draw.fvf = order[i];
+        draw.vertex_stride = layout.stride;
+        draw.vertex_bytes = vertices;
+        draw.blend_weight_count = layout.blend_weight_count;
+        passed = submitClear(&presenter, clear) == RECOMP_D3D_PRESENTER_OK &&
+            submitDraw(&presenter, draw) == RECOMP_D3D_PRESENTER_OK;
+        const uint32_t slot = i % kDrawPipelineSlots;
+        passed = passed && presenter.draw_pipeline_count ==
+            (i < kDrawPipelineSlots ? i + 1u : kDrawPipelineSlots) &&
+            presenter.draw_pipelines[slot].used &&
+            presenter.draw_pipelines[slot].fvf == order[i];
+        if (!passed) std::fprintf(stderr, "FAIL pipeline cache draw=%u fvf=0x%X\n", i, order[i]);
+        if (passed && i >= kDrawPipelineSlots) {
+            const uint32_t pixel = i == kDrawPipelineSlots ? 0xff00ff00u : 0xffbfbfc7u;
+            const uint32_t expected[] = {pixel, pixel, pixel, pixel};
+            passed = checkPixels(&presenter, color, readback,
+                "pipeline eviction and rebuild", expected);
+        }
+    }
+    releaseCom(readback);
+    releaseCom(color);
+    releasePresenter(&presenter);
+    return passed;
+}
+
 static bool testWindowClose(RecompD3dPresenter *warp)
 {
     IDXGIDevice *dxgi_device = nullptr;
@@ -1345,6 +1427,7 @@ int main()
     }
     if (status == 0 && !testVertexBlending(&presenter, color, readback)) status = 80;
     if (status == 0 && !testLinearTextureUpdates(&presenter, readback)) status = 88;
+    if (status == 0 && !testDrawPipelineEviction(&presenter)) status = 89;
     if (status == 0 && !testWindowClose(&presenter)) status = 86;
     releaseCom(readback);
     releaseCom(color);

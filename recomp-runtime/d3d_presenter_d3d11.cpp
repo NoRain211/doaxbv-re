@@ -306,6 +306,7 @@ struct RecompD3dPresenter {
        stream this seam cannot build never disables the ones it can. */
     DrawPipeline draw_pipelines[kDrawPipelineSlots]{};
     uint32_t draw_pipeline_count = 0u;
+    uint32_t next_draw_pipeline_slot = 0u;
     DepthStateEntry depth_states[kDepthStateSlots]{};
     uint32_t depth_state_count = 0u;
     uint32_t next_depth_state_slot = 0u;
@@ -390,6 +391,7 @@ void releaseGraphics(RecompD3dPresenter *presenter)
         pipeline.used = false;
     }
     presenter->draw_pipeline_count = 0u;
+    presenter->next_draw_pipeline_slot = 0u;
     for (uint32_t i = 0u; i < presenter->depth_state_count; ++i) {
         DepthStateEntry &entry = presenter->depth_states[i];
 
@@ -1098,12 +1100,19 @@ const DrawPipeline *lookupDrawPipeline(
             return pipeline.failed ? nullptr : &pipeline;
         }
     }
-    if (presenter->draw_pipeline_count == kDrawPipelineSlots) {
-        return nullptr;
-    }
-
+    /* The portrait addition pushed distinct FVFs past the fixed slot count,
+       which used to reject every later FVF for the whole run. Evict the
+       oldest slot FIFO, matching the blend-state cache, and rebuild it. */
     DrawPipeline &pipeline =
-        presenter->draw_pipelines[presenter->draw_pipeline_count++];
+        presenter->draw_pipelines[presenter->next_draw_pipeline_slot];
+    releaseCom(pipeline.input_layout);
+    releaseCom(pipeline.pixel_shader);
+    releaseCom(pipeline.vertex_shader);
+    presenter->next_draw_pipeline_slot =
+        (presenter->next_draw_pipeline_slot + 1u) % kDrawPipelineSlots;
+    if (presenter->draw_pipeline_count < kDrawPipelineSlots) {
+        ++presenter->draw_pipeline_count;
+    }
     pipeline.fvf = fvf;
     pipeline.used = true;
     pipeline.failed = !createDrawPipeline(presenter, fvf, pipeline);
