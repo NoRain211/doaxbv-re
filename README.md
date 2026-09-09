@@ -5,10 +5,20 @@ Volleyball from a user-owned Xbox copy. It combines a whole-program static
 recompilation scaffold with hand-written runtime, kernel, input, audio, and
 D3D8 replacement code.
 
-The project is not playable yet. The public repository contains no game
-binary, generated game C, assets, BIOS data, saves, or private run evidence.
-Each contributor must supply and keep their own legally obtained inputs
-outside Git.
+Local builds have demonstrated Exhibition gameplay, character selection,
+movie playback, audio, and representative save/reload flows. This is an
+experimental port: lighting, rendering fidelity, and offline-mode coverage
+remain incomplete. See [current status](docs/public-status.md) and the
+[offline acceptance tracker](https://github.com/NoRain211/doaxbv-re/issues/16).
+
+The public source builds the runtime tests without game files. It does **not
+yet provide a complete ISO-to-playable-build workflow**: reproducing the
+accepted game build still requires unpublished generation prerequisites.
+See [building instructions and limitations](docs/building.md).
+
+The repository contains no game binary, generated game C, assets, BIOS data,
+saves, or private run evidence. Users must supply their own legally obtained
+game copy and keep all derived game files outside Git.
 
 ## Build the public tests
 
@@ -26,13 +36,18 @@ git clone --recurse-submodules https://github.com/NoRain211/doaxbv-re.git
 
 ```powershell
 cmake -S recomp-runtime -B build/recomp-runtime
-cmake --build build/recomp-runtime --config Debug
+cmake --build build/recomp-runtime --config Debug --parallel 2
 ctest --test-dir build/recomp-runtime -C Debug --output-on-failure
 ```
 
 These tests use a hand-written fixture at the generated-function seam. They do
 not require or contain generated game code. See `docs/building.md` for the
-authenticated local-input workflow.
+authenticated local-input requirements. The tested playable runner is 32-bit
+on Windows; public test success does not establish a working 64-bit game build.
+
+For locally built runners, see [controller controls](docs/recomp-controls.md),
+[save behavior](docs/recomp-save-contract.md), and
+[stop/crash log interpretation](recomp-runtime/README.md#reading-stop-and-crash-logs).
 
 ## Repository layout
 

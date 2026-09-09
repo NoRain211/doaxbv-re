@@ -31,3 +31,19 @@ timing. Occasional frame drops, broader rendering gaps and untested offline
 routes remain. These local results depend on authenticated generated inputs;
 this source export does not bundle those inputs or make the pinned lifter alone
 sufficient to reproduce the accepted game run.
+
+
+The release branch also includes the local portrait, compressed-mipmap and
+60 Hz gameplay-pacing changes. A pipeline-cache regression that dropped
+character geometry after portrait rendering is fixed: new layouts replace
+old cache entries, and evicted layouts rebuild when needed. A native
+Exhibition run verified all four selection portraits and character geometry
+in a match and closeup. Lighting remains incomplete; this does not establish
+all character, outfit, court or offline-mode parity. See the
+[verified progress report](https://github.com/NoRain211/doaxbv-re/issues/16#issuecomment-5594275984).
+
+New/reset controller settings default to the game's Digital mode; saved Analog
+settings remain intact. See [controls](recomp-controls.md) for tested mappings
+and limitations. Stop logs distinguish normal exits, diagnostic boundaries,
+runtime errors and unhandled host crashes; an expectation-adjusted exit code
+alone is not a gameplay result. See [log interpretation](../recomp-runtime/README.md#reading-stop-and-crash-logs).
