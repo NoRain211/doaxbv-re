@@ -10,6 +10,11 @@ the starting point, with game logic gradually replaced by hand-written code.
 
 ## Try the Alpha
 
+**Corrected 0.0.2 package:** the download now uses the current proven local
+generation recipe, including the camera arithmetic correction. If you built
+from the first 0.0.2 upload, rebuild from the corrected ZIP in a new folder;
+preserve your previous installation and saves.
+
 Download **DOAXBV-0.0.2-Alpha.zip** from the
 [Alpha release page](https://github.com/NoRain211/doaxbv-re/releases/tag/v0.0.2).
 Use the named Alpha ZIP for bundled prerequisites. GitHub's automatic source
