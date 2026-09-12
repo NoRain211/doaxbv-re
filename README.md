@@ -1,87 +1,119 @@
 # DOAXBV Native PC Port
 
-This project is building a native PC port of Dead or Alive Xtreme Beach
-Volleyball from a user-owned Xbox copy. It combines a whole-program static
-recompilation scaffold with hand-written runtime, kernel, input, audio, and
-D3D8 replacement code.
+A work-in-progress native Windows port of **Dead or Alive Xtreme Beach
+Volleyball**, built through static recompilation and hand-written runtime code.
+You supply your own legally obtained Xbox game copy; the project does not
+include the game or its assets.
 
-Local builds have demonstrated Exhibition gameplay, character selection,
-movie playback, audio, and representative save/reload flows. This is an
-experimental port: lighting, rendering fidelity, and offline-mode coverage
-remain incomplete. See [current status](docs/public-status.md) and the
-[offline acceptance tracker](https://github.com/NoRain211/doaxbv-re/issues/16).
+The goal is a playable PC port with readable source. Generated game code is
+the starting point, with game logic gradually replaced by hand-written code.
 
-The public source builds the runtime tests without game files. It does **not
-yet provide a complete ISO-to-playable-build workflow**: reproducing the
-accepted game build still requires unpublished generation prerequisites.
-A [local ISO extraction script](docs/building.md#extract-a-user-owned-iso) is
-available; generation and compilation prerequisites remain separate. See
-[building instructions and limitations](docs/building.md).
+## Try the Alpha
 
-The repository contains no game binary, generated game C, assets, BIOS data,
-saves, or private run evidence. Users must supply their own legally obtained
-game copy and keep all derived game files outside Git.
+Download **DOAXBV-0.0.1-Alpha.zip** from the
+[Alpha release page](https://github.com/NoRain211/doaxbv-re/releases/tag/v0.0.1).
+Use the named Alpha ZIP: GitHub's automatic source archives follow the older
+source tag and do not contain the same setup package.
+
+The Alpha requires Windows 10/11 x64, a supported USA game ISO, Git with
+internet access, CMake 3.20 or newer, and Visual Studio 2019 Build Tools with
+the C++ desktop workload and a Windows SDK.
+
+1. Extract the whole ZIP into a new folder with a short path.
+2. Drag your ISO onto `BuildGame.cmd` and wait for **Setup complete**.
+3. Open `RunGame.cmd` in the same folder.
+
+Setup extracts your ISO and builds the runner locally. The package includes
+build tools and source, but no prebuilt game runner or game files. Follow the
+release page and the ZIP's `README.txt` for prerequisites and troubleshooting.
+The tested game runner is Win32; the Windows x64 requirement describes the host.
+
+## Current progress
+
+Development builds have demonstrated:
+
+- Exhibition character selection and volleyball play, including Xbox Series
+  controller input.
+- Movie playback, natural endings and supported skips, with native audio.
+- Representative purchases, saves and reloads with interrupted-save recovery.
+- Restored character portraits and selected store and item previews.
+
+This is still an experimental port. Lighting, camera behavior, rendering
+coverage and offline activities remain incomplete. Development results do not
+mean every route works in the Alpha package, which has not passed full gameplay
+acceptance. The release notes also identify a known island-menu stop.
+
+The [offline acceptance tracker](https://github.com/NoRain211/doaxbv-re/issues/16)
+records the remaining work. See the
+[detailed status](https://github.com/NoRain211/doaxbv-re/blob/main/docs/public-status.md)
+and [controller guide](docs/recomp-controls.md) for tested behavior and limits.
+New/reset controller settings default to the game's Digital mode; existing
+saves can retain Analog settings.
+
+Planned PC features, including rollback multiplayer, are tracked in the
+[extension dashboard](https://github.com/NoRain211/doaxbv-re/issues/20).
+The rollback libraries are pinned dependencies, but are not yet integrated
+into gameplay.
 
 ## Build the public tests
 
-Requirements:
-
-- Windows 10 or 11
-- Git
-- Visual Studio 2022 or Build Tools with Desktop development with C++ and a Windows SDK
-- CMake 3.20 or newer
-
-Clone with the pinned lifter:
+For contributors, the source checkout builds runtime tests without game files.
+Install Git, CMake 3.20 or newer, and Visual Studio 2022 or Build Tools with the
+C++ desktop workload and a Windows SDK, then run:
 
 ```powershell
-git clone --recurse-submodules https://github.com/NoRain211/doaxbv-re.git
+git clone https://github.com/NoRain211/doaxbv-re.git
 cd doaxbv-re
 cmake -S recomp-runtime -B build/recomp-runtime -G "Visual Studio 17 2022"
 cmake --build build/recomp-runtime --config Release --parallel 2
 ctest --test-dir build/recomp-runtime -C Release --output-on-failure
 ```
 
-These commands build test executables in `build/recomp-runtime/Release`, not a
-playable game executable. These tests use a hand-written fixture at the generated-function seam. They do
-not require or contain generated game code. See `docs/building.md` for the
-authenticated local-input requirements. The tested playable runner is 32-bit
-on Windows; public test success does not establish a working 64-bit game build.
-
-For locally built runners, see [controller controls](docs/recomp-controls.md),
-[save behavior](docs/recomp-save-contract.md), and
-[stop/crash log interpretation](recomp-runtime/README.md#reading-stop-and-crash-logs).
+These commands produce test executables, not the game runner. The tests use a
+hand-written fixture and do not require the submodules. For playing, use the
+Alpha package instructions above. For work with authenticated generated input,
+see the [source build guide](https://github.com/NoRain211/doaxbv-re/blob/main/docs/building.md).
+Passing runtime tests does not establish complete game accuracy or compatibility.
 
 ## Repository layout
 
-- `recomp-runtime/` - active runtime, adapters, models, presenters, and tests.
-- `xbe/` - XBE parsing and hashing used by local runners.
-- `tools/` - pinned upstream lifter and public custody tooling.
-- `docs/` - public build guidance and an honest status summary.
-- `private/` - ignored local inputs and generated output; only its README is
-  tracked.
-- `third_party/` - ignored local tool checkouts; only its README is tracked.
+- `recomp-runtime/` - runtime, kernel and input adapters, audio, D3D8 replacements,
+  host presentation and tests.
+- `xbe/` - XBE parsing and hashing.
+- `tools/` - extraction and launcher scripts, lifter submodule, source patches
+  and public export checks.
+- `docs/` - build guidance, controls, save behavior, status and research.
+- `third_party/` - pinned rbengine and recomp-net dependencies; see the
+  [dependency notes](third_party/README.md).
+- `private/` - ignored local game inputs, generated output and run evidence.
 
-The internal frozen host, private evidence ledger, generated snapshots, and
-historical research corpus are deliberately absent from the public export.
+## Contributing and reporting bugs
 
-## Contributing
+Read the [contribution guide](https://github.com/NoRain211/doaxbv-re/blob/main/CONTRIBUTING.md)
+before submitting changes. Fix translation defects in the lifter and regenerate;
+do not patch generated game C.
 
-Read `CONTRIBUTING.md` before opening a change. In particular, never commit
-game-derived bytes, generated game C, extracted assets or filenames, or private
-run output.
+[Report bugs](https://github.com/NoRain211/doaxbv-re/issues) with your build
+version, the steps you took, what happened, hardware/controller details, and the
+relevant stop or crash message. See the
+[log guide](recomp-runtime/README.md#reading-stop-and-crash-logs).
+Remove private paths before sharing logs. Never upload game binaries, generated
+game C, assets, extracted filenames, saves, BIOS data or private run evidence.
 
 ## LLM use
 
-This project has been developed with substantial use of large language models
-(LLMs), including AI coding agents, for code, reverse-engineering analysis,
-debugging, tests, and documentation. LLM-produced work can contain mistakes;
-passing tests does not establish complete game accuracy or compatibility. Any
-Alpha release is experimental with known bugs and unverified behavior. See
-`docs/public-status.md` and the issue tracker for what has actually been
-tested.
+This project uses large language models and AI coding agents extensively for
+code, reverse-engineering analysis, debugging, tests and documentation. Their
+output can contain mistakes; changes require review and testing, and unverified
+behavior remains tracked as such.
 
 ## License
 
-Original project code and documentation are licensed under
-GPL-3.0-or-later. See `LICENSE` and `NOTICE`. The license does not grant rights
-to the game or other third-party material.
+Original project code and documentation are licensed under GPL-3.0-or-later.
+See [LICENSE](https://github.com/NoRain211/doaxbv-re/blob/main/LICENSE) and
+[NOTICE](https://github.com/NoRain211/doaxbv-re/blob/main/NOTICE).
+Third-party components retain their own licenses. This project is not affiliated
+with or endorsed by the game's rights holders, and its license grants no rights
+to the game or its assets.
+
+If you like my work, please consider buying a coffee on my [Ko-fi](https://ko-fi.com/norainsrecomps).
