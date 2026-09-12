@@ -153,9 +153,9 @@
     "tools/game-recipe/recoveries/recover-codeptr-r329-controller-exit.json": "e08a7764375de7f6f7ca19017f3ddaaf4789ffbd55f2223ed0a33a92b5b1d63d",
     "tools/game-recipe/recoveries/recover-r331-controls-selection.json": "a5f9ff6434b2c7fdf106034ed5f2667ad1cba8be2cacbb1ef9d7c0562b9e2216",
     "tools/game-recipe/manual-call-targets.json": "950b1cb413d3298b56f21d0b96d9e91412c46f524ee66e618a596e929daa1c2f",
-    "tools/xboxrecomp-patches/local-parity.patch": "5306474fa060f13c1d7463781c035f68c6746d55e6e61874c8538b68ec98f113"
+    "tools/xboxrecomp-patches/local-parity.patch": "db0fdd382c5551744349964851ad2897f04374bb801aa00229d560cce851ead9"
   },
-  "program_manifest_sha256": "7426a5d5cf8cf5c5f5628d6c12271fe8e4570c605ae9388adf85b83daf588350",
+  "program_manifest_sha256": "7b26fb53628647ae38229075896be06f77988146e6a8ae66efed3d296984b396",
   "ebp_overrides": 11052,
   "manual_call_targets": "tools/game-recipe/manual-call-targets.json",
   "generated_files": {
@@ -172,10 +172,10 @@
     "recomp_0010.c": "00498286ccb75fc38d3fb3ebb45fdcc1248620aeed03b15d5c2c2d76bc727194",
     "recomp_0011.c": "ec0da396cc18330988c047209556e286aa86915330a315f1f91114a475be0e2e",
     "recomp_0012.c": "092df271e422f00a0df520a013c08298220cf2ee808a9f14bf772e5fb588c224",
-    "recomp_0013.c": "f66c00e5e3df953f7af6bbf16a65934ef9c2dcb1bb0ac03110456366b097262a",
+    "recomp_0013.c": "5756dcc84578a9459aa042cbbd0514f5896192b78dab3a07d648a557d387c07a",
     "recomp_0014.c": "0334bbdfe3dac72ad5993e126745a248b3989a00895411a198d1997a4cbc0f50",
     "recomp_0015.c": "12b92cf00f774c106c892d9db6d0894e7bab9983925e6929c0a6e969ad8d685f",
-    "recomp_0016.c": "83ce713b5befff7e9e19d74f0a28700a26632236752f23ac54606968c040bcfc",
+    "recomp_0016.c": "8305db38db3c81f0f523f200c175dee936d49589c888af3ad84779e6211f310e",
     "recomp_dispatch.c": "14e0317b255e7679a11eac18a632eaad371020ff426afd709a4c421fd3f93f97",
     "recomp_funcs.h": "44752b9274fb16f7c6ed593d80c5684fa249d1f8260fba595856ecfd08609203",
     "recomp_stubs_unresolved.c": "697eee7ca189f6c3668df2fdb95efdaf662a79b1df0d5983e52c653630ce7bc5"

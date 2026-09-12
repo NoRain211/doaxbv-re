@@ -1,6 +1,8 @@
+diff --git a/tools/disasm/__main__.py b/tools/disasm/__main__.py
+index 0fe8c6b..c22dd44 100644
 --- a/tools/disasm/__main__.py
 +++ b/tools/disasm/__main__.py
-@@ -68,17 +68,22 @@
+@@ -68,17 +68,22 @@ def main():
      )
      parser.add_argument(
          "--seed-functions",
@@ -25,9 +27,11 @@
          disassembler = Disassembler(
              xbe_path=args.xbe_path,
              analysis_json=args.analysis_json,
+diff --git a/tools/disasm/config.py b/tools/disasm/config.py
+index 5850fc2..db6d36d 100644
 --- a/tools/disasm/config.py
 +++ b/tools/disasm/config.py
-@@ -99,6 +99,7 @@
+@@ -99,6 +99,7 @@ CONFIDENCE_KNOWN = 1.0       # Entry point, known addresses
  CONFIDENCE_PROLOGUE = 0.95   # Standard prologue pattern
  CONFIDENCE_CALL_TARGET = 0.90  # Destination of a call instruction
  CONFIDENCE_CC_BOUNDARY = 0.85  # After CC padding run following ret
@@ -35,9 +39,11 @@
  
  # ============================================================
  # Disassembly Engine Settings
+diff --git a/tools/disasm/disasm.py b/tools/disasm/disasm.py
+index b3c033b..9570579 100644
 --- a/tools/disasm/disasm.py
 +++ b/tools/disasm/disasm.py
-@@ -138,6 +138,12 @@
+@@ -138,6 +138,12 @@ class Disassembler:
          if self.verbose:
              print(f"  Total: {total_insns:,d} instructions")
  
@@ -50,9 +56,11 @@
          # Phase 4: Cross-references
          if self.verbose:
              print("\nPhase 4: Building cross-references...")
+diff --git a/tools/disasm/engine.py b/tools/disasm/engine.py
+index 5cce260..ba55307 100644
 --- a/tools/disasm/engine.py
 +++ b/tools/disasm/engine.py
-@@ -208,6 +208,62 @@
+@@ -208,6 +208,62 @@ class DisasmEngine:
  
          return count
  
@@ -115,9 +123,11 @@
      def recursive_descent(self, start_addresses: List[int],
                            section_bounds: List[Tuple[int, int]]) -> Set[int]:
          """
+diff --git a/tools/disasm/functions.py b/tools/disasm/functions.py
+index 26ca037..d692583 100644
 --- a/tools/disasm/functions.py
 +++ b/tools/disasm/functions.py
-@@ -106,7 +106,10 @@
+@@ -106,7 +106,10 @@ class FunctionDetector:
          # Pass 4: Call targets
          self._pass_call_targets(sections)
  
@@ -129,7 +139,7 @@
          self._build_functions(sections)
  
          # Populate call graph
-@@ -238,6 +241,41 @@
+@@ -238,6 +241,41 @@ class FunctionDetector:
                          "call_target"
                      )
  
@@ -171,9 +181,11 @@
      def _build_functions(self, sections: List[SectionInfo]) -> None:
          """
          Pass 5: Build Function objects from candidates.
+diff --git a/tools/recomp/__main__.py b/tools/recomp/__main__.py
+index 2fc7a68..73b5b6a 100644
 --- a/tools/recomp/__main__.py
 +++ b/tools/recomp/__main__.py
-@@ -17,14 +17,52 @@
+@@ -17,8 +17,10 @@ Options:
  """
  
  import argparse
@@ -184,11 +196,10 @@
  import sys
  import time
  
- from . import config
- from .translator import BatchTranslator
+@@ -27,6 +29,42 @@ from .translator import BatchTranslator
  from .output import write_summary, print_stats, generate_header
-+
-+
+ 
+ 
 +def load_manual_call_targets(path, expected_sha256):
 +    if bool(path) != bool(expected_sha256):
 +        raise ValueError(
@@ -223,10 +234,12 @@
 +    if len(set(targets)) != len(targets):
 +        raise ValueError("Manual-call target JSON contains duplicates")
 +    return frozenset(targets), actual_sha256
- 
- 
++
++
  def find_data_files(disasm_dir=None, func_id_dir=None, abi_dir=None, overrides=None):
-@@ -130,6 +168,18 @@
+     """Locate the disasm/func_id output files.
+ 
+@@ -130,6 +168,18 @@ def main():
      parser.add_argument("--gen-dir",
                          help="Output dir for split generated files "
                               "(default: src/game/recomp/gen)")
@@ -245,7 +258,7 @@
      parser.add_argument("--disasm-dir",
                          help="Directory holding tools.disasm output "
                               "(default: tools/disasm/output)")
-@@ -156,6 +206,13 @@
+@@ -156,6 +206,13 @@ def main():
                          help="Address of __SEH_epilog (hex). Auto-detected if omitted")
  
      args = parser.parse_args()
@@ -259,7 +272,7 @@
  
      # Find data files
      data_files = find_data_files(
-@@ -202,6 +259,9 @@
+@@ -202,6 +259,9 @@ def main():
          identified_json_path=data_files.get("identified"),
          abi_json_path=data_files.get("abi"),
          output_dir=args.output_dir,
@@ -269,9 +282,11 @@
          seh_prolog=int(args.seh_prolog, 16) if args.seh_prolog else None,
          seh_epilog=int(args.seh_epilog, 16) if args.seh_epilog else None,
      )
+diff --git a/tools/recomp/disasm.py b/tools/recomp/disasm.py
+index 86c4364..dd988c7 100644
 --- a/tools/recomp/disasm.py
 +++ b/tools/recomp/disasm.py
-@@ -144,6 +144,38 @@
+@@ -144,6 +144,38 @@ class Disassembler:
          self._cs.detail = True
          _init_reg_names(self._cs)
  
@@ -310,7 +325,7 @@
      def disassemble_function(self, raw_bytes, start_va, end_va):
          """
          Disassemble bytes for a single function.
-@@ -155,37 +187,45 @@
+@@ -155,38 +187,46 @@ class Disassembler:
  
          instructions = []
          for cs_insn in self._cs.disasm(raw_bytes[:size], start_va):
@@ -346,7 +361,7 @@
 +            instructions.append(self._decode_instruction(cs_insn))
  
          return instructions
-+
+ 
 +    def disassemble_cfg(self, raw_bytes, start_va, end_va, entry_points,
 +                        stop_addresses=None):
 +        """Decode reachable instruction streams from an explicit worklist."""
@@ -382,12 +397,15 @@
 +                    break
 +
 +        return [decoded[addr] for addr in sorted(decoded)]
- 
++
      def build_basic_blocks(self, instructions, func_start, func_end,
                             extra_leaders=None):
+         """
+diff --git a/tools/recomp/lifter.py b/tools/recomp/lifter.py
+index 57d7e83..fe8b9dd 100644
 --- a/tools/recomp/lifter.py
 +++ b/tools/recomp/lifter.py
-@@ -7,7 +7,7 @@
+@@ -7,7 +7,7 @@ patterns like cmp+jcc) into C statements using the recomp_types.h macros.
  Register model:
    - eax, ebx, ecx, edx, esi, edi, ebp: uint32_t locals
    - esp: uint32_t local (stack pointer)
@@ -396,7 +414,7 @@
  
  Memory model:
    - MEM8/MEM16/MEM32 macros for memory access at flat addresses
-@@ -15,6 +15,7 @@
+@@ -15,6 +15,7 @@ Memory model:
  """
  
  import struct
@@ -404,7 +422,7 @@
  
  from .disasm import Instruction, Operand
  from .config import is_code_address, is_data_address, va_to_file_offset
-@@ -92,7 +93,29 @@
+@@ -92,7 +93,29 @@ def _mem_accessor(size):
  
  def _smem_accessor(size):
      """Return the signed MEM macro for a given operand size."""
@@ -435,7 +453,7 @@
  
  
  def _fmt_mem(op):
-@@ -147,6 +170,8 @@
+@@ -147,6 +170,8 @@ def _fmt_operand_read(op):
          return _fmt_imm(op.imm)
      elif op.type == "mem":
          return _fmt_mem_read(op)
@@ -444,12 +462,10 @@
      return "/* unknown operand */"
  
  
-@@ -157,6 +182,254 @@
-     elif op.type == "mem":
-         return _fmt_mem_write(op, value_expr)
+@@ -159,6 +184,254 @@ def _fmt_operand_write(op, value_expr):
      return f"/* cannot write to {op.type} */;"
-+
-+
+ 
+ 
 +# Registers whose value a deferred flag condition may need to re-read at the
 +# consumer. Flags are modelled lazily: cmp/test emit no state and the jcc,
 +# SETcc or CMOVcc that consumes them re-evaluates the comparison from the
@@ -696,10 +712,12 @@
 +            return False
 +        dirty |= _written_regs(insn) & watched
 +    return False
- 
- 
++
++
  # ── Condition code mapping ───────────────────────────────────
-@@ -248,7 +521,7 @@
+ 
+ # Maps jcc mnemonic → (cmp_macro, test_macro, description)
+@@ -248,7 +521,7 @@ _EFLAGS_PRESERVE = frozenset({
      "movapd", "movupd",
      "addpd", "subpd", "mulpd", "divpd",
      # SSE/MMX integer
@@ -708,7 +726,7 @@
      "emms",
      "paddb", "paddw", "paddd", "paddq",
      "psubb", "psubw", "psubd",
-@@ -272,6 +545,33 @@
+@@ -272,6 +545,33 @@ _EFLAGS_PRESERVE = frozenset({
      "prefetchnta", "prefetcht0", "prefetcht1", "prefetcht2",
  })
  
@@ -742,7 +760,7 @@
  
  def _make_condition(jcc, flag_setter, flag_ops):
      """
-@@ -284,8 +584,9 @@
+@@ -284,8 +584,9 @@ def _make_condition(jcc, flag_setter, flag_ops):
      cmp_macro, test_macro, desc = cond_info
  
      if len(flag_ops) >= 2:
@@ -754,7 +772,7 @@
      elif len(flag_ops) == 1:
          lhs = _fmt_operand_read(flag_ops[0])
          rhs = None
-@@ -306,7 +607,7 @@
+@@ -306,7 +607,7 @@ def _make_condition(jcc, flag_setter, flag_ops):
          }
          op = fpu_cmp_map.get(jcc)
          if op:
@@ -763,7 +781,7 @@
          if jcc == "jp":
              return "0 /* fpu: unordered/NaN */", desc
          if jcc == "jnp":
-@@ -320,7 +621,9 @@
+@@ -320,7 +621,9 @@ def _make_condition(jcc, flag_setter, flag_ops):
      # ── comiss/ucomiss: float comparison, sets CF/ZF/PF ──
      if flag_setter in ("comiss", "comisd", "ucomiss", "ucomisd"):
          def _sse_op(op):
@@ -774,7 +792,7 @@
                  return op.reg
              elif op.type == "mem":
                  if op.mem_size == 8:
-@@ -357,15 +660,27 @@
+@@ -357,15 +660,27 @@ def _make_condition(jcc, flag_setter, flag_ops):
          if jcc == "jns":
              return f"((int32_t)({lhs} - {rhs}) >= 0)", desc
          if jcc in ("jp", "jnp"):
@@ -804,7 +822,7 @@
          if jcc == "js":
              return f"((int32_t)({lhs} & {rhs}) < 0)", desc
          if jcc == "jns":
-@@ -375,7 +690,10 @@
+@@ -375,7 +690,10 @@ def _make_condition(jcc, flag_setter, flag_ops):
          if jcc == "jno":
              return "1", desc
          if jcc in ("jp", "jnp"):
@@ -816,7 +834,7 @@
          return None
  
      # ── sub: a = a - b, flags from (a_orig - b) ──
-@@ -570,9 +888,9 @@
+@@ -570,9 +888,9 @@ def _make_condition(jcc, flag_setter, flag_ops):
      # ── repe cmpsb / repne scasb: string comparison ──
      if "cmps" in flag_setter or "scas" in flag_setter:
          if jcc in ("je", "jz"):
@@ -828,7 +846,7 @@
          return None
  
      return None
-@@ -605,8 +923,10 @@
+@@ -605,8 +923,10 @@ def _emit_cond_goto(cond_expr, jcc, desc, target, lifter):
      if target is None:
          return f"if ({cond_expr}) {{ /* {jcc}: {desc} - indirect */ }}"
      if lifter and lifter._is_external_target(target):
@@ -840,7 +858,7 @@
                  f" /* {jcc}: {desc} */")
      return f"if ({cond_expr}) goto loc_{target:08X}; /* {jcc}: {desc} */"
  
-@@ -718,11 +1038,17 @@
+@@ -718,11 +1038,17 @@ def detect_seh_helpers(func_db, xbe_data, verbose=False):
      return prolog, epilog
  
  
@@ -859,7 +877,7 @@
          """
          func_db: dict of func_addr → func_info (for naming call targets)
          label_db: dict of addr → name (for kernel imports, etc.)
-@@ -734,9 +1060,14 @@
+@@ -734,9 +1060,14 @@ class Lifter:
          self.label_db = label_db or {}
          self.abi_db = abi_db or {}
          self.xbe_data = xbe_data
@@ -874,7 +892,7 @@
          # Every direct call target we emit a name for, as {addr: name}. The
          # batch translator diffs this against the functions it actually defined
          # so it can stub out the remainder (see translate_batch_split).
-@@ -770,6 +1101,16 @@
+@@ -770,6 +1101,16 @@ class Lifter:
          self.referenced_calls[addr] = name
          return name
  
@@ -891,19 +909,19 @@
      def lift_instruction(self, insn):
          """
          Translate a single x86 instruction to one or more C statements.
-@@ -778,6 +1119,11 @@
-         m = insn.mnemonic
+@@ -779,6 +1120,11 @@ class Lifter:
          ops = insn.operands
          nops = len(ops)
-+
+ 
 +        if (not self.mmx_enabled and _uses_mmx(insn)
 +                and m in ("movq", "cvtps2pi", "packssdw", "pavgb")):
 +            prefix = "SSE: " if m == "movq" else "TODO: "
 +            return [f"/* {prefix}{m} {insn.op_str} */"]
- 
++
          # ── NOP ──
          if m == "nop" or (m == "lea" and nops == 2 and
-@@ -829,6 +1175,8 @@
+                           ops[0].type == "reg" and ops[1].type == "mem" and
+@@ -829,6 +1175,8 @@ class Lifter:
              return self._lift_sar(insn, ops)
          if m in ("rol", "ror"):
              return self._lift_rotate(insn, ops, m)
@@ -912,7 +930,7 @@
  
          # ── Comparison / test (standalone, not part of cmp+jcc pattern) ──
          if m == "cmp":
-@@ -885,6 +1233,9 @@
+@@ -885,6 +1233,9 @@ class Lifter:
              return [f"/* bt {insn.op_str} */"]
          if m == "emms":
              return ["/* emms - empty MMX state */"]
@@ -922,7 +940,7 @@
          if m in ("sete", "setne", "setb", "setae", "setbe", "seta",
                   "setl", "setge", "setle", "setg", "sets", "setns"):
              return self._lift_setcc(insn, ops, m)
-@@ -894,6 +1245,7 @@
+@@ -894,6 +1245,7 @@ class Lifter:
  
          # ── SSE (scalar float) ──
          if m in ("movss", "movsd", "movaps", "movups", "movlps", "movhps",
@@ -930,7 +948,7 @@
                   "addss", "subss", "mulss", "divss", "sqrtss",
                   "addsd", "subsd", "mulsd", "divsd", "sqrtsd",
                   "minss", "maxss", "minsd", "maxsd",
-@@ -901,8 +1253,8 @@
+@@ -901,8 +1253,8 @@ class Lifter:
                   "cvtsi2ss", "cvtss2si", "cvttss2si",
                   "cvtsi2sd", "cvtsd2si", "cvttsd2si",
                   "cvtss2sd", "cvtsd2ss",
@@ -941,7 +959,7 @@
                   "shufps", "unpcklps", "unpckhps",
                   "addps", "subps", "mulps", "divps",
                   "minps", "maxps", "rsqrtss", "rcpss",
-@@ -999,7 +1351,7 @@
+@@ -999,7 +1351,7 @@ class Lifter:
  
      # ── ALU binary operations ──
  
@@ -950,7 +968,7 @@
          if len(ops) < 2:
              return [f"/* {m}: bad operands */"]
          c_op = {"add": "+", "sub": "-", "and": "&", "or": "|", "xor": "^"}[m]
-@@ -1007,9 +1359,18 @@
+@@ -1007,9 +1359,18 @@ class Lifter:
          src = _fmt_operand_read(ops[1])
          # XOR reg, reg → zero
          if m == "xor" and ops[0].type == "reg" and ops[1].type == "reg" and ops[0].reg == ops[1].reg:
@@ -972,7 +990,7 @@
  
      def _lift_inc_dec(self, insn, ops, m):
          if len(ops) < 1:
-@@ -1024,11 +1385,16 @@
+@@ -1024,11 +1385,16 @@ class Lifter:
          else:
              return [_fmt_operand_write(ops[0], f"{val} {op_char} {delta}")]
  
@@ -991,7 +1009,7 @@
  
      def _lift_not(self, insn, ops):
          if len(ops) < 1:
-@@ -1036,7 +1402,7 @@
+@@ -1036,7 +1402,7 @@ class Lifter:
          val = _fmt_operand_read(ops[0])
          return [_fmt_operand_write(ops[0], f"~{val}")]
  
@@ -1000,7 +1018,7 @@
          """SBB: subtract with borrow. Common idiom: sbb reg, reg → -CF (0 or -1)."""
          if len(ops) < 2:
              return ["/* sbb: bad operands */"]
-@@ -1044,16 +1410,41 @@
+@@ -1044,16 +1410,41 @@ class Lifter:
          src = _fmt_operand_read(ops[1])
          # sbb reg, reg is a common idiom: result is 0 or 0xFFFFFFFF depending on CF
          if ops[0].type == "reg" and ops[1].type == "reg" and ops[0].reg == ops[1].reg:
@@ -1046,7 +1064,7 @@
  
      def _lift_shld(self, insn, ops):
          """SHLD: double-precision shift left."""
-@@ -1141,6 +1532,38 @@
+@@ -1141,6 +1532,38 @@ class Lifter:
          func = "ROL32" if m == "rol" else "ROR32"
          return [_fmt_operand_write(ops[0], f"{func}({dst}, {cnt})")]
  
@@ -1085,7 +1103,7 @@
      # ── Compare / Test (standalone) ──
  
      def _lift_cmp(self, insn, ops):
-@@ -1186,9 +1609,22 @@
+@@ -1186,9 +1609,22 @@ class Lifter:
          # x86 'call' pushes return address then jumps.
          # With global esp, we push a dummy return address (0) then call.
          # The callee's 'ret' will pop it back off.
@@ -1110,7 +1128,7 @@
              # After __SEH_prolog/__SEH_epilog, read back the frame pointer.
              if insn.call_target in (self.SEH_PROLOG, self.SEH_EPILOG):
                  lines.append("ebp = g_seh_ebp; /* read back frame from SEH helper */")
-@@ -1196,7 +1632,12 @@
+@@ -1196,7 +1632,12 @@ class Lifter:
          elif len(ops) >= 1:
              target = _fmt_operand_read(ops[0])
              # Mark indirect calls for post-processing by _fixup_icall_esp_save
@@ -1124,7 +1142,7 @@
          return ["/* call: no target */"]
  
      def _lift_ret(self, insn, ops):
-@@ -1218,8 +1659,9 @@
+@@ -1218,8 +1659,9 @@ class Lifter:
  
      def _read_jump_table(self, table_va, max_entries=256):
          """Read 32-bit jump table entries from the XBE at a given VA.
@@ -1136,7 +1154,7 @@
          if not self.xbe_data:
              return []
          offset = va_to_file_offset(table_va)
-@@ -1232,6 +1674,8 @@
+@@ -1232,6 +1674,8 @@ class Lifter:
                  break
              val = struct.unpack_from('<I', self.xbe_data, o)[0]
              if not is_code_address(val):
@@ -1145,7 +1163,7 @@
                  break
              targets.append(val)
          return targets
-@@ -1248,7 +1692,9 @@
+@@ -1248,7 +1692,9 @@ class Lifter:
          if not op.mem_disp or not (op.mem_index or op.mem_base):
              return []
          table_va = op.mem_disp
@@ -1156,7 +1174,7 @@
          if not targets:
              return []
          # Check that ALL targets are within the current function
-@@ -1261,6 +1707,15 @@
+@@ -1261,6 +1707,15 @@ class Lifter:
              if self._is_external_target(insn.jump_target):
                  # Tail call - no return address push (reuses current frame's)
                  # Bridge ebp so the target function can inherit our frame pointer.
@@ -1172,7 +1190,7 @@
                  name = self._call_target_name(insn.jump_target)
                  return [f"g_seh_ebp = ebp; {name}(); return; /* tail jmp 0x{insn.jump_target:08X} */"]
              return [f"goto loc_{insn.jump_target:08X};"]
-@@ -1290,7 +1745,7 @@
+@@ -1290,7 +1745,7 @@ class Lifter:
              if target:
                  if self._is_external_target(target):
                      name = self._call_target_name(target)
@@ -1181,7 +1199,7 @@
                  return [f"if ({cond}) goto loc_{target:08X}; /* {jcc} */"]
              return [f"/* {jcc} - no target */"]
  
-@@ -1299,7 +1754,7 @@
+@@ -1299,7 +1754,7 @@ class Lifter:
          if target:
              if self._is_external_target(target):
                  name = self._call_target_name(target)
@@ -1190,7 +1208,7 @@
              return [f"if (_flags /* {jcc}: {desc} */) goto loc_{target:08X};"]
          return [f"/* {jcc}: {desc} - no target */"]
  
-@@ -1341,9 +1796,29 @@
+@@ -1341,9 +1796,29 @@ class Lifter:
                  "{ uint32_t _i; for (_i = 0; _i < ecx; _i++) MEM16(edi + _i*2) = LO16(eax); }",
                  "edi += ecx * 2; ecx = 0; /* rep stosw */"
              ]
@@ -1222,7 +1240,7 @@
              return [f"/* {m} - string scan, ecx iterations */"]
          return [f"/* {m} */"]
  
-@@ -1378,10 +1853,50 @@
+@@ -1378,10 +1853,50 @@ class Lifter:
          if nops < 1:
              return [f"/* {m}: no operands */"]
  
@@ -1276,7 +1294,7 @@
              elif op.type == "mem":
                  if op.mem_size == 8:
                      return f"MEMD({_fmt_mem(op)})"
-@@ -1391,7 +1906,9 @@
+@@ -1391,7 +1906,9 @@ class Lifter:
              return f"/* sse_read? */"
  
          def _sse_write(op, val):
@@ -1287,7 +1305,7 @@
                  return f"{op.reg} = {val};"
              elif op.type == "mem":
                  if op.mem_size == 8:
-@@ -1399,20 +1916,101 @@
+@@ -1399,20 +1916,101 @@ class Lifter:
                  return f"MEMF({_fmt_mem(op)}) = {val};"
              return f"/* sse_write? */;"
  
@@ -1395,7 +1413,7 @@
              return [f"/* movd {insn.op_str} */"]
  
          # ── Arithmetic ──
-@@ -1441,11 +2039,15 @@
+@@ -1441,11 +2039,15 @@ class Lifter:
                  return [_sse_write(ops[0], f"({a} > {b} ? {a} : {b})") + f" /* {m} */"]
  
          # ── Packed arithmetic ──
@@ -1415,7 +1433,7 @@
  
          # ── Conversions ──
          if m == "cvtsi2ss":
-@@ -1475,19 +2077,31 @@
+@@ -1475,19 +2077,31 @@ class Lifter:
                  return [f"/* {m} {_sse_read(ops[0])}, {_sse_read(ops[1])} - sets EFLAGS */"]
  
          # ── Bitwise ──
@@ -1456,7 +1474,7 @@
  
          # ── Reciprocal / rsqrt ──
          if m == "rsqrtss":
-@@ -1521,13 +2135,22 @@
+@@ -1521,13 +2135,22 @@ class Lifter:
  
          # ── Packed comparison ──
          if m in ("cmpneqps", "cmpeqps", "cmpltps", "cmpleps"):
@@ -1482,7 +1500,7 @@
  
          # ── MMX / integer SIMD ──
          if m in ("pand", "pandn", "por", "pxor", "pcmpgtd"):
-@@ -1535,7 +2158,24 @@
+@@ -1535,7 +2158,24 @@ class Lifter:
                  return [f"/* {m} {insn.op_str} (MMX/SIMD integer) */"]
  
          # ── Shuffle/unpack ──
@@ -1508,7 +1526,7 @@
              return [f"/* {m} {insn.op_str} */"]
  
          return [f"/* SSE: {m} {insn.op_str} */"]
-@@ -1555,16 +2195,28 @@
+@@ -1555,16 +2195,28 @@ class Lifter:
                      elif ops[0].mem_size == 8:
                          return [f"fp_push(MEMD({_fmt_mem(ops[0])})); /* fld double */"]
                      return [f"fp_push(MEMF({_fmt_mem(ops[0])})); /* fld */"]
@@ -1541,7 +1559,7 @@
  
          if m == "fild":
              if len(ops) >= 1 and ops[0].type == "mem":
-@@ -1574,51 +2226,207 @@
+@@ -1574,51 +2226,216 @@ class Lifter:
  
          if m in ("fist", "fistp"):
              if len(ops) >= 1 and ops[0].type == "mem":
@@ -1556,6 +1574,15 @@
 +                        f"({int_type})llrint(fp_top());{pop} /* {m} */"]
              return [f"/* {m} {insn.op_str} */"]
  
++        if m in ("fadd", "fsub", "fmul", "fdiv", "fsubr", "fdivr") and len(ops) == 2:
++            dest = _fmt_fpu_stack_register(ops[0]).replace("fp_st(0)", "fp_top()")
++            source = _fmt_fpu_stack_register(ops[1])
++            operator = {"fadd": "+", "fsub": "-", "fmul": "*", "fdiv": "/",
++                        "fsubr": "-", "fdivr": "/"}[m]
++            if m.endswith("r"):
++                return [f"{dest} = {source} {operator} {dest}; /* {m} {insn.op_str} */"]
++            return [f"{dest} {operator}= {source}; /* {m} {insn.op_str} */"]
++
          if m == "fadd":
 +            if ops:
 +                source = _fmt_fpu_operand(ops[-1])
@@ -1761,7 +1788,7 @@
          if m == "fldz":
              return [f"fp_push(0.0); /* fldz */"]
          if m == "fld1":
-@@ -1627,7 +2435,7 @@
+@@ -1627,7 +2444,7 @@ class Lifter:
          return [f"/* FPU: {m} {insn.op_str} */"]
  
  
@@ -1770,7 +1797,7 @@
      """
      Lift a basic block to C statements.
      Tracks flags to generate proper conditions for jcc/setcc/cmovcc.
-@@ -1637,6 +2445,8 @@
+@@ -1637,6 +2454,8 @@ def lift_basic_block(lifter, bb, flag_state=None):
          bb: BasicBlock with instructions
          flag_state: tuple of (flag_setter_mnemonic, flag_operands) from
                      a preceding block, or None
@@ -1779,7 +1806,7 @@
  
      Returns:
          (stmts, flag_state) where stmts is a list of C statement strings
-@@ -1644,6 +2454,8 @@
+@@ -1644,6 +2463,8 @@ def lift_basic_block(lifter, bb, flag_state=None):
      """
      stmts = []
      insns = bb.instructions
@@ -1788,11 +1815,10 @@
      i = 0
  
      # Track the last instruction that set flags
-@@ -1652,6 +2464,46 @@
-     else:
+@@ -1653,6 +2474,46 @@ def lift_basic_block(lifter, bb, flag_state=None):
          last_flag_setter = None
          last_flag_ops = []
-+
+ 
 +    # A deferred condition re-reads its operands at the consumer, so any
 +    # register overwritten between the flag setter and the consumer would
 +    # change the condition. Record those and substitute a value captured at
@@ -1832,10 +1858,11 @@
 +                "uint32_t %s = %s; /* preserve flag operand */"
 +                % (name, reg))
 +        return lines_out
- 
++
      while i < len(insns):
          curr = insns[i]
-@@ -1666,6 +2518,7 @@
+ 
+@@ -1666,6 +2527,7 @@ def lift_basic_block(lifter, bb, flag_state=None):
              flag_insn = insns[i]
              last_flag_setter = flag_insn.mnemonic
              last_flag_ops = list(flag_insn.operands)
@@ -1843,7 +1870,7 @@
              i += consumed
              continue
  
-@@ -1679,7 +2532,8 @@
+@@ -1679,7 +2541,8 @@ def lift_basic_block(lifter, bb, flag_state=None):
          # Check if this instruction uses flags (jcc, setcc, cmovcc)
          if curr.is_cond_jump and last_flag_setter:
              result = _make_condition(
@@ -1853,7 +1880,7 @@
              if result:
                  cond_expr, desc = result
                  target = curr.jump_target
-@@ -1694,7 +2548,8 @@
+@@ -1694,7 +2557,8 @@ def lift_basic_block(lifter, bb, flag_state=None):
                                "sets", "setns")
                  and last_flag_setter and len(curr.operands) >= 1):
              cond = _make_setcc_value(
@@ -1863,7 +1890,7 @@
              if cond:
                  stmts.append(
                      _fmt_operand_write(curr.operands[0],
-@@ -1708,7 +2563,8 @@
+@@ -1708,7 +2572,8 @@ def lift_basic_block(lifter, bb, flag_state=None):
                                "cmovle", "cmovg", "cmovs", "cmovns")
                  and last_flag_setter and len(curr.operands) >= 2):
              cond = _make_cmovcc_cond(
@@ -1873,7 +1900,7 @@
              if cond:
                  src = _fmt_operand_read(curr.operands[1])
                  stmts.append(
-@@ -1718,34 +2574,90 @@
+@@ -1718,34 +2583,90 @@ def lift_basic_block(lifter, bb, flag_state=None):
                  i += 1
                  continue
  
@@ -1968,7 +1995,7 @@
          elif curr.mnemonic.startswith("f") or curr.mnemonic.startswith("cmov"):
              pass  # FPU and already-handled CMOVcc
          elif curr.mnemonic.startswith("j"):
-@@ -1757,12 +2669,14 @@
+@@ -1757,12 +2678,14 @@ def lift_basic_block(lifter, bb, flag_state=None):
              # repe cmpsb/repne scasb = comparison, sets flags
              rest = curr.op_str.strip() if hasattr(curr, 'op_str') else ""
              raw_m = curr.mnemonic
@@ -1985,9 +2012,45 @@
              else:
                  pass  # rep movs/stos = data movement, flags preserved
          else:
+diff --git a/tools/recomp/test_lifter_fpu_destination.py b/tools/recomp/test_lifter_fpu_destination.py
+new file mode 100644
+index 0000000..e07741a
+--- /dev/null
++++ b/tools/recomp/test_lifter_fpu_destination.py
+@@ -0,0 +1,28 @@
++"""Explicit x87 destination registers must survive translation."""
++import unittest
++
++from .disasm import Disassembler, Instruction, Operand
++from .lifter import Lifter
++
++
++class FpuDestinationTest(unittest.TestCase):
++    def test_decoded_reverse_destinations(self):
++        for raw, dest, operator in [('dce1', 'fp_st1()', '-'), ('dcf6', 'fp_st(6)', '/')]:
++            instructions = Disassembler().disassemble_function(bytes.fromhex(raw), 0x1000, 0x1002)
++            self.assertEqual(len(instructions), 1)
++            text = Lifter().lift_instruction(instructions[0])[0]
++            self.assertIn(f'{dest} = fp_st(0) {operator} {dest};', text)
++
++    def test_two_register_arithmetic(self):
++        for mnemonic, operator in [('fadd', '+'), ('fsub', '-'), ('fmul', '*'),
++                                   ('fdiv', '/'), ('fsubr', '-'), ('fdivr', '/')]:
++            for dest, source in [(1, 0), (6, 0), (0, 3)]:
++                with self.subTest(mnemonic=mnemonic, dest=dest, source=source):
++                    insn = Instruction(0, 2, mnemonic, f'st({dest}), st({source})', '')
++                    insn.operands = [Operand(type='reg', reg=f'st({i})') for i in (dest, source)]
++                    text = Lifter().lift_instruction(insn)[0].replace('fp_st1()', 'fp_st(1)').replace('fp_top()', 'fp_st(0)')
++                    expected = (f'fp_st({dest}) = fp_st({source}) {operator} fp_st({dest});'
++                                if mnemonic.endswith('r') else
++                                f'fp_st({dest}) {operator}= fp_st({source});')
++                    self.assertIn(expected, text)
++                    self.assertNotIn('fp_pop', text)
+diff --git a/tools/recomp/translator.py b/tools/recomp/translator.py
+index a5890d7..5756ed8 100644
 --- a/tools/recomp/translator.py
 +++ b/tools/recomp/translator.py
-@@ -11,8 +11,11 @@
+@@ -11,8 +11,11 @@ For each function:
  Produces compilable C code using recomp_types.h macros.
  """
  
@@ -1999,7 +2062,7 @@
  
  # Import the functions, not the VA constants: configure_from_xbe() rebinds those
  # at startup, so a by-value import would freeze the fallback layout.
-@@ -96,7 +99,8 @@
+@@ -96,7 +99,8 @@ class FunctionTranslator:
      """Translates individual x86 functions to C source code."""
  
      def __init__(self, xbe_data, func_db, label_db=None, classification_db=None,
@@ -2009,7 +2072,7 @@
          """
          xbe_data: bytes - raw XBE file contents
          func_db: dict - addr → function info from functions.json
-@@ -111,9 +115,701 @@
+@@ -111,9 +115,701 @@ class FunctionTranslator:
          self.classification_db = classification_db or {}
          self.abi_db = abi_db or {}
          self.disasm = Disassembler()
@@ -2714,7 +2777,7 @@
  
      def _read_func_bytes(self, start_va, end_va):
          """Read raw bytes for a function from the XBE."""
-@@ -148,7 +844,8 @@
+@@ -148,7 +844,8 @@ class FunctionTranslator:
          Returns a string of C source code, or None on failure.
          """
          start = func_addr
@@ -2724,7 +2787,7 @@
          if not end:
              end = start + func_info.get("size", 0)
          if end <= start:
-@@ -165,11 +862,43 @@
+@@ -165,12 +862,44 @@ class FunctionTranslator:
          # Set function bounds for the lifter
          self.lifter.func_start = start
          self.lifter.func_end = end
@@ -2737,7 +2800,7 @@
 +                        self.disasm.disassemble_function(raw_bytes, start, end))
          if not instructions:
              return None
-+
+ 
 +        if not recovered:
 +            addresses = {insn.address for insn in instructions}
 +            linear_jump_tables = {}
@@ -2766,10 +2829,11 @@
 +                self.lifter.jump_table_targets = linear_jump_tables
 +        self.translated_function_starts.add(start)
 +        self.lifter.configure_mmx(instructions)
- 
++
          # Collect switch table targets as extra block leaders
          switch_leaders = set()
-@@ -216,23 +945,47 @@
+         for insn in instructions:
+@@ -216,24 +945,48 @@ class FunctionTranslator:
          if any(insn.mnemonic == "leave" for insn in instructions):
              used_regs.add("ebp")
  
@@ -2814,15 +2878,16 @@
 +        SEH_FUNCS = {0x001BB5DC, 0x001BB617}
          if any(insn.call_target in SEH_FUNCS for insn in instructions):
              used_regs.add("ebp")
-+
+ 
 +        # A translated callee that inherits or saves EBP reads g_seh_ebp at
 +        # its C entry boundary. Publish this function's live local EBP before
 +        # each call so that boundary observes the hardware caller context.
 +        self.lifter.current_function_has_ebp = "ebp" in used_regs
- 
++
          # Build call targets list
          call_targets = set()
-@@ -293,34 +1046,30 @@
+         for insn in instructions:
+@@ -293,34 +1046,30 @@ class FunctionTranslator:
          if has_carry:
              lines.append(f"    int _cf = 0; /* carry flag */")
  
@@ -2872,7 +2937,7 @@
  
          # For fpo_leaf functions that use ebp: initialize from g_seh_ebp.
          # In x86, these functions inherit EBP from their caller (typically
-@@ -351,6 +1100,32 @@
+@@ -351,6 +1100,32 @@ class FunctionTranslator:
                      label_addrs.add(t)
  
          flag_state = None
@@ -2905,7 +2970,7 @@
          for bb in blocks:
              # Emit label if this block is a branch target
              if bb.start in label_addrs or bb.start == start:
-@@ -365,10 +1140,18 @@
+@@ -365,12 +1140,20 @@ class FunctionTranslator:
              # This handles patterns like: test eax,eax / ja X / jb Y
              # where jb uses the same flags as ja from the preceding block.
              stmts, flag_state = lift_basic_block(
@@ -2915,17 +2980,19 @@
              for stmt in stmts:
                  lines.append(f"    {stmt}")
  
-+            lines.append(f"")
-+
+             lines.append(f"")
+ 
 +        # Continue into the next function when control runs off the bottom.
 +        if fallthrough_target is not None:
 +            ft_name = self.lifter._call_target_name(fallthrough_target)
 +            lines.append(f"    g_seh_ebp = ebp; {ft_name}(); return;"
 +                         f" /* fallthrough 0x{fallthrough_target:08X} */")
-             lines.append(f"")
- 
++            lines.append(f"")
++
          # Insert _icall_esp save points before RECOMP_ICALL_SAFE arg pushes.
-@@ -418,8 +1201,8 @@
+         # The pattern is: optional PUSH32 args, then PUSH32(esp, 0); RECOMP_ICALL_SAFE(...).
+         # We insert "uint32_t _icall_esp = g_esp;" before the first arg push.
+@@ -418,8 +1201,8 @@ class FunctionTranslator:
          if has_fpu:
              lines.append(f"    #undef fp_push")
              lines.append(f"    #undef fp_pop")
@@ -2935,7 +3002,7 @@
              lines.append(f"    #undef fp_st1")
  
          lines.append(f"}}")
-@@ -467,10 +1250,15 @@
+@@ -467,10 +1250,15 @@ class BatchTranslator:
  
      def __init__(self, xbe_path, func_json_path, labels_json_path=None,
                   identified_json_path=None, abi_json_path=None,
@@ -2952,7 +3019,7 @@
  
          # Load XBE
          with open(xbe_path, "rb") as f:
-@@ -486,6 +1274,20 @@
+@@ -486,6 +1274,20 @@ class BatchTranslator:
              func["_addr"] = addr
              if "end" in func:
                  func["end"] = int(func["end"], 16)
@@ -2973,7 +3040,7 @@
              self.func_db[addr] = func
  
          # Load labels
-@@ -529,7 +1331,145 @@
+@@ -529,7 +1331,145 @@ class BatchTranslator:
          self.translator = FunctionTranslator(
              self.xbe_data, self.func_db, self.label_db,
              self.classification_db, self.abi_db,
@@ -3119,7 +3186,7 @@
  
      def get_functions_by_category(self, categories=None, exclude_categories=None):
          """
-@@ -538,6 +1478,8 @@
+@@ -538,6 +1478,8 @@ class BatchTranslator:
          """
          result = []
          for addr, func_info in sorted(self.func_db.items()):
@@ -3128,7 +3195,7 @@
              cls_info = self.classification_db.get(addr, {})
              cat = cls_info.get("category", "unknown")
  
-@@ -560,7 +1502,11 @@
+@@ -560,7 +1502,11 @@ class BatchTranslator:
          func_info = self.func_db.get(addr)
          if not func_info:
              return None
@@ -3141,17 +3208,17 @@
  
      def translate_batch(self, func_list, output_file=None, max_funcs=None,
                          verbose=False):
-@@ -575,6 +1521,9 @@
-         Returns dict with statistics.
+@@ -576,6 +1522,9 @@ class BatchTranslator:
          """
          os.makedirs(self.output_dir, exist_ok=True)
-+
+ 
 +        func_list = [item for item in func_list
 +                     if item[0] not in self.translator.owned_function_starts]
- 
++
          if max_funcs:
              func_list = func_list[:max_funcs]
-@@ -630,6 +1579,8 @@
+ 
+@@ -630,6 +1579,8 @@ class BatchTranslator:
                  c_chunks.append("")
                  stats["failed"] += 1
  
@@ -3160,22 +3227,22 @@
          # Write output
          if output_file is None:
              output_file = os.path.join(self.output_dir, "recompiled.c")
-@@ -688,6 +1639,9 @@
-         import sys
+@@ -689,6 +1640,9 @@ class BatchTranslator:
  
          os.makedirs(output_dir, exist_ok=True)
-+
+ 
 +        func_list = [item for item in func_list
 +                     if item[0] not in self.translator.owned_function_starts]
- 
++
          # Translate all functions first, collecting results
          translations = []
-@@ -715,6 +1669,8 @@
-                 stub += f"void {name}(void) {{ /* translation failed */ }}\n"
+         stats = {
+@@ -716,6 +1670,8 @@ class BatchTranslator:
                  translations.append((addr, name, stub))
                  stats["failed"] += 1
-+
-+        self._record_manual_call_stats(stats)
  
++        self._record_manual_call_stats(stats)
++
          # Any address called but never defined needs a stub, or the link fails.
          # These are almost all mid-function entry points the function detector
+         # did not split out: a call lands a few bytes inside (or just past) a

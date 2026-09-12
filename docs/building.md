@@ -63,8 +63,8 @@ Use `--generate-only` to stop after generation. A completed build writes
 `private/setup-*/build-receipt.json` with status `built-unverified`. This status
 records a build. A supervised native run provides the behavior evidence.
 
-The recipe reproduces the original local generated program, whose 19-file
-manifest is `7426a5d5cf8cf5c5f5628d6c12271fe8e4570c605ae9388adf85b83daf588350`.
+The recipe reproduces the current proven local generated program, whose 19-file
+manifest is `7b26fb53628647ae38229075896be06f77988146e6a8ae66efed3d296984b396`.
 All 20 generated files, including unresolved stubs, are checked individually.
 The receipt records the recipe, patch, generated manifest, XBE, and runner
 identities. A matching generated program does not imply an identical executable:
@@ -73,7 +73,8 @@ hand-written runtime changes and compiler inputs also affect the build.
 An earlier experimental recipe used the same upstream pin with
 `runtime-bootstrap.patch` and fresh function discovery. Its two successful
 Exhibition runs did not establish parity with the original local build. The
-current builder retains the accepted 0.0.1 recipe unchanged. Gameplay with the new package
+current builder preserves the proven boundaries and recoveries and includes
+the current local x87 camera-calculation correction. Gameplay with the new package
 still requires validation; the original local runner also has an unresolved
 target in a later island-menu flow.
 
