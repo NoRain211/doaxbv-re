@@ -1,6 +1,7 @@
 #include "kernel_abi.h"
 #include "runtime.h"
 #include "directory_model.h"
+#include "device_model.h"
 #include "symbolic_link_model.h"
 #include "save_transaction.h"
 #ifdef RECOMP_FULL_PROGRAM
@@ -1569,6 +1570,29 @@ static void bridge_nt_read_file(void)
    native host confirms by setting three bytes past the caller's buffer; that
    confirmation is what the guest reads back, so we reproduce it even though
    it lands beyond the declared input length. */
+static void bridge_nt_fs_control_file(void)
+{
+    uint32_t handle = kernel_arg(1u);
+    uint32_t iosb = kernel_arg(5u);
+    uint32_t code = kernel_arg(6u);
+    uint32_t status = RECOMP_STATUS_INVALID_HANDLE;
+    for (unsigned i = 0u; i < MAX_FILE_HANDLES; ++i) {
+        if (!file_handles[i].active || file_handles[i].guest_handle != handle) continue;
+        status = 0xc0000010u;
+        /* No block filesystem is mounted on the virtual cache device. */
+        if (code == 0x00090020u && file_handles[i].kind == FILE_HANDLE_PSEUDO)
+            status = RECOMP_STATUS_SUCCESS;
+        break;
+    }
+    if (iosb != 0u) {
+        *recomp_memory_u32(iosb) = status;
+        *recomp_memory_u32(iosb + 4u) = 0u;
+    }
+    fprintf(stderr, "recomp kernel: NtFsControlFile handle=%u code=0x%08x status=0x%08x\n",
+        (unsigned)handle, (unsigned)code, (unsigned)status);
+    kernel_return(10u, status);
+}
+
 static void bridge_nt_device_io_control_file(void)
 {
     uint32_t io_status_block = kernel_arg(5u);
@@ -1577,10 +1601,19 @@ static void bridge_nt_device_io_control_file(void)
     uint32_t input_buffer_length = kernel_arg(8u);
 
     uint32_t status = RECOMP_STATUS_SUCCESS;
+    uint32_t written = 0u;
+    if (io_control_code == 0x00070000u || io_control_code == 0x00074004u) {
+        uint32_t output = kernel_arg(9u);
+        uint32_t length = kernel_arg(10u);
+        uint32_t required = io_control_code == 0x00070000u ? 24u : 32u;
+        status = recomp_device_disk_query(io_control_code,
+            output == 0u || length < required ? NULL : recomp_memory(output, required),
+            length, &written);
+    }
 
     if (io_status_block != 0u) {
         *recomp_memory_u32(io_status_block) = status;
-        *recomp_memory_u32(io_status_block + 4u) = 0u;
+        *recomp_memory_u32(io_status_block + 4u) = written;
     }
     /* The 0x4d014 query is the CRT's real-time-clock read. The guest reads
        three response bytes back from the query struct at offsets 0x36..0x38
@@ -1810,6 +1843,7 @@ RecompFunction recomp_kernel_file(uint32_t ordinal)
     case 187u: return bridge_nt_close;
     case 190u: return bridge_nt_create_file;
     case 196u: return bridge_nt_device_io_control_file;
+    case 200u: return bridge_nt_fs_control_file;
     case 202u: return bridge_nt_open_file;
     case 203u: return bridge_nt_open_symbolic_link_object;
     case 207u: return bridge_nt_query_directory_file;

@@ -26,7 +26,7 @@
 #ifdef RECOMP_FULL_PROGRAM
 void sub_0006AFD0(void);
 #endif
-void sub_0018322D(void);
+void recomp_program_thread_start(void);
 #ifdef RECOMP_FULL_PROGRAM
 void sub_0011F250(void);
 #endif
@@ -148,7 +148,7 @@ RecompFunction recomp_lookup_manual(uint32_t guest_address)
     }
 #endif
     if (function == NULL && guest_address == 0x0018322du) {
-        function = sub_0018322D;
+        function = recomp_program_thread_start;
     }
     return function;
 }

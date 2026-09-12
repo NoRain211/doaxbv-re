@@ -34,7 +34,6 @@ static jmp_buf thread_exit;
 static int thread_exit_active;
 
 extern RecompFunction recomp_lookup(uint32_t guest_address);
-void sub_0018322D(void);
 
 static void push32(uint32_t value)
 {
@@ -264,7 +263,7 @@ RecompFunction recomp_program_lookup(uint32_t guest_address)
     return function;
 }
 
-void sub_0018322D(void)
+void recomp_program_thread_start(void)
 {
     uint32_t thread_state;
 

@@ -140,6 +140,19 @@ int recomp_kernel_file_save_test(void)
         goto cleanup;
     }
 
+    {
+        const uint32_t open_args[] = {TEST_HANDLE, 0u, TEST_ATTRIBUTES, TEST_IOSB, 3u, 0u};
+        set_path("\\Device\\Harddisk0\\Partition5");
+        passed &= expect("open virtual cache", invoke(202u, open_args, 6u, &passed) == 0u);
+        handle = *recomp_memory_u32(TEST_HANDLE);
+        uint32_t args[10] = {handle, 0u, 0u, 0u, TEST_IOSB, 0x90020u, 0u, 0u, 0u, 0u};
+        passed &= expect("virtual cache dismount", invoke(200u, args, 10u, &passed) == 0u);
+        args[5] = 0x90024u;
+        passed &= expect("unknown FS control rejected", invoke(200u, args, 10u, &passed) == 0xc0000010u);
+        passed &= close_file(handle, &passed);
+        args[5] = 0x90020u;
+        passed &= expect("closed dismount handle rejected", invoke(200u, args, 10u, &passed) == 0xc0000008u);
+    }
     passed &= expect("begin complete write", recomp_save_begin(0u));
     passed &= expect("owner active", recomp_save_active(0u) && recomp_save_pending());
     handle = create_file(guest_file, GENERIC_READ | GENERIC_WRITE, 3u, &status, &passed);

@@ -13,6 +13,12 @@
 #include <intrin.h>
 #endif
 
+static inline uint32_t BSWAP32(uint32_t value)
+{
+    return (value >> 24) | ((value >> 8) & 0x0000ff00u) |
+           ((value << 8) & 0x00ff0000u) | (value << 24);
+}
+
 /* Generated INT3 sites report their guest site instead of trapping the host. */
 #undef __debugbreak
 #define __debugbreak() recomp_generated_breakpoint(__FILE__, __LINE__)

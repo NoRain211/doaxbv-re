@@ -113,6 +113,16 @@ typedef struct RecompD3dPresenterDrawCommand {
     uint32_t alpha_mask_byte_count;
     const void *alpha_mask_palette;
     uint32_t alpha_mask_palette_byte_count;
+    /* Fixed-function texture-alpha reflection blend, followed by diffuse modulation. */
+    bool has_reflection;
+    bool reflection_normalize;
+    RecompD3dTextureDesc reflection_texture;
+    const void *reflection_bytes;
+    uint32_t reflection_byte_count;
+    float reflection_world_view[16];
+    float reflection_normal[16];
+    float reflection_transform[16];
+    float reflection_diffuse[4];
     RecompD3dPresenterTarget target;
 } RecompD3dPresenterDrawCommand;
 

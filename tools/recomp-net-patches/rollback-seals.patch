@@ -1,0 +1,316 @@
+diff --git a/include/recomp_net/rollback.h b/include/recomp_net/rollback.h
+index 4f25dd1..da48b72 100644
+--- a/include/recomp_net/rollback.h
++++ b/include/recomp_net/rollback.h
+@@ -27,13 +27,10 @@
+ extern "C" {
+ #endif
+ 
+-/* Seal span covers the deepest resim span a host can issue; matches the
+- * frame-commit validation cadence + slack used by the reference host. */
+-#define RNET_RB_SEAL_MAX_SPAN 128u
+-/* Peer-seal completion is a uint64_t bitmask — tip-extend cannot grow the
+- * sealed span past this even when seal_max_span is larger. Hosts must
+- * tip-hold-commit and open a fresh episode when extend would exceed it. */
++/* Every sealed row needs a bit in the uint64_t peer-completion mask.
++ * Hosts must split larger replay windows into separate episodes. */
+ #define RNET_RB_PEER_SEAL_MASK_BITS 64u
++#define RNET_RB_SEAL_MAX_SPAN RNET_RB_PEER_SEAL_MASK_BITS
+ #define RNET_RB_MAX_SLOTS 8
+ /* Tip episode: target - load at or below this may skip the ready-ACK RTT
+  * (digests still compared). Sized for tip-extend re-replay after TipHold. */
+@@ -280,7 +277,9 @@ RNetInputContractDecision rnet_rb_decide_stick_replace(RNetRbSession *s,
+  * peer-authority rows arrive via apply_peer_seal_rows. The sealed table is the
+  * sole replay read set. */
+ /* begin_tick..target_tick inclusive — pass load_tick (not only mismatch) so
+- * Replay can publish sealed pads for every resim quantum. */
++ * Replay can publish sealed pads for every resim quantum. Invalid or oversized
++ * ranges clear the seal without changing the correction target; check
++ * inputs_sealed before replay. Valid calls replace the previous seal. */
+ void rnet_rb_seal_inputs(RNetRbSession *s, uint32_t begin_tick, uint32_t target_tick,
+                          int32_t correction_slot);
+ uint8_t rnet_rb_inputs_sealed(const RNetRbSession *s);
+diff --git a/src/rollback/rnet_rollback.c b/src/rollback/rnet_rollback.c
+index 96f9b21..a55da36 100644
+--- a/src/rollback/rnet_rollback.c
++++ b/src/rollback/rnet_rollback.c
+@@ -340,7 +340,6 @@ uint8_t rnet_rb_can_extend_target(const RNetRbSession *s, uint32_t new_target)
+ {
+     uint32_t old_target;
+     uint32_t begin;
+-    uint32_t new_span;
+ 
+     if ((s == NULL) || (s->inputs_sealed == 0u))
+     {
+@@ -361,12 +360,8 @@ uint8_t rnet_rb_can_extend_target(const RNetRbSession *s, uint32_t new_target)
+     {
+         return 0u;
+     }
+-    new_span = new_target - begin + 1u;
+-    if (new_span > s->cfg.seal_max_span)
+-    {
+-        return 0u;
+-    }
+-    if (new_span > RNET_RB_PEER_SEAL_MASK_BITS)
++    /* Compare the distance before adding the inclusive row, which can wrap. */
++    if (new_target - begin >= s->cfg.seal_max_span)
+     {
+         return 0u;
+     }
+@@ -431,7 +426,7 @@ uint8_t rnet_rb_enter_tip_hold(RNetRbSession *s)
+ uint8_t rnet_rb_resign_slot_range(RNetRbSession *s, int32_t slot, uint32_t from_tick,
+                                   uint32_t to_tick)
+ {
+-    uint32_t tick;
++    uint32_t offset;
+     if ((s == NULL) || (s->inputs_sealed == 0u) || (rnet_rb_slot_valid(slot) == 0u))
+     {
+         return 0u;
+@@ -440,21 +435,26 @@ uint8_t rnet_rb_resign_slot_range(RNetRbSession *s, int32_t slot, uint32_t from_
+     {
+         return 0u;
+     }
+-    for (tick = from_tick; tick <= to_tick; ++tick)
++    for (offset = 0u; offset < s->sealed_span; ++offset)
+     {
+-        uint32_t offset;
++        uint32_t tick = s->seal_base_tick + offset;
+         RNetRbFrame row;
+         RNetRbFrame *dst;
+-        if (rnet_rb_tick_in_sealed_span(s, tick) == 0u)
++        if (tick < from_tick || tick > to_tick)
+         {
+             continue;
+         }
+-        offset = tick - s->seal_base_tick;
+         dst = &s->sealed[rnet_rb_seal_index(offset, (uint32_t)slot)];
+         if (s->vt.get_input_row(s->vt.ctx, slot, tick, &row) == 0u)
+         {
+             continue;
+         }
++        /* Unconfirmed history cannot replace an owner's already sealed row. */
++        if ((uint32_t)slot != s->cfg.local_slot &&
++            (row.is_valid == 0u || row.is_predicted != 0u))
++        {
++            continue;
++        }
+         *dst = row;
+         dst->tick = tick;
+         /* Host promoted wire into history — this offset is authoritative.
+@@ -516,20 +516,18 @@ void rnet_rb_seal_inputs(RNetRbSession *s, uint32_t begin_tick, uint32_t target_
+     {
+         return;
+     }
+-    span = (target_tick >= begin_tick) ? (target_tick - begin_tick + 1u) : 0u;
+-    if (span == 0u)
++    s->inputs_sealed = 0u;
++    s->sealed_span = 0u;
++    memset(s->peer_seal_mask, 0, sizeof(s->peer_seal_mask));
++    if (target_tick < begin_tick || target_tick - begin_tick >= s->cfg.seal_max_span)
+     {
+         return;
+     }
+-    if (span > s->cfg.seal_max_span)
+-    {
+-        span = s->cfg.seal_max_span;
+-    }
++    span = target_tick - begin_tick + 1u;
+     /* Seal local-authority rows from the host's input history; peer-authority
+      * slots arrive via apply_peer_seal_rows. begin_tick is typically load_tick
+      * so every Replay quantum has a sealed row. */
+     s->seal_base_tick = begin_tick;
+-    s->sealed_span = 0u;
+     for (offset = 0u; offset < span; ++offset)
+     {
+         uint32_t tick = begin_tick + offset;
+@@ -541,10 +539,7 @@ void rnet_rb_seal_inputs(RNetRbSession *s, uint32_t begin_tick, uint32_t target_
+     s->sealed_span = span;
+     s->inputs_sealed = 1u;
+     /* Keep corr.target in sync with the sealed tip. */
+-    if (target_tick >= begin_tick)
+-    {
+-        s->corr.target_tick = begin_tick + span - 1u;
+-    }
++    s->corr.target_tick = target_tick;
+ }
+ 
+ uint8_t rnet_rb_inputs_sealed(const RNetRbSession *s)
+@@ -558,7 +553,7 @@ uint8_t rnet_rb_tick_in_sealed_span(const RNetRbSession *s, uint32_t tick)
+     {
+         return 0u;
+     }
+-    return ((tick >= s->seal_base_tick) && (tick < s->seal_base_tick + s->sealed_span)) ? 1u
++    return ((tick >= s->seal_base_tick) && (tick - s->seal_base_tick < s->sealed_span)) ? 1u
+                                                                                          : 0u;
+ }
+ 
+diff --git a/tests/rollback_episode_test.c b/tests/rollback_episode_test.c
+index 79a9f9d..8760e9b 100644
+--- a/tests/rollback_episode_test.c
++++ b/tests/rollback_episode_test.c
+@@ -21,6 +21,7 @@ typedef struct TestHost
+     uint32_t digest_at[256];
+     uint8_t loaded_tick_valid;
+     uint32_t loaded_tick;
++    uint8_t remote_history; /* 0: predicted, 1: confirmed, 2: missing, 3: invalid */
+ } TestHost;
+ 
+ static int host_save_state(void *ctx, uint32_t tick)
+@@ -61,16 +62,144 @@ static uint8_t host_hash_confirm_through(void *ctx, uint32_t tick)
+ 
+ static uint8_t host_get_input_row(void *ctx, int32_t slot, uint32_t tick, RNetRbFrame *out)
+ {
+-    (void)ctx;
++    TestHost *h = (TestHost *)ctx;
++    memset(out, 0, sizeof(*out));
++    if (slot != 0 && h->remote_history == 2u)
++    {
++        return 0u;
++    }
+     out->tick = tick;
+     out->buttons = (uint16_t)(0x100u + (uint16_t)slot);
+     out->stick_x = (int8_t)(10 + slot);
+     out->stick_y = 0;
+-    out->is_predicted = 0u;
+-    out->is_valid = 1u;
++    out->is_predicted = (slot != 0 && h->remote_history == 0u) ? 1u : 0u;
++    out->is_valid = (slot != 0 && h->remote_history == 3u) ? 0u : 1u;
+     return 1u;
+ }
+ 
++static void test_seal_bounds(RNetRbConfig cfg, const RNetRollbackVTable *vt)
++{
++    static const uint32_t capacities[] = {0u, 1u, 63u, 64u, 65u, 128u, UINT32_MAX};
++    RNetRbCorrection corr;
++    RNetRbFrame row;
++    uint32_t c;
++
++    memset(&corr, 0, sizeof(corr));
++    corr.epoch_id = 11u;
++    corr.slot = 1;
++    memset(&row, 0, sizeof(row));
++    row.is_valid = 1u;
++    for (c = 0u; c < sizeof(capacities) / sizeof(capacities[0]); ++c)
++    {
++        uint32_t limit = capacities[c];
++        uint32_t offset;
++        RNetRbSession *s;
++        cfg.seal_max_span = limit;
++        if (limit == 0u || limit > 64u)
++        {
++            limit = 64u;
++        }
++        s = rnet_rb_create(&cfg, vt);
++        expect_true(s != NULL, "create bounded session");
++        corr.load_tick = 100u;
++        corr.target_tick = 100u + limit;
++        rnet_rb_begin_episode(s, &corr);
++        rnet_rb_seal_inputs(s, 100u, corr.target_tick, 1);
++        expect_true(!rnet_rb_inputs_sealed(s), "oversized initial seal rejected");
++        expect_true(rnet_rb_get_seal_span(s) == 0u, "rejected seal has no rows");
++        expect_true(rnet_rb_get_target_tick(s) == corr.target_tick,
++                    "oversized request does not silently shorten target");
++        expect_true(!rnet_rb_all_peer_seal_rows_complete(s), "rejected seal incomplete");
++
++        corr.target_tick--;
++        rnet_rb_begin_episode(s, &corr);
++        rnet_rb_seal_inputs(s, 100u, corr.target_tick, 1);
++        expect_true(rnet_rb_get_seal_span(s) == limit, "initial seal fills capacity");
++        for (offset = 0u; offset + 1u < limit; ++offset)
++        {
++            expect_true(rnet_rb_apply_peer_seal_rows(s, 11u, 100u, corr.target_tick,
++                                                     1, offset, &row, 1u), "apply prefix row");
++        }
++        expect_true(!rnet_rb_all_peer_seal_rows_complete(s), "last row required at capacity");
++        expect_true(!rnet_rb_seat_row_authoritative(s, 1, corr.target_tick),
++                    "missing last row has no authority");
++        expect_true(rnet_rb_apply_peer_seal_rows(s, 11u, 100u, corr.target_tick,
++                                                 1, limit - 1u, &row, 1u), "apply last row");
++        expect_true(rnet_rb_all_peer_seal_rows_complete(s), "all capacity rows complete");
++        expect_true(rnet_rb_seat_row_authoritative(s, 1, corr.target_tick), "last row authoritative");
++        expect_true(!rnet_rb_extend_target(s, corr.target_tick + 1u), "extension beyond capacity rejected");
++        expect_true(!rnet_rb_apply_peer_seal_rows(s, 11u, 100u, corr.target_tick + 1u,
++                                                  1, limit, &row, 1u), "peer oversized extension rejected");
++        expect_true(rnet_rb_get_target_tick(s) == corr.target_tick, "failed extension retains target");
++        rnet_rb_seal_inputs(s, 100u, corr.target_tick, 1);
++        expect_true(!rnet_rb_all_peer_seal_rows_complete(s), "reseal clears previous peer credit");
++        rnet_rb_seal_inputs(s, 0u, UINT32_MAX, 1);
++        expect_true(!rnet_rb_inputs_sealed(s), "overflow seal invalidates previous seal");
++        expect_true(rnet_rb_get_target_tick(s) == corr.target_tick, "overflow preserves correction target");
++        rnet_rb_seal_inputs(s, 101u, 100u, 1);
++        expect_true(!rnet_rb_inputs_sealed(s), "reversed seal rejected");
++
++        corr.load_tick = 0u;
++        corr.target_tick = 0u;
++        rnet_rb_begin_episode(s, &corr);
++        rnet_rb_seal_inputs(s, 0u, 0u, 1);
++        expect_true(!rnet_rb_can_extend_target(s, UINT32_MAX), "overflow extension unavailable");
++        expect_true(!rnet_rb_apply_peer_seal_rows(s, 11u, 0u, UINT32_MAX,
++                                                  1, 0u, &row, 1u), "peer overflow extension rejected");
++
++        corr.load_tick = UINT32_MAX - limit + 1u;
++        corr.target_tick = UINT32_MAX;
++        rnet_rb_begin_episode(s, &corr);
++        rnet_rb_seal_inputs(s, corr.load_tick, corr.target_tick, 1);
++        expect_true(rnet_rb_tick_in_sealed_span(s, UINT32_MAX), "maximum tick included");
++        expect_true(!rnet_rb_tick_in_sealed_span(s, 0u), "maximum tick span does not wrap");
++        expect_true(rnet_rb_resign_slot_range(s, 0, 0u, UINT32_MAX), "resign clamps full tick range");
++        expect_true(rnet_rb_apply_peer_seal_rows(s, 11u, corr.load_tick, UINT32_MAX,
++                                                 1, limit - 1u, &row, 1u), "apply maximum tick row");
++        expect_true(rnet_rb_seat_row_authoritative(s, 1, UINT32_MAX), "maximum tick authority");
++        rnet_rb_destroy(s);
++    }
++}
++
++static void test_history_authority(const RNetRbConfig *cfg, const RNetRollbackVTable *vt,
++                                   TestHost *host)
++{
++    uint8_t mode;
++    for (mode = 0u; mode < 4u; ++mode)
++    {
++        RNetRbSession *s = rnet_rb_create(cfg, vt);
++        RNetRbCorrection corr;
++        RNetRbFrame row;
++        uint8_t confirmed = (mode == 1u);
++        host->remote_history = mode;
++        memset(&corr, 0, sizeof(corr));
++        corr.target_tick = 1u;
++        rnet_rb_begin_episode(s, &corr);
++        rnet_rb_seal_inputs(s, 0u, 1u, 1);
++        expect_true(rnet_rb_all_peer_seal_rows_complete(s) == confirmed,
++                    "only confirmed history pre-seals remote rows");
++        expect_true(rnet_rb_seat_row_authoritative(s, 1, 1u) == confirmed,
++                    "history row authority matches confirmation");
++        expect_true(rnet_rb_extend_target(s, 2u), "extend history test");
++        expect_true(rnet_rb_all_peer_seal_rows_complete(s) == confirmed,
++                    "only confirmed history completes extension");
++        expect_true(rnet_rb_resign_slot_range(s, 1, 0u, 2u), "resign history test");
++        expect_true(rnet_rb_seat_row_authoritative(s, 1, 2u) == confirmed,
++                    "resign does not invent remote authority");
++        memset(&row, 0, sizeof(row));
++        row.buttons = 0x234u;
++        row.is_valid = 1u;
++        expect_true(rnet_rb_apply_peer_seal_rows(s, 0u, 0u, 2u, 1, 2u, &row, 1u),
++                    "peer confirms row before resign");
++        expect_true(rnet_rb_resign_slot_range(s, 1, 2u, 2u), "resign previously credited row");
++        expect_true(rnet_rb_get_sealed_frame(s, 1, 2u, &row) && !row.is_predicted &&
++                        row.buttons == (confirmed ? 0x101u : 0x234u),
++                    "unconfirmed history preserves prior peer authority");
++        rnet_rb_destroy(s);
++    }
++    host->remote_history = 0u;
++}
++
+ int main(void)
+ {
+     RNetRbConfig cfg;
+@@ -458,6 +587,9 @@ int main(void)
+                     "a slot past the sentinel is still refused");
+     }
+ 
++    test_seal_bounds(cfg, &vt);
++    test_history_authority(&cfg, &vt, &host);
++
+     if (g_failures == 0)
+     {
+         printf("rollback_episode_test: ok\n");

@@ -13,4 +13,7 @@ RecompDeviceCreateResult recomp_device_create(
     uint32_t device_extension_size,
     uint32_t device_object_pointer);
 
+uint32_t recomp_device_disk_query(uint32_t code, void *output,
+    uint32_t length, uint32_t *written);
+
 #endif

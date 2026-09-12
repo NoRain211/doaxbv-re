@@ -460,6 +460,31 @@ bool recomp_d3d_texture_factor_modulate_selected(
         stage[3] == 4u && stage[4] == 3u && stage[5] == 1u;
 }
 
+bool recomp_d3d_reflection_material(const uint32_t stages[4][32])
+{
+    static const uint32_t arguments[3][6] = {
+        {2u, 2u, 1u, 4u, 2u, 0u},
+        {14u, 2u, 1u, 14u, 2u, 1u},
+        {4u, 0u, 1u, 4u, 0u, 1u},
+    };
+    static const uint32_t offsets[] = {12u, 14u, 15u, 16u, 18u, 19u};
+    if (stages == NULL || stages[3][12] != 1u) return false;
+    for (uint32_t stage = 0u; stage < 3u; ++stage) {
+        for (uint32_t i = 0u; i < 6u; ++i) {
+            if (stages[stage][offsets[i]] != arguments[stage][i]) return false;
+        }
+        if (stages[stage][20] != 0u) return false;
+    }
+    for (uint32_t stage = 0u; stage < 2u; ++stage) {
+        if (stages[stage][0] != 1u || stages[stage][1] != 1u ||
+            stages[stage][3] != 2u || stages[stage][4] != 2u ||
+            stages[stage][9] != 0u || stages[stage][10] != 0u ||
+            stages[stage][11] != 0u) return false;
+    }
+    return stages[0][21] == 0u && stages[0][28] == 0u &&
+        stages[1][21] == 2u && stages[1][28] == 0x30000u;
+}
+
 bool recomp_d3d_diffuse_rgb_is_zero(
     uint32_t ambient,
     uint32_t active_light_head,

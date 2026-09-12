@@ -1,6 +1,32 @@
 #include "device_model.h"
 #include "kernel_abi.h"
 #include "runtime.h"
+#include <string.h>
+
+uint32_t recomp_device_disk_query(uint32_t code, void *output,
+    uint32_t length, uint32_t *written)
+{
+    /* Same virtual 16-GiB volume as NtQueryVolumeInformationFile, not a host disk.
+       Layouts: nxdk xboxkrnl.h DISK_GEOMETRY and PARTITION_INFORMATION. */
+    const uint32_t geometry[6] = {16384u, 0u, 12u, 32u, 64u, 512u};
+    const uint32_t partition[8] = {0u, 0u, 0u, 4u, 0u, 1u, 0x00010000u, 0u};
+    const void *data;
+    uint32_t size;
+    *written = 0u;
+    if (code == 0x00070000u) {
+        data = geometry;
+        size = sizeof geometry;
+    } else if (code == 0x00074004u) {
+        data = partition;
+        size = sizeof partition;
+    } else {
+        return 0xc0000010u;
+    }
+    if (output == NULL || length < size) return 0xc0000023u;
+    memcpy(output, data, size);
+    *written = size;
+    return 0u;
+}
 
 enum {
     DEVICE_OBJECT_SIZE = 0x40u,

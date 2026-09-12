@@ -687,6 +687,73 @@ static void attach_backbuffer_texture(
     }
 }
 
+static bool reflection_material_selected(uint32_t device)
+{
+    uint32_t stages[4][32];
+    const uint8_t *bytes = guest_span(0x001f2988u, sizeof stages);
+    const uint8_t *shader = guest_span(device + 0x370u, 4u);
+    uint32_t handle;
+    if (bytes == NULL || shader == NULL) return false;
+    memcpy(&handle, shader, sizeof handle);
+    memcpy(stages, bytes, sizeof stages);
+    for (uint32_t stage = 0u; stage < 2u; ++stage) {
+        uint32_t object, format;
+        const uint8_t *binding = guest_span(device + 0xb38u + stage * 4u, 4u);
+        if (binding == NULL) return false;
+        memcpy(&object, binding, 4u);
+        const uint8_t *resource = guest_span(object, 20u);
+        if (resource == NULL) return false;
+        memcpy(&format, resource + 12u, 4u);
+        /* This path samples two-dimensional textures, not cube or volume maps. */
+        if ((format & 0xf4u) != 0x20u) return false;
+    }
+    return handle == 0u && recomp_d3d_reflection_material(stages);
+}
+
+static bool attach_reflection(uint32_t device, RecompD3dPresenterDrawCommand *draw)
+{
+    RecompD3dPresenterDrawCommand texture = {0};
+    float world[16], view[16];
+    const uint8_t *material = guest_span(device + 0xab0u, 16u);
+    if (material == NULL || !read_transform(device, D3D_TRANSFORM_WORLD, world) ||
+        !read_transform(device, D3D_TRANSFORM_VIEW, view) ||
+        !read_transform(device, 3u, draw->reflection_transform)) return false;
+    multiply_transform(world, view, draw->reflection_world_view);
+    const float *m = draw->reflection_world_view;
+    float *n = draw->reflection_normal;
+    /* Cofactor matrix is the inverse transpose, after dividing by determinant. */
+    for (uint32_t row = 0u; row < 3u; ++row) {
+        uint32_t a = (row + 1u) % 3u, b = (row + 2u) % 3u;
+        for (uint32_t col = 0u; col < 3u; ++col) {
+            uint32_t c = (col + 1u) % 3u, d = (col + 2u) % 3u;
+            n[row * 4u + col] = m[a * 4u + c] * m[b * 4u + d] -
+                m[a * 4u + d] * m[b * 4u + c];
+        }
+    }
+    float determinant = m[0] * n[0] + m[1] * n[1] + m[2] * n[2];
+    if (!isfinite(determinant) || determinant == 0.0f) return false;
+    for (uint32_t i = 0u; i < 16u; ++i) {
+        n[i] /= determinant;
+        if (!isfinite(n[i]) || !isfinite(m[i]) ||
+            !isfinite(draw->reflection_transform[i])) return false;
+    }
+    memcpy(draw->reflection_diffuse, material, 16u);
+    for (uint32_t i = 0u; i < 4u; ++i) {
+        if (!isfinite(draw->reflection_diffuse[i])) return false;
+    }
+    /* ponytail: material diffuse until the shared renderer evaluates active lights. */
+    attach_texture(1u, &texture);
+    if (!texture.has_texture || texture.texture_bytes == NULL ||
+        texture.texture.linear || texture.texture.depth || texture.palette_bytes != NULL)
+        return false;
+    draw->reflection_texture = texture.texture;
+    draw->reflection_bytes = texture.texture_bytes;
+    draw->reflection_byte_count = texture.texture_byte_count;
+    draw->has_reflection = true;
+    draw->reflection_normalize = recomp_d3d_render_state_adapter_model()->normalize_normals != 0u;
+    return true;
+}
+
 static bool attach_draw_state(uint32_t device, RecompD3dPresenterDrawCommand *draw)
 {
     uint32_t selector[4];
@@ -714,6 +781,9 @@ static bool attach_draw_state(uint32_t device, RecompD3dPresenterDrawCommand *dr
     if (!recomp_d3d_frame_adapter_target(&draw->target)) return false;
     attach_texture(0u, draw);
     attach_backbuffer_texture(device, draw);
+    if (draw->has_reflection && (!draw->has_texture || draw->texture.linear ||
+        draw->texture.format_byte == RECOMP_D3D_TEXTURE_FORMAT_A8 ||
+        !attach_reflection(device, draw))) return false;
     return true;
 }
 
@@ -1020,6 +1090,43 @@ static void capture_draw(
         if (i != 0u) fputc(',', draw_capture.file);
         capture_word_json(declaration, 0x14u + i * 4u);
     }
+    if (draw_state.fvf == 0x312u) {
+        fputs("],\"declaration_words\":[", draw_capture.file);
+        for (uint32_t i = 0u; i < 70u; ++i) {
+            if (i != 0u) fputc(',', draw_capture.file);
+            capture_word_json(declaration, i * 4u);
+        }
+        fputs("],\"texture_stage_words\":[", draw_capture.file);
+        for (uint32_t i = 0u; i < 128u; ++i) {
+            if (i != 0u) fputc(',', draw_capture.file);
+            capture_word_json(0x001f2988u, i * 4u);
+        }
+        fputs("],\"texture_objects\":[", draw_capture.file);
+        for (uint32_t i = 0u; i < 4u; ++i) {
+            if (i != 0u) fputc(',', draw_capture.file);
+            capture_word_json(device, 0xb38u + i * 4u);
+        }
+        fputs("],\"reflection_textures\":[", draw_capture.file);
+        for (uint32_t i = 0u; i < 2u; ++i) {
+            uint32_t object = 0u;
+            capture_word(device, 0xb38u + i * 4u, &object);
+            if (i != 0u) fputc(',', draw_capture.file);
+            fputc('[', draw_capture.file);
+            for (uint32_t j = 0u; j < 5u; ++j) {
+                if (j != 0u) fputc(',', draw_capture.file);
+                capture_word_json(object, j * 4u);
+            }
+            fputc(']', draw_capture.file);
+        }
+        fputs("],\"reflection_transforms\":[", draw_capture.file);
+        const uint32_t slots[] = {D3D_TRANSFORM_WORLD, D3D_TRANSFORM_VIEW, 3u};
+        for (uint32_t i = 0u; i < 3u; ++i) {
+            float matrix[16];
+            if (i != 0u) fputc(',', draw_capture.file);
+            if (read_transform(device, slots[i], matrix)) capture_floats(matrix, 16u);
+            else fputs("null", draw_capture.file);
+        }
+    }
     fprintf(draw_capture.file,
         "],\"primitive\":%u,\"index_data\":%u,\"index_count\":%u,\"index_scanned\":%u,"
         "\"indices_complete\":%s,\"index_range\":", primitive, indices, count, scanned,
@@ -1135,7 +1242,13 @@ static void recomp_d3d_draw_indexed_vertices_adapter(void)
         decline = "plan";
         goto finished;
     }
-    if (recomp_d3d_fvf_stride(result.plan.fvf) != result.plan.vertex_stride) {
+    /* This material samples UV0 and generates its other coordinates. Its
+       unused TEX2 declaration can extend beyond the actual stream stride. */
+    if (result.plan.fvf == 0x312u && reflection_material_selected(device)) {
+        result.plan.fvf = 0x112u;
+    }
+    if (recomp_d3d_fvf_stride(result.plan.fvf) == 0u ||
+        recomp_d3d_fvf_stride(result.plan.fvf) > result.plan.vertex_stride) {
         decline = "fvf";
         goto finished;
     }
@@ -1565,6 +1678,7 @@ static void recomp_d3d_draw_indexed_vertices_adapter(void)
     command.data.draw.vertex_bytes = vertex_bytes;
     command.data.draw.index_bytes = index_bytes;
     command.data.draw.has_transform = true;
+    command.data.draw.has_reflection = draw_state.fvf == 0x312u && result.plan.fvf == 0x112u;
     memcpy(command.data.draw.transform, transform, sizeof transform);
     if (!compose_blend_transforms(device, &command.data.draw)) {
         decline = "vertex-blend";
@@ -1606,8 +1720,11 @@ static bool attach_alpha_mask(uint32_t device, RecompD3dPresenterDrawCommand *dr
     for (uint32_t stage = 0; stage < 2; ++stage) {
         const uint32_t offsets[] = {0, 4, 12, 16};
         for (uint32_t i = 0; i < 4; ++i) {
-            if (!capture_word(0x001f2988u + stage * 0x80u, offsets[i], &value) ||
-                value != (i < 2 ? 3u : 2u)) return false;
+            if (!capture_word(0x001f2988u + stage * 0x80u, offsets[i], &value)) return false;
+            /* ponytail: approximate Gaussian-cubic filters with clamped linear;
+               add the native kernel when matching preview filtering. */
+            if (value != (i < 2 ? 3u : 2u) &&
+                !(i >= 2u && value == 5u)) return false;
         }
     }
     draw->alpha_mask = draw->texture;
@@ -1625,17 +1742,19 @@ static bool attach_alpha_mask(uint32_t device, RecompD3dPresenterDrawCommand *dr
     return true;
 }
 
-static void capture_up(uint32_t device, uint32_t fvf, uint32_t stride, uint32_t vertices, const char *decline)
+static void capture_up(uint32_t device, uint32_t fvf, uint32_t stride, uint32_t vertices, uint32_t count, const char *decline)
 {
     if (!capture_open(recomp_d3d_frame_adapter_swap_counter() + 1u, fvf) ||
         draw_capture.rows >= CAPTURE_ROWS) return;
     ++draw_capture.rows;
     ++draw_capture.draws;
     if (decline == NULL) ++draw_capture.accepted;
-    fprintf(draw_capture.file, "{\"kind\":\"up\",\"fvf\":%u,\"stride\":%u,\"vertices\":%u,\"pixel_shader\":", fvf, stride, vertices);
+    fprintf(draw_capture.file, "{\"kind\":\"up\",\"fvf\":%u,\"stride\":%u,\"vertices\":%u,\"count\":%u,\"outcome\":\"%s\",\"pixel_shader\":",
+        fvf, stride, vertices, count, decline != NULL ? decline : "accepted");
     capture_word_json(device, 0x370u);
     fputs(",\"stages\":[", draw_capture.file);
     for (uint32_t stage = 0u; stage < 3u; ++stage) {
+        const RecompD3dTextureDesc *texture = recomp_d3d_texture_adapter_stage(stage);
         if (stage != 0u) fputc(',', draw_capture.file);
         fputs("{\"texture\":", draw_capture.file);
         capture_word_json(device, 0xb38u + stage * 4u);
@@ -1646,7 +1765,22 @@ static void capture_up(uint32_t device, uint32_t fvf, uint32_t stride, uint32_t 
             if (word != 0u) fputc(',', draw_capture.file);
             capture_word_json(0x001f2988u + stage * 0x80u, word * 4u);
         }
-        fputs("]}", draw_capture.file);
+        fputs("],\"descriptor\":", draw_capture.file);
+        if (texture != NULL) fprintf(draw_capture.file,
+            "{\"data\":%u,\"format\":%u,\"width\":%u,\"height\":%u,\"linear\":%s}",
+            texture->data, texture->format_byte, texture->width, texture->height,
+            texture->linear ? "true" : "false");
+        else fputs("null", draw_capture.file);
+        fputc('}', draw_capture.file);
+    }
+    fputs("],\"positions\":[", draw_capture.file);
+    const uint8_t *bytes = count == 4u && stride >= 16u && stride <= 64u
+        ? guest_span(vertices, count * stride) : NULL;
+    if (bytes != NULL) for (uint32_t i = 0u; i < count; ++i) {
+        float position[4];
+        memcpy(position, bytes + i * stride, sizeof position);
+        if (i != 0u) fputc(',', draw_capture.file);
+        capture_floats(position, 4u);
     }
     fputs("]}\n", draw_capture.file);
 }
@@ -1733,7 +1867,7 @@ static void recomp_d3d_draw_vertices_up_adapter(void)
             command.data.draw.has_texture ? 1 : 0, command.data.draw.texture.format_byte);
     }
 finished:
-    if (device != 0u) capture_up(device, fvf, stride, vertices, decline);
+    if (device != 0u) capture_up(device, fvf, stride, vertices, count, decline);
     if (decline != NULL) report_decline(decline);
 }
 

@@ -197,6 +197,9 @@ bool recomp_d3d_texture_factor_modulate_selected(
     const uint32_t stage[6],
     uint32_t next_color_op);
 
+/* UV0 base texture, generated reflection blended by texture alpha, then diffuse. */
+bool recomp_d3d_reflection_material(const uint32_t stages[4][32]);
+
 /* No ambient, enabled lights, or material emission can contribute RGB. */
 bool recomp_d3d_diffuse_rgb_is_zero(
     uint32_t ambient,

@@ -1,3 +1,11 @@
 [submodule "tools/xboxrecomp"]
 	path = tools/xboxrecomp
 	url = https://github.com/sp00nznet/xboxrecomp.git
+
+[submodule "third_party/rbengine"]
+	path = third_party/rbengine
+	url = https://github.com/RetroPortingToolKit/rbengine.git
+
+[submodule "third_party/recomp-net"]
+	path = third_party/recomp-net
+	url = https://github.com/NoRain211/recomp-net.git

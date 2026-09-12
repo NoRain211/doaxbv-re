@@ -29,6 +29,10 @@ void sub_0018322D(void)
 {
 }
 
+void recomp_program_thread_start(void)
+{
+}
+
 static int expect_u32(const char *field, uint32_t actual, uint32_t expected)
 {
     if (actual == expected) {
@@ -166,6 +170,11 @@ int recomp_d3d_creation_model_test(void)
     RecompFunction persist_adapter;
     RecompFunction reset_adapter;
     int passed = 1;
+
+    if (recomp_lookup_manual(0x0018322du) != recomp_program_thread_start) {
+        fprintf(stderr, "Manual startup must select the native body\n");
+        passed = 0;
+    }
 
     if (!recomp_d3d_create_request_supported(&xemu_request)) {
         fprintf(stderr, "D3D creation: xemu request was rejected\n");
@@ -362,6 +371,13 @@ int recomp_d3d_creation_model_test(void)
         RECOMP_D3D_DEVICE_ADDRESS);
     passed &= expect_u32(
         "creation flag", *recomp_memory_u32(0x001f3620u), 1u);
+    for (uint32_t slot = 0u; slot < 10u; ++slot) {
+        for (uint32_t word = 0u; word < 16u; ++word) {
+            passed &= expect_u32("creation transform identity",
+                *recomp_memory_u32(RECOMP_D3D_DEVICE_ADDRESS + 0x810u + slot * 64u + word * 4u),
+                word % 5u == 0u ? 0x3f800000u : 0u);
+        }
+    }
     passed &= expect_u32(
         "creation color-write shadow",
         *recomp_memory_u32(0x001f2c94u), 0x01010101u);

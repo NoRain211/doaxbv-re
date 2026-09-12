@@ -5,6 +5,8 @@
 #include <string.h>
 
 enum {
+    XINIT_DEVICES_ADDRESS = 0x002320e0u,
+    XINIT_DEVICES_THUNK_ADDRESS = 0x00232dbbu,
     XGET_DEVICES_ADDRESS = 0x00232dc0u,
     XGET_DEVICE_CHANGES_ADDRESS = 0x00232de2u,
     XINPUT_OPEN_ADDRESS = 0x00232e4fu,
@@ -58,6 +60,17 @@ void recomp_input_adapter_set_source(RecompInputSampleSource source)
 const RecompInputModel *recomp_input_adapter_model(void)
 {
     return &input_model;
+}
+
+static void xinit_devices_adapter(void)
+{
+    uint32_t entry_esp = recomp_runtime.registers.esp;
+    /* Native XInput owns device allocation; Xbox USB preallocation is unused.
+       Retain the host sample source installed by the runner. */
+    recomp_input_reset(&input_model, 1u);
+    input_open_reported = false;
+    fprintf(stderr, "recomp input: XInitDevices using native input model\n");
+    finish(entry_esp, 2u, 0u);
 }
 
 static void xget_devices_adapter(void)
@@ -206,6 +219,9 @@ static void xinput_set_state_adapter(void)
 RecompFunction recomp_input_lookup_manual(uint32_t guest_address)
 {
     switch (guest_address) {
+    case XINIT_DEVICES_ADDRESS:
+    case XINIT_DEVICES_THUNK_ADDRESS:
+        return xinit_devices_adapter;
     case XGET_DEVICES_ADDRESS:
         return xget_devices_adapter;
     case XGET_DEVICE_CHANGES_ADDRESS:

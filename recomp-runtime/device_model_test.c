@@ -133,6 +133,18 @@ int recomp_device_model_test(void)
     const uint32_t extension = object + 0x40u;
     RecompDeviceCreateResult result;
     int passed = 1;
+    uint32_t disk[8];
+    uint32_t written;
+    memset(disk, 0xa5, sizeof disk);
+    passed &= recomp_device_disk_query(0x70000u, disk, sizeof disk, &written) == 0u;
+    passed &= written == 24u && disk[5] == 512u && disk[6] == 0xa5a5a5a5u;
+    uint64_t capacity = (uint64_t)disk[0] * disk[3] * disk[4] * disk[5];
+    passed &= recomp_device_disk_query(0x74004u, disk, sizeof disk, &written) == 0u;
+    passed &= written == 32u && (((uint64_t)disk[3] << 32) | disk[2]) == capacity;
+    memset(disk, 0xa5, sizeof disk);
+    passed &= recomp_device_disk_query(0x74004u, disk, 31u, &written) == 0xc0000023u;
+    passed &= written == 0u && disk[0] == 0xa5a5a5a5u;
+    if (!passed) fprintf(stderr, "virtual disk geometry contract failed\n");
 
     memset(heap, 0xa5, sizeof heap);
     recomp_runtime_init(&region, 1u, NULL, 0u, NULL, 0u);

@@ -93,6 +93,14 @@ int recomp_input_model_test(void)
     recomp_input_adapter_set_source(sample_gamepad);
     model = recomp_input_adapter_model();
 
+    args[0] = args[1] = 0u;
+    prepare_call(2u, args);
+    recomp_input_lookup_manual(0x002320e0u)();
+    passed &= expect_u32("InitDevices ESP", recomp_runtime.registers.esp, TEST_ENTRY_ESP + 12u);
+    prepare_call(2u, args);
+    recomp_input_lookup_manual(0x00232dbbu)();
+    passed &= expect_u32("InitDevices thunk ESP", recomp_runtime.registers.esp, TEST_ENTRY_ESP + 12u);
+
     args[0] = TEST_GAMEPAD_TYPE;
     prepare_call(1u, args);
     recomp_input_lookup_manual(0x00232dc0u)();

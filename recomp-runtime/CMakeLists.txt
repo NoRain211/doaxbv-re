@@ -253,18 +253,24 @@ endif()
 if(RECOMP_PROGRAM_DIR)
     get_filename_component(_recomp_program_dir
         "${RECOMP_PROGRAM_DIR}" ABSOLUTE BASE_DIR "${CMAKE_SOURCE_DIR}")
-    set(_recomp_program_names
-        recomp_0000.c recomp_0001.c recomp_0002.c recomp_0003.c
-        recomp_0004.c recomp_0005.c recomp_0006.c recomp_0007.c
-        recomp_0008.c recomp_0009.c recomp_0010.c recomp_0011.c
-        recomp_0012.c recomp_0013.c recomp_0014.c recomp_0015.c
-        recomp_dispatch.c recomp_funcs.h)
-    # Chunk count grows as recovered bodies are added, so trailing chunks are
-    # optional. A present chunk still enters the manifest, and the pinned
-    # manifest hash fails closed if the member set is not the expected one.
-    if(EXISTS "${_recomp_program_dir}/recomp_0016.c")
-        list(INSERT _recomp_program_names 16 recomp_0016.c)
+    file(GLOB _recomp_program_names LIST_DIRECTORIES false
+        RELATIVE "${_recomp_program_dir}"
+        "${_recomp_program_dir}/recomp_[0-9][0-9][0-9][0-9].c")
+    list(SORT _recomp_program_names)
+    if(NOT _recomp_program_names)
+        message(FATAL_ERROR "Authenticated program has no source chunks")
     endif()
+    set(_chunk_index 0)
+    foreach(_name IN LISTS _recomp_program_names)
+        string(REGEX REPLACE "^recomp_0*([0-9]+)\\.c$" "\\1" _number "${_name}")
+        if(NOT _number EQUAL _chunk_index)
+            message(FATAL_ERROR "Authenticated program chunk sequence has a gap: ${_name}")
+        endif()
+        math(EXPR _chunk_index "${_chunk_index} + 1")
+    endforeach()
+    # The manifest authenticates both membership and contents at any chunk count.
+    # Never include the lifter's empty unresolved-stub file; use fail-loud stubs below.
+    list(APPEND _recomp_program_names recomp_dispatch.c recomp_funcs.h)
     set(_recomp_program_sources)
     set(_recomp_program_manifest "")
     foreach(_name IN LISTS _recomp_program_names)

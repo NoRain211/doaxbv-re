@@ -50,6 +50,9 @@ int recomp_flag_macro_test(void)
     int left_reads = 0;
     int right_reads = 0;
 
+    passed &= expect_true("BSWAP32 byte order", BSWAP32(0x12345678u) == 0x78563412u);
+    passed &= expect_true("BSWAP32 high bit", BSWAP32(0x80000001u) == 0x01000080u);
+
     /* The observed D3D case: ebx = 0xf8, lifted from "test al,al; js". */
     passed &= expect_true(
         "TEST_S(LO8(0xf8), LO8(0xf8))", TEST_S(LO8(0xf8u), LO8(0xf8u)));

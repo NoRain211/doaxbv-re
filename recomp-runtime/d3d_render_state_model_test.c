@@ -952,6 +952,26 @@ int recomp_d3d_render_state_model_test(void)
     passed &= texture_factor_selector_test();
     passed &= texture_factor_modulate_selector_test();
     passed &= texture_material_alpha_mode_test();
+    {
+        uint32_t stages[4][32] = {0};
+        const uint32_t args[3][6] = {{2,2,1,4,2,0}, {14,2,1,14,2,1}, {4,0,1,4,0,1}};
+        const uint32_t slots[] = {12,14,15,16,18,19};
+        for (uint32_t s = 0; s < 3; ++s) {
+            for (uint32_t i = 0; i < 6; ++i) stages[s][slots[i]] = args[s][i];
+        }
+        for (uint32_t s = 0; s < 2; ++s) {
+            stages[s][0] = stages[s][1] = 1;
+            stages[s][3] = stages[s][4] = 2;
+        }
+        stages[1][21] = 2; stages[1][28] = 0x30000; stages[3][12] = 1;
+        passed &= expect_u32("reflection material", recomp_d3d_reflection_material(stages), 1);
+        stages[1][28] = 2;
+        passed &= expect_u32("stream UV2 is not generated reflection", recomp_d3d_reflection_material(stages), 0);
+        stages[1][28] = 0x30000; stages[2][14] = 2;
+        passed &= expect_u32("third sampled texture is not diffuse", recomp_d3d_reflection_material(stages), 0);
+        stages[2][14] = 0; stages[1][12] = 15;
+        passed &= expect_u32("factor alpha differs from texture alpha", recomp_d3d_reflection_material(stages), 0);
+    }
     passed &= zero_diffuse_rgb_test();
     passed &= blend_state_test();
 

@@ -415,6 +415,58 @@ static bool testAlphaMask(RecompD3dPresenter *presenter,
         checkPixels(presenter, color, readback, "independent UV color and palette alpha", expected);
 }
 
+static bool testReflection(RecompD3dPresenter *presenter,
+    ID3D11Texture2D *color, ID3D11Texture2D *readback)
+{
+    struct Vertex { float position[3], normal[3], uv[2], unused[2]; };
+    Vertex vertices[4]{};
+    const uint16_t indices[] = {0, 1, 2, 3};
+    for (uint32_t i = 0; i < 4; ++i) {
+        vertices[i] = {{i & 1u ? 1.0f : -1.0f, i & 2u ? -1.0f : 1.0f, 0},
+            {0, 0, 1}, {0, 0}, {12345, -12345}};
+    }
+    const uint32_t base[] = {0x800000ff};
+    const uint32_t environment[] = {0x80ff0000, 0x8000ff00};
+    RecompD3dPresenterDrawCommand draw{};
+    draw.fvf = 0x112;
+    draw.vertex_stride = sizeof(Vertex); // Padded stream, no third UV read.
+    draw.vertex_count = draw.index_count = 4;
+    draw.triangle_count = 2;
+    draw.primitive_type = RECOMP_D3D_PT_TRIANGLESTRIP;
+    draw.vertex_bytes = vertices;
+    draw.index_bytes = indices;
+    draw.blend.color_write_mask = 15;
+    draw.has_texture = draw.has_transform = draw.has_reflection = true;
+    for (uint32_t i = 0; i < 4; ++i) {
+        draw.transform[i * 5] = draw.reflection_normal[i * 5] = 1;
+        draw.reflection_diffuse[i] = i == 0 || i == 3 ? 0.5f : 1.0f;
+    }
+    draw.reflection_world_view[14] = draw.reflection_world_view[15] = 1;
+    draw.reflection_transform[8] = 0.25f;
+    draw.reflection_transform[12] = 0.5f;
+    draw.texture.data = 0x00660000;
+    draw.texture.format_byte = RECOMP_D3D_TEXTURE_FORMAT_A8R8G8B8;
+    draw.texture.bits_per_pixel = 32;
+    draw.texture.width = draw.texture.height = 1;
+    draw.texture_bytes = base;
+    draw.texture_byte_count = sizeof base;
+    draw.reflection_texture = draw.texture;
+    draw.reflection_texture.data = 0x00670000;
+    draw.reflection_texture.width = 2;
+    draw.reflection_bytes = environment;
+    draw.reflection_byte_count = sizeof environment;
+    const uint32_t red[] = {0x3040007f,0x3040007f,0x3040007f,0x3040007f};
+    const uint32_t green[] = {0x3000807f,0x3000807f,0x3000807f,0x3000807f};
+    if (submitDraw(presenter, draw) != RECOMP_D3D_PRESENTER_OK ||
+        !checkPixels(presenter, color, readback, "reflection alpha blend and diffuse", red)) return false;
+    for (Vertex &vertex : vertices) { vertex.normal[0] = 1; vertex.normal[2] = 0; }
+    draw.reflection_transform[12] -= 1; // Same texel after wrapping a negative U.
+    if (submitDraw(presenter, draw) != RECOMP_D3D_PRESENTER_OK ||
+        !checkPixels(presenter, color, readback, "reflection generated coordinates wrap", green)) return false;
+    draw.vertex_stride = 24; // Missing UV0 remains invalid.
+    return submitDraw(presenter, draw) == RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+}
+
 static bool testFourTapFilter(
     RecompD3dPresenter *presenter,
     ID3D11Texture2D *color,
@@ -1418,6 +1470,7 @@ int main()
     }
     if (status == 0 && !testCompressedMips(&presenter, color, readback)) status = 92;
     if (status == 0 && !testAlphaMask(&presenter, color, readback)) status = 91;
+    if (status == 0 && !testReflection(&presenter, color, readback)) status = 93;
     if (status == 0 && !testFourTapFilter(&presenter, color, readback)) status = 87;
     if (status == 0 && !testPretransformedGlyphs(&presenter, color, readback)) {
         status = 85;

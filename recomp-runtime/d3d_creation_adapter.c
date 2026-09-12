@@ -59,6 +59,13 @@ static RecompD3dPresentationParameters read_presentation(uint32_t address)
 static void write_device_state(const RecompD3dDeviceState *device)
 {
     recomp_guest_memset(device->address, 0, RECOMP_D3D_DEVICE_SIZE);
+    /* D3D8 initializes VIEW, PROJECTION, TEXTURE0..3 and WORLD0..3 to identity. */
+    for (uint32_t slot = 0u; slot < 10u; ++slot) {
+        for (uint32_t diagonal = 0u; diagonal < 4u; ++diagonal) {
+            *recomp_memory_u32(device->address + 0x810u + slot * 64u + diagonal * 20u) =
+                0x3f800000u;
+        }
+    }
     recomp_guest_memset(device->context, 0, RECOMP_D3D_CONTEXT_SIZE);
     recomp_guest_memset(
         device->push_buffer_base, 0, RECOMP_D3D_PUSH_BUFFER_SIZE);

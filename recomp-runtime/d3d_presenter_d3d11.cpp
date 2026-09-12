@@ -41,6 +41,11 @@ constexpr char kDrawShaderPrologue[] =
     "    float4 texture_factor;\n"
     "    float4 lighting_flags;\n"
     "    float4 texture_flags;\n"
+    "    row_major float4x4 reflection_world_view;\n"
+    "    row_major float4x4 reflection_normal;\n"
+    "    row_major float4x4 reflection_transform;\n"
+    "    float4 reflection_diffuse;\n"
+    "    float4 reflection_flags;\n"
     "}\n"
     "Texture2D guest_texture : register(t0);\n"
     "SamplerState guest_sampler : register(s0);\n"
@@ -100,6 +105,7 @@ void buildDrawShaderSource(
         "    float4 position : SV_POSITION;\n"
         "    float4 color : COLOR0;\n"
         "    float2 texcoord : TEXCOORD0;\n"
+        "    float2 reflection_coord : TEXCOORD4;\n"
         "%s"
         "};\n"
         "VSOut vs_main(VSIn input) {\n"
@@ -108,10 +114,18 @@ void buildDrawShaderSource(
         "%s"
         "%s"
         "%s"
+        "    output.reflection_coord = float2(0, 0);\n"
+        "%s"
         "    return output;\n"
         "}\n"
         "float4 ps_main(VSOut input) : SV_TARGET {\n"
         "    float4 shaded = input.color;\n"
+        "    if (reflection_flags.x > 0.5f) {\n"
+        "        float4 base = guest_texture.Sample(guest_sampler, input.texcoord);\n"
+        "        base.a *= reflection_diffuse.a;\n"
+        "        float4 env = alpha_mask.Sample(guest_sampler, input.reflection_coord);\n"
+        "        shaded = lerp(base, env, env.a) * reflection_diffuse;\n"
+        "    } else\n"
         "%s"
         "    if (blend_flags.y == 1.0f) {\n"
         "        shaded = texture_factor;\n"
@@ -166,6 +180,14 @@ void buildDrawShaderSource(
               "    output.texcoord2 = input.texcoord2;\n"
               "    output.texcoord3 = input.texcoord3;\n"
             : layout.texcoord_count == 2u ? "    output.texcoord1 = input.texcoord1;\n" : "",
+        has_normal && !layout.pretransformed
+            ? "    if (reflection_flags.x > 0.5f) {\n"
+              "        float3 eye = mul(float4(input.position, 1), reflection_world_view).xyz;\n"
+              "        float3 n = mul(float4(input.normal, 0), reflection_normal).xyz;\n"
+              "        if (reflection_flags.y > 0.5f) n = normalize(n);\n"
+              "        float3 r = reflect(normalize(eye), n);\n"
+              "        output.reflection_coord = mul(float4(r, 1), reflection_transform).xy;\n"
+              "    }\n" : "",
         four_coords
             ? "    if (texture_flags.z > 0.5f) {\n"
               "        float4 t0 = guest_texture.Sample(guest_sampler, input.texcoord * texture_flags.xy);\n"
@@ -1038,7 +1060,7 @@ bool ensureSharedDrawState(RecompD3dPresenter *presenter)
     HRESULT result;
     D3D11_BUFFER_DESC constant_desc{};
     /* Four WVP matrices, draw/blend flags, and RGBA texture factor. */
-    constant_desc.ByteWidth = 336u;
+    constant_desc.ByteWidth = 560u;
     constant_desc.Usage = D3D11_USAGE_DYNAMIC;
     constant_desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     constant_desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
@@ -1665,7 +1687,7 @@ RecompD3dPresenterError submitDraw(
 
     RecompD3dVertexLayout layout;
     if (!recomp_d3d_fvf_layout(draw.fvf, &layout) ||
-        layout.stride != draw.vertex_stride ||
+        layout.stride > draw.vertex_stride ||
         (!layout.pretransformed && !draw.has_transform) ||
         (draw.blend_weight_count != 0u &&
          layout.blend_weight_count != draw.blend_weight_count)) {
@@ -1755,9 +1777,10 @@ RecompD3dPresenterError submitDraw(
         draw.has_texture ? lookupTexture(presenter, draw) : nullptr;
     /* A second cache lookup can evict the first entry. Keep its view alive
        until the context takes its own reference. */
-    if (draw.has_alpha_mask && texture_view != nullptr) texture_view->AddRef();
+    if ((draw.has_alpha_mask || draw.has_reflection) && texture_view != nullptr) texture_view->AddRef();
     const auto release_view = [](ID3D11ShaderResourceView *view) { if (view) view->Release(); };
-    std::unique_ptr<ID3D11ShaderResourceView, decltype(release_view)> retained(draw.has_alpha_mask ? texture_view : nullptr, release_view);
+    std::unique_ptr<ID3D11ShaderResourceView, decltype(release_view)> retained(
+        draw.has_alpha_mask || draw.has_reflection ? texture_view : nullptr, release_view);
     ID3D11ShaderResourceView *mask_view = nullptr;
     if (draw.has_alpha_mask) {
         if (layout.texcoord_count != 2u) return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
@@ -1770,13 +1793,24 @@ RecompD3dPresenterError submitDraw(
         mask_view = lookupTexture(presenter, mask);
         if (mask_view == nullptr || texture_view == nullptr) return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
     }
+    if (draw.has_reflection) {
+        if (draw.has_alpha_mask || draw.four_tap_filter || layout.pretransformed ||
+            layout.normal_offset == RECOMP_D3D_FVF_ABSENT ||
+            layout.texcoord_count == 0u) return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+        RecompD3dPresenterDrawCommand reflection{};
+        reflection.texture = draw.reflection_texture;
+        reflection.texture_bytes = draw.reflection_bytes;
+        reflection.texture_byte_count = draw.reflection_byte_count;
+        mask_view = lookupTexture(presenter, reflection);
+        if (mask_view == nullptr || texture_view == nullptr) return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+    }
     if (draw.four_tap_filter && texture_view == nullptr) {
         return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
     }
     /* Observation only: bind counts say what the guest selected, not what a
        draw actually consumed, and only the latter can explain the frame. */
     recompD3dPresenterCountDrawTexture(draw, texture_view != nullptr);
-    float draw_constants[84]{};
+    float draw_constants[140]{};
     std::memcpy(draw_constants, draw.transform, sizeof draw.transform);
     std::memcpy(draw_constants + 16, draw.blend_transforms, sizeof draw.blend_transforms);
     if (layout.pretransformed) {
@@ -1827,6 +1861,14 @@ RecompD3dPresenterError submitDraw(
     draw_constants[79] = draw.alpha_mask.linear && draw.alpha_mask.height
         ? 1.0f / draw.alpha_mask.height : 1.0f;
     draw_constants[83] = draw.has_alpha_mask ? 1.0f : 0.0f;
+    if (draw.has_reflection) {
+        std::memcpy(draw_constants + 84, draw.reflection_world_view, 64u);
+        std::memcpy(draw_constants + 100, draw.reflection_normal, 64u);
+        std::memcpy(draw_constants + 116, draw.reflection_transform, 64u);
+        std::memcpy(draw_constants + 132, draw.reflection_diffuse, 16u);
+        draw_constants[136] = 1.0f;
+        draw_constants[137] = draw.reflection_normalize ? 1.0f : 0.0f;
+    }
 
     if (!ensureDynamicBuffer(
             presenter,

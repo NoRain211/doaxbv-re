@@ -47,3 +47,15 @@ settings remain intact. See [controls](recomp-controls.md) for tested mappings
 and limitations. Stop logs distinguish normal exits, diagnostic boundaries,
 runtime errors and unhandled host crashes; an expectation-adjusted exit code
 alone is not a gameplay result. See [log interpretation](../recomp-runtime/README.md#reading-stop-and-crash-logs).
+
+The latest source update includes reflective item previews, virtual disk/cache
+queries, controller routing fixes, and authenticated variable chunk enumeration.
+Two natural local store runs restored visor surfaces and lotion previews;
+the final guarded candidate passed nine runtime tests. Inventory equip/use,
+full lighting fidelity, camera parity and the remaining offline matrix rows
+remain unproven. See the [preview evidence](https://github.com/NoRain211/doaxbv-re/issues/28#issuecomment-5647654899)
+and [acceptance dashboard](https://github.com/NoRain211/doaxbv-re/issues/16#issuecomment-5647656786).
+
+The pinned rollback dependencies and their seal repair are available as source.
+They are not linked into the game runtime; see the
+[dependency audit](research/rollback-engine-audit.md) for limitations and checks.
