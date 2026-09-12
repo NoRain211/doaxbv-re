@@ -10,12 +10,31 @@ import subprocess
 import sys
 
 
+def package_root():
+    return (Path(sys.executable).resolve().parent if getattr(sys, "frozen", False)
+            else Path(__file__).resolve().parents[1])
+
+
 def sha256(path):
     digest = hashlib.sha256()
     with path.open("rb") as source:
         for chunk in iter(lambda: source.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def run_logged(args, log_path, cwd=None):
+    print(f"{log_path.stem}... (log: {log_path})", flush=True)
+    with log_path.open("xb") as log:
+        with subprocess.Popen([str(arg) for arg in args], cwd=cwd,
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT) as process:
+            for line in process.stdout:
+                log.write(line)
+                log.flush()
+                print(line.decode("utf-8", errors="replace"), end="", flush=True)
+            code = process.wait()
+        if code:
+            raise subprocess.CalledProcessError(code, args)
 
 
 def listing_files(text):
@@ -58,7 +77,7 @@ def listing_files(text):
 
 
 def extract(iso, output, tool):
-    private = Path(__file__).resolve().parents[1] / "private"
+    private = package_root() / "private"
     private.mkdir(exist_ok=True)
     output = output.absolute()
     for path in (private, output, *output.parents):
@@ -75,17 +94,14 @@ def extract(iso, output, tool):
         raise ValueError("Install XboxDev extract-xiso or pass --extractor <executable>")
     executable = str(Path(executable).resolve())
     output.mkdir(parents=True, exist_ok=False)
+    print("Checking ISO hash...", flush=True)
     original_hash = sha256(iso)
-    with (output / "listing.log").open("xb") as log:
-        subprocess.run([executable, "-l", str(iso)], stdout=log,
-                       stderr=subprocess.STDOUT, check=True)
+    run_logged([executable, "-l", iso], output / "listing.log")
     files = listing_files((output / "listing.log").read_text(encoding="utf-8", errors="strict"))
     if shutil.disk_usage(output).free < sum(files.values()):
         raise ValueError("Not enough disk space for the listed files")
     disc = output / "disc"
-    with (output / "extract.log").open("xb") as log:
-        subprocess.run([executable, "-x", "-d", str(disc), str(iso)],
-                       stdout=log, stderr=subprocess.STDOUT, check=True)
+    run_logged([executable, "-x", "-d", disc, iso], output / "extract.log")
     actual = {}
     for path in disc.rglob("*"):
         if path.is_symlink() or getattr(path, "is_junction", lambda: False)():
@@ -94,6 +110,7 @@ def extract(iso, output, tool):
             actual[path.relative_to(disc).as_posix()] = path.stat().st_size
     if actual != files:
         raise ValueError("Extracted files differ from the listing; see extract.log")
+    print("Verifying extracted files and unchanged ISO...", flush=True)
     if sha256(iso) != original_hash:
         raise ValueError("Input image changed during extraction")
     with (output / "receipt.tmp").open("x", encoding="utf-8") as receipt:
@@ -109,12 +126,12 @@ def main():
     parser.add_argument("iso", type=Path)
     parser.add_argument("--output", type=Path,
                         help="New directory under this repository's private/")
-    bundled = Path(__file__).resolve().parent / "artifacts" / "extract-xiso.exe"
+    bundled = package_root() / "tools/artifacts/extract-xiso.exe"
     parser.add_argument("--extractor", default=str(bundled) if bundled.is_file() else "extract-xiso",
                         help="Path to XboxDev extract-xiso (default: PATH)")
     args = parser.parse_args()
     if args.output is None:
-        args.output = Path(__file__).resolve().parents[1] / "private" / "imported-disc"
+        args.output = package_root() / "private" / "imported-disc"
     print(f"Extracting to {args.output}. Large images can take several minutes.", flush=True)
     try:
         disc = extract(args.iso, args.output, args.extractor)

@@ -1,0 +1,3 @@
+# These files are authenticated by byte hashes during ISO setup.
+tools/game-recipe/** text eol=lf
+tools/xboxrecomp-patches/local-parity.patch text eol=lf

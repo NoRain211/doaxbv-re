@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Synthetic listing checks; optionally exercise a real extract-xiso binary."""
 import os
+import io
 import json
 import shutil
 import sys
@@ -10,8 +11,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from extract_iso import extract, listing_files, sha256
-from run_game import launch
+from extract_iso import extract, listing_files, run_logged, sha256
+from run_game import build_inputs, launch
 
 
 def listing(entries, count=1):
@@ -19,6 +20,81 @@ def listing(entries, count=1):
 
 
 class ExtractionTests(unittest.TestCase):
+    def test_live_log_and_failed_command(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            log, gate = root / "build.log", root / "continue"
+
+            class Console(io.StringIO):
+                def write(console, text):
+                    if text.strip() == "ready":
+                        self.assertIn(b"ready", log.read_bytes())
+                        gate.touch()
+                    return super().write(text)
+
+            script = ("import pathlib,sys,time; print('ready',flush=True); "
+                      "p=pathlib.Path(sys.argv[1]); deadline=time.monotonic()+5\n"
+                      "while not p.exists() and time.monotonic()<deadline: time.sleep(.01)\n"
+                      "print('compiler error' if p.exists() else 'output was buffered',file=sys.stderr); "
+                      "sys.exit(7)")
+            console = Console()
+            with patch("sys.stdout", console), self.assertRaises(subprocess.CalledProcessError) as failure:
+                run_logged([sys.executable, "-u", "-c", script, str(gate)], log)
+            self.assertEqual(failure.exception.returncode, 7)
+            self.assertTrue(gate.exists(), "Output must reach the console before the child exits")
+            self.assertIn("compiler error", console.getvalue())
+            self.assertIn(b"compiler error", log.read_bytes())
+
+    def test_built_runner_receipt_selection_and_identity(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            work = root / "private/setup-synthetic"
+            disc = work / "disc"
+            disc.mkdir(parents=True)
+            image = disc / "synthetic.xbe"
+            image.write_bytes(b"synthetic game input")
+            runner = work / "runner.exe"
+            runner.write_bytes(b"synthetic runner")
+            receipt = work / "build-receipt.json"
+            data = {"status": "built-unverified", "disc": str(disc), "runner": str(runner),
+                    "runner_sha256": sha256(runner), "xbe_sha256": sha256(image),
+                    "recipe_sha256": "synthetic-recipe", "generation_parity": "exact-local-match"}
+            receipt.write_text(json.dumps(data))
+            with patch("run_game.subprocess.run") as run:
+                run.return_value.returncode = 0
+                self.assertEqual(launch(root), 0)
+                self.assertEqual(run.call_args.args[0], [str(runner), "--xbe", str(image), "--vsync"])
+                self.assertEqual(run.call_args.kwargs["env"]["RECOMP_AUDIO_GAIN"], "0.2")
+                log = next((root / "private").glob("run-*.log")).read_text()
+                self.assertIn(data["runner_sha256"], log)
+                self.assertIn(str(receipt), log)
+                self.assertIn("recipe_sha256: synthetic-recipe", log)
+                self.assertIn("generation_parity: exact-local-match", log)
+            second = root / "private/setup-second"
+            second.mkdir()
+            (second / "build-receipt.json").write_text(json.dumps(data))
+            with self.assertRaisesRegex(ValueError, "Multiple builds"):
+                build_inputs(root)
+            selected = root / "private/active-build.json"
+            selected.write_text(json.dumps({"receipt": str(receipt.relative_to(root))}))
+            self.assertEqual(build_inputs(root), (runner, image, receipt))
+            self.assertEqual(build_inputs(root, receipt), (runner, image, receipt))
+            runner.write_bytes(b"changed binary")
+            with self.assertRaisesRegex(ValueError, "differs from the build receipt"):
+                build_inputs(root, receipt)
+            runner.write_bytes(b"synthetic runner")
+            image.write_bytes(b"changed game")
+            with self.assertRaisesRegex(ValueError, "differs from the build receipt"):
+                build_inputs(root, receipt)
+            data["status"] = "failed"
+            receipt.write_text(json.dumps(data))
+            with self.assertRaisesRegex(ValueError, "Build is incomplete"):
+                build_inputs(root, receipt)
+            outside = root / "outside.json"
+            outside.write_text(json.dumps(data))
+            with self.assertRaisesRegex(ValueError, "inside this checkout"):
+                build_inputs(root, outside)
+
     def test_launch_prerequisites_and_command(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

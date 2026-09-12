@@ -10,10 +10,10 @@ the starting point, with game logic gradually replaced by hand-written code.
 
 ## Try the Alpha
 
-Download **DOAXBV-0.0.1-Alpha.zip** from the
-[Alpha release page](https://github.com/NoRain211/doaxbv-re/releases/tag/v0.0.1).
-Use the named Alpha ZIP: GitHub's automatic source archives follow the older
-source tag and do not contain the same setup package.
+Download **DOAXBV-0.0.2-Alpha.zip** from the
+[Alpha release page](https://github.com/NoRain211/doaxbv-re/releases/tag/v0.0.2).
+Use the named Alpha ZIP for bundled prerequisites. GitHub's automatic source
+archives contain source only; see the source build guide for their prerequisites.
 
 The Alpha requires Windows 10/11 x64, a supported USA game ISO, Git with
 internet access, CMake 3.20 or newer, and Visual Studio 2019 Build Tools with
@@ -27,6 +27,8 @@ Setup extracts your ISO and builds the runner locally. The package includes
 build tools and source, but no prebuilt game runner or game files. Follow the
 release page and the ZIP's `README.txt` for prerequisites and troubleshooting.
 The tested game runner is Win32; the Windows x64 requirement describes the host.
+
+See [CHANGELOG.md](CHANGELOG.md) for changes in each release.
 
 ## Current progress
 
@@ -71,7 +73,7 @@ ctest --test-dir build/recomp-runtime -C Release --output-on-failure
 
 These commands produce test executables, not the game runner. The tests use a
 hand-written fixture and do not require the submodules. For playing, use the
-Alpha package instructions above. For work with authenticated generated input,
+Alpha package instructions above. For ISO setup from source or work with authenticated generated input,
 see the [source build guide](https://github.com/NoRain211/doaxbv-re/blob/main/docs/building.md).
 Passing runtime tests does not establish complete game accuracy or compatibility.
 

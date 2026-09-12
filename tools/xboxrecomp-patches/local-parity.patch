@@ -1,0 +1,3181 @@
+--- a/tools/disasm/__main__.py
++++ b/tools/disasm/__main__.py
+@@ -68,17 +68,22 @@
+     )
+     parser.add_argument(
+         "--seed-functions",
++        action="append",
+         default=None,
+         help="JSON file with additional function entry points to seed the detector. "
+              "Format: array of objects with 'start' field (hex address string). "
+-             "Use identified_functions.json from func_id to feed back vtable thunks.",
++             "May be repeated to merge seed sets.",
+     )
+ 
+     args = parser.parse_args()
+ 
+     try:
+         extra = [s.strip() for s in args.extra_sections.split(",")] if args.extra_sections else []
+-        seed_funcs = _load_seed_functions(args.seed_functions) if args.seed_functions else []
++        seed_funcs = [
++            addr
++            for path in (args.seed_functions or [])
++            for addr in _load_seed_functions(path)
++        ]
+         disassembler = Disassembler(
+             xbe_path=args.xbe_path,
+             analysis_json=args.analysis_json,
+--- a/tools/disasm/config.py
++++ b/tools/disasm/config.py
+@@ -99,6 +99,7 @@
+ CONFIDENCE_PROLOGUE = 0.95   # Standard prologue pattern
+ CONFIDENCE_CALL_TARGET = 0.90  # Destination of a call instruction
+ CONFIDENCE_CC_BOUNDARY = 0.85  # After CC padding run following ret
++CONFIDENCE_CODE_POINTER = 0.80  # Code address stored as an immediate
+ 
+ # ============================================================
+ # Disassembly Engine Settings
+--- a/tools/disasm/disasm.py
++++ b/tools/disasm/disasm.py
+@@ -138,6 +138,12 @@
+         if self.verbose:
+             print(f"  Total: {total_insns:,d} instructions")
+ 
++        if self.seed_functions:
++            n = self.engine.decode_entry_streams(self.seed_functions, sections)
++            total_insns += n
++            if self.verbose:
++                print(f"  Seed entry streams: {n:,d} extra instructions")
++
+         # Phase 4: Cross-references
+         if self.verbose:
+             print("\nPhase 4: Building cross-references...")
+--- a/tools/disasm/engine.py
++++ b/tools/disasm/engine.py
+@@ -208,6 +208,62 @@
+ 
+         return count
+ 
++    def decode_entry_streams(self, start_addresses: List[int],
++                             sections: List[SectionInfo]) -> int:
++        """
++        Decode explicit entry streams that linear sweep can miss.
++
++        x86 permits valid control-flow targets in byte positions that the
++        initial linear sweep decoded as part of a different instruction stream.
++        Seeded function starts come from later evidence, so decode a short
++        stream from each seed before function detection.
++        """
++        section_ranges = [
++            (sec.virtual_addr, sec.virtual_addr + sec.raw_size, sec)
++            for sec in sections
++            if sec.raw_size > 0
++        ]
++        decoded = 0
++
++        for start in start_addresses:
++            if start in self.instructions:
++                continue
++
++            matched = None
++            for range_start, range_end, sec in section_ranges:
++                if range_start <= start < range_end:
++                    matched = (range_start, range_end, sec)
++                    break
++            if matched is None:
++                continue
++
++            _, range_end, sec = matched
++            offset = start - sec.virtual_addr
++            data = self.image.get_section_data(sec)
++            if offset < 0 or offset >= len(data):
++                continue
++
++            chunk = data[offset:]
++            current = start
++            for cs_insn in self._cs.disasm(chunk, start):
++                if cs_insn.address != current:
++                    break
++                if cs_insn.address >= range_end:
++                    break
++
++                insn = self._classify_instruction(cs_insn)
++                if insn.address not in self.instructions:
++                    decoded += 1
++                self.instructions[insn.address] = insn
++
++                current = insn.end_address
++                if insn.is_ret or (insn.is_jump and not insn.is_cond_jump):
++                    break
++
++        if decoded:
++            self._sorted_addrs = None
++        return decoded
++
+     def recursive_descent(self, start_addresses: List[int],
+                           section_bounds: List[Tuple[int, int]]) -> Set[int]:
+         """
+--- a/tools/disasm/functions.py
++++ b/tools/disasm/functions.py
+@@ -106,7 +106,10 @@
+         # Pass 4: Call targets
+         self._pass_call_targets(sections)
+ 
+-        # Pass 5: Build functions from candidates
++        # Pass 5: Code addresses stored as immediates
++        self._pass_code_pointers(sections)
++
++        # Pass 6: Build functions from candidates
+         self._build_functions(sections)
+ 
+         # Populate call graph
+@@ -238,6 +241,41 @@
+                         "call_target"
+                     )
+ 
++    def _pass_code_pointers(self, sections: List[SectionInfo]) -> None:
++        """
++        Pass 5: Add code addresses stored as immediates as function starts.
++
++        A callback registered in a pointer table - 'mov [table+i*4], offset f'
++        - is never the destination of a direct CALL, so pass 4 cannot see it.
++        When such a function also lacks a push ebp/mov ebp,esp prologue and
++        has no CC padding in front of it, no pass sees it at all and it is
++        emitted as a fail-loud stub that stops the program when the guest
++        finally calls through the table.
++
++        Only immediates that land on an instruction boundary in an executable
++        section are accepted. A pointer into .data, or into the middle of an
++        instruction, is an integer constant that happens to look like an
++        address, and inventing a function there would be worse than missing
++        one.
++        """
++        for insn in self.engine.instructions.values():
++            target = insn.imm_ref
++            if target is None or target in self._candidates:
++                continue
++            if target not in self.engine.instructions:
++                continue
++            section = self.image.get_section_at_va(target)
++            if section is None or not section.executable:
++                continue
++            # The address the pointer is stored at is data, not code; only the
++            # immediate is a candidate. Storing instructions are not calls, so
++            # imm_ref is already the value rather than a branch destination.
++            self._add_candidate(
++                target,
++                config.CONFIDENCE_CODE_POINTER,
++                "code_pointer"
++            )
++
+     def _build_functions(self, sections: List[SectionInfo]) -> None:
+         """
+         Pass 5: Build Function objects from candidates.
+--- a/tools/recomp/__main__.py
++++ b/tools/recomp/__main__.py
+@@ -17,14 +17,52 @@
+ """
+ 
+ import argparse
++import hashlib
+ import json
+ import os
++import re
+ import sys
+ import time
+ 
+ from . import config
+ from .translator import BatchTranslator
+ from .output import write_summary, print_stats, generate_header
++
++
++def load_manual_call_targets(path, expected_sha256):
++    if bool(path) != bool(expected_sha256):
++        raise ValueError(
++            "--manual-call-targets and --manual-call-targets-sha256 "
++            "must be supplied together")
++    if not path:
++        return frozenset(), None
++    if not re.fullmatch(r"[0-9A-Fa-f]{64}", expected_sha256):
++        raise ValueError("Manual-call target SHA-256 must be 64 hex digits")
++
++    with open(path, "rb") as target_file:
++        payload = target_file.read()
++    actual_sha256 = hashlib.sha256(payload).hexdigest()
++    if actual_sha256 != expected_sha256.lower():
++        raise ValueError(
++            "Manual-call target file does not match its authenticated SHA-256")
++
++    try:
++        entries = json.loads(payload.decode("utf-8"))
++    except (UnicodeDecodeError, json.JSONDecodeError) as error:
++        raise ValueError(f"Invalid manual-call target JSON: {error}") from error
++    if not isinstance(entries, list) or not entries:
++        raise ValueError("Manual-call target JSON must be a non-empty array")
++
++    targets = []
++    for entry in entries:
++        if not isinstance(entry, str) or not re.fullmatch(
++                r"0x[0-9A-Fa-f]{8}", entry):
++            raise ValueError(
++                "Manual-call targets must be canonical 0xXXXXXXXX strings")
++        targets.append(int(entry, 16))
++    if len(set(targets)) != len(targets):
++        raise ValueError("Manual-call target JSON contains duplicates")
++    return frozenset(targets), actual_sha256
+ 
+ 
+ def find_data_files(disasm_dir=None, func_id_dir=None, abi_dir=None, overrides=None):
+@@ -130,6 +168,18 @@
+     parser.add_argument("--gen-dir",
+                         help="Output dir for split generated files "
+                              "(default: src/game/recomp/gen)")
++    parser.add_argument("--recover-functions",
++                        action="append",
++                        help="JSON file of externally analyzed function bounds "
++                              "to adopt. Format: array of objects with 'start' "
++                              "and 'end' hex address strings. Entries that "
++                              "overlap an existing function are skipped. May "
++                              "be repeated to layer bounded recovery sets.")
++    parser.add_argument("--manual-call-targets",
++                        help="Authenticated JSON array of direct-call targets "
++                             "that must dispatch through manual lookup")
++    parser.add_argument("--manual-call-targets-sha256",
++                        help="Expected SHA-256 of --manual-call-targets")
+     parser.add_argument("--disasm-dir",
+                         help="Directory holding tools.disasm output "
+                              "(default: tools/disasm/output)")
+@@ -156,6 +206,13 @@
+                         help="Address of __SEH_epilog (hex). Auto-detected if omitted")
+ 
+     args = parser.parse_args()
++    try:
++        manual_call_targets, manual_call_targets_sha256 = (
++            load_manual_call_targets(
++                args.manual_call_targets,
++                args.manual_call_targets_sha256))
++    except (OSError, ValueError) as error:
++        parser.error(str(error))
+ 
+     # Find data files
+     data_files = find_data_files(
+@@ -202,6 +259,9 @@
+         identified_json_path=data_files.get("identified"),
+         abi_json_path=data_files.get("abi"),
+         output_dir=args.output_dir,
++        recovery_json_path=args.recover_functions,
++        manual_call_targets=manual_call_targets,
++        manual_call_targets_sha256=manual_call_targets_sha256,
+         seh_prolog=int(args.seh_prolog, 16) if args.seh_prolog else None,
+         seh_epilog=int(args.seh_epilog, 16) if args.seh_epilog else None,
+     )
+--- a/tools/recomp/disasm.py
++++ b/tools/recomp/disasm.py
+@@ -144,6 +144,38 @@
+         self._cs.detail = True
+         _init_reg_names(self._cs)
+ 
++    def _decode_instruction(self, cs_insn):
++        """Convert one Capstone instruction into the translator model."""
++        insn = Instruction(
++            address=cs_insn.address,
++            size=cs_insn.size,
++            mnemonic=cs_insn.mnemonic,
++            op_str=cs_insn.op_str,
++            bytes_hex=cs_insn.bytes.hex(),
++        )
++
++        try:
++            ops = cs_insn.operands
++        except Exception:
++            ops = []
++        for cs_op in ops:
++            op = _parse_operand(self._cs, cs_op, cs_insn)
++            insn.operands.append(op)
++
++            if cs_op.type == CS_OP_IMM:
++                val = cs_op.imm & 0xFFFFFFFF
++                insn.imm_values.append(val)
++                if insn.is_call:
++                    insn.call_target = val
++                elif insn.is_branch:
++                    insn.jump_target = val
++            elif cs_op.type == CS_OP_MEM:
++                if (cs_op.mem.base == 0 and cs_op.mem.index == 0
++                        and cs_op.mem.disp != 0):
++                    insn.memory_refs.append(cs_op.mem.disp & 0xFFFFFFFF)
++
++        return insn
++
+     def disassemble_function(self, raw_bytes, start_va, end_va):
+         """
+         Disassemble bytes for a single function.
+@@ -155,37 +187,45 @@
+ 
+         instructions = []
+         for cs_insn in self._cs.disasm(raw_bytes[:size], start_va):
+-            insn = Instruction(
+-                address=cs_insn.address,
+-                size=cs_insn.size,
+-                mnemonic=cs_insn.mnemonic,
+-                op_str=cs_insn.op_str,
+-                bytes_hex=cs_insn.bytes.hex(),
+-            )
+-
+-            # Parse operands (detail mode is enabled on the Cs object)
+-            try:
+-                ops = cs_insn.operands
+-            except Exception:
+-                ops = []
+-            for cs_op in ops:
+-                op = _parse_operand(self._cs, cs_op, cs_insn)
+-                insn.operands.append(op)
+-
+-                if cs_op.type == CS_OP_IMM:
+-                    val = cs_op.imm & 0xFFFFFFFF
+-                    insn.imm_values.append(val)
+-                    if insn.is_call:
+-                        insn.call_target = val
+-                    elif insn.is_branch:
+-                        insn.jump_target = val
+-                elif cs_op.type == CS_OP_MEM:
+-                    if cs_op.mem.base == 0 and cs_op.mem.index == 0 and cs_op.mem.disp != 0:
+-                        insn.memory_refs.append(cs_op.mem.disp & 0xFFFFFFFF)
+-
+-            instructions.append(insn)
++            instructions.append(self._decode_instruction(cs_insn))
+ 
+         return instructions
++
++    def disassemble_cfg(self, raw_bytes, start_va, end_va, entry_points,
++                        stop_addresses=None):
++        """Decode reachable instruction streams from an explicit worklist."""
++        size = end_va - start_va
++        if size <= 0 or size > len(raw_bytes):
++            return []
++
++        decoded = {}
++        stop_addresses = set(stop_addresses or ())
++        worklist = list(entry_points)
++        while worklist:
++            entry = worklist.pop()
++            if not (start_va <= entry < end_va) or entry in decoded:
++                continue
++            offset = entry - start_va
++            for cs_insn in self._cs.disasm(raw_bytes[offset:size], entry):
++                if cs_insn.address != entry and cs_insn.address in stop_addresses:
++                    break
++                if cs_insn.address >= end_va or cs_insn.address in decoded:
++                    break
++                insn = self._decode_instruction(cs_insn)
++                decoded[insn.address] = insn
++
++                if (insn.is_cond_jump and insn.jump_target is not None
++                        and start_va <= insn.jump_target < end_va):
++                    worklist.append(insn.jump_target)
++                if insn.is_jump:
++                    if (insn.jump_target is not None
++                            and start_va <= insn.jump_target < end_va):
++                        worklist.append(insn.jump_target)
++                    break
++                if insn.is_ret:
++                    break
++
++        return [decoded[addr] for addr in sorted(decoded)]
+ 
+     def build_basic_blocks(self, instructions, func_start, func_end,
+                            extra_leaders=None):
+--- a/tools/recomp/lifter.py
++++ b/tools/recomp/lifter.py
+@@ -7,7 +7,7 @@
+ Register model:
+   - eax, ebx, ecx, edx, esi, edi, ebp: uint32_t locals
+   - esp: uint32_t local (stack pointer)
+-  - FPU: double fp_stack[8] with fp_top index
++  - FPU: shared double g_fp_stack[8] with g_fp_top index
+ 
+ Memory model:
+   - MEM8/MEM16/MEM32 macros for memory access at flat addresses
+@@ -15,6 +15,7 @@
+ """
+ 
+ import struct
++import re
+ 
+ from .disasm import Instruction, Operand
+ from .config import is_code_address, is_data_address, va_to_file_offset
+@@ -92,7 +93,29 @@
+ 
+ def _smem_accessor(size):
+     """Return the signed MEM macro for a given operand size."""
+-    return {1: "SMEM8", 2: "SMEM16", 4: "SMEM32"}.get(size, "SMEM32")
++    return {
++        1: "SMEM8", 2: "SMEM16", 4: "SMEM32", 8: "SMEM64",
++    }.get(size, "SMEM32")
++
++
++def _fmt_fpu_operand(op):
++    """Format an x87 memory or stack-register operand for reading."""
++    if op.type == "mem":
++        accessor = "MEMD" if op.mem_size == 8 else "MEMF"
++        return f"{accessor}({_fmt_mem(op)})"
++    if op.type == "reg":
++        name = op.reg or ""
++        if name == "st":
++            return "fp_st(0)"
++        if name.startswith("st(") and name.endswith(")"):
++            return f"fp_st({name[3:-1]})"
++    return None
++
++
++def _fmt_fpu_stack_register(op):
++    if op.type != "reg" or not re.fullmatch(r"st(?:\([0-7]\))?", op.reg or ""):
++        raise ValueError(f"Invalid x87 stack register: {op!r}")
++    return "fp_st1()" if op.reg == "st(1)" else _fmt_fpu_operand(op)
+ 
+ 
+ def _fmt_mem(op):
+@@ -147,6 +170,8 @@
+         return _fmt_imm(op.imm)
+     elif op.type == "mem":
+         return _fmt_mem_read(op)
++    elif op.type == "raw":
++        return op.text
+     return "/* unknown operand */"
+ 
+ 
+@@ -157,6 +182,254 @@
+     elif op.type == "mem":
+         return _fmt_mem_write(op, value_expr)
+     return f"/* cannot write to {op.type} */;"
++
++
++# Registers whose value a deferred flag condition may need to re-read at the
++# consumer. Flags are modelled lazily: cmp/test emit no state and the jcc,
++# SETcc or CMOVcc that consumes them re-evaluates the comparison from the
++# named operands. That is only sound while those operands still hold the
++# values they had when the flags were set. x86 lets an EFLAGS-preserving
++# instruction overwrite one first (mov eax, [..] between cmp and setl), which
++# silently changes the condition. Detect that case and snapshot the operands
++# into temporaries at the producer so the consumer reads the original values.
++_FLAG_SNAPSHOT_REGS = frozenset({
++    "eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp",
++    "ax", "bx", "cx", "dx", "si", "di", "bp", "sp",
++    "al", "bl", "cl", "dl", "ah", "bh", "ch", "dh",
++})
++
++
++# Registers an instruction overwrites without naming them in its operands.
++# These preserve EFLAGS, so the deferred-condition scan walks straight over
++# them; unless the write is declared here the clobber is invisible and the
++# condition re-reads a register whose value has already been replaced.
++_IMPLICIT_REG_WRITES = {
++    "cdq": ("edx",),      # EDX = sign of EAX
++    "cwd": ("edx",),
++    "cdqe": ("eax",),
++    "cwde": ("eax",),     # EAX = sign-extended AX
++    "cbw": ("eax",),
++    "push": ("esp",),
++    "leave": ("esp", "ebp"),
++    "popal": ("eax", "ebx", "ecx", "edx", "esi", "edi", "ebp"),
++    "pushal": ("esp",),
++    "lahf": ("eax",),
++}
++
++# String operations advance ESI/EDI (and LODS loads EAX) with no operand
++# naming them. They are kept apart from the table above because their
++# mnemonics are ambiguous: "movsd" is also SSE2 move-scalar-double, and
++# "cmpsd"/"movsd" reach this code in both senses. The string reading is
++# only taken when no operand names an XMM register.
++_STRING_REG_WRITES = {
++    "lodsb": ("eax", "esi"),
++    "lodsw": ("eax", "esi"),
++    "lodsd": ("eax", "esi"),
++    "stosb": ("edi",),
++    "stosw": ("edi",),
++    "stosd": ("edi",),
++    "movsb": ("esi", "edi"),
++    "movsw": ("esi", "edi"),
++    "movsd": ("esi", "edi"),
++}
++
++
++def _is_xmm_form(ops):
++    """True when any operand names an XMM register."""
++    return any(op.type == "reg" and str(op.reg).lower().startswith("xmm")
++               for op in ops)
++
++
++# Width of an operand in bits, used to compute a carry-out. Register names
++# carry their own width; memory operands report it in bytes.
++_REG_BITS = {
++    "eax": 32, "ebx": 32, "ecx": 32, "edx": 32,
++    "esi": 32, "edi": 32, "ebp": 32, "esp": 32,
++    "ax": 16, "bx": 16, "cx": 16, "dx": 16,
++    "si": 16, "di": 16, "bp": 16, "sp": 16,
++    "al": 8, "bl": 8, "cl": 8, "dl": 8,
++    "ah": 8, "bh": 8, "ch": 8, "dh": 8,
++}
++
++
++def _operand_bits(op):
++    """Operand width in bits, defaulting to 32 when it cannot be determined."""
++    if op.type == "raw":
++        return op.bits
++    if op.type == "reg":
++        return _REG_BITS.get(str(op.reg).lower(), 32)
++    if op.type == "mem" and op.mem_size:
++        return int(op.mem_size) * 8
++    return 32
++
++
++def _fmt_flag_operand_read(op, bits):
++    """Format a flag operand at the instruction's effective width."""
++    if op.type == "imm" and bits < 32:
++        return _fmt_imm(op.imm & ((1 << bits) - 1))
++    return _fmt_operand_read(op)
++
++
++# Instructions whose CF a later ADC/SBB may consume as a value. NEG was the
++# only one modelled before; the ADD/SUB pair is what 64-bit arithmetic and
++# the CRT rounding helpers actually use. AND/OR/XOR are here because they
++# clear CF, which is just as load-bearing for a consumer as setting it.
++_CARRY_PRODUCERS = frozenset({
++    "neg", "add", "sub", "adc", "sbb", "and", "or", "xor",
++})
++
++
++def _carry_is_consumed(insns, idx, flags_preserve=None):
++    """True when the next flag-consuming instruction is an ADC or SBB.
++
++    Scans forward over EFLAGS-preserving instructions only, so any
++    intervening instruction that redefines CF ends the search.
++    """
++    if flags_preserve is None:
++        flags_preserve = _EFLAGS_PRESERVE
++    j = idx + 1
++    while (j < len(insns)
++            and insns[j].mnemonic in flags_preserve
++            and insns[j].mnemonic != "popfd"
++            and not insns[j].is_branch
++            and not insns[j].is_call
++            and not insns[j].is_ret):
++        j += 1
++    return j < len(insns) and insns[j].mnemonic in ("sbb", "adc")
++
++
++def _emit_carry_capture(m, ops, dst, src):
++    """Publish CF for an ADD/SUB whose carry a later ADC/SBB consumes.
++
++    Flags are modelled lazily, so an arithmetic instruction normally emits
++    only its result. ADC and SBB are the exception: they read CF as a value
++    (_cf), and until now only NEG ever assigned it. An ADD that carries out
++    of its width therefore fed a stale or zero _cf to the ADC that follows,
++    silently dropping the +1. That is the 64-bit add/subtract idiom and the
++    CRT's _ftol2 rounding fixup, where the dropped carry turns a
++    round-half-away-from-zero into a truncation.
++
++    CF for ADD is the unsigned wrap of the sum; for SUB it is a borrow.
++    """
++    bits = _operand_bits(ops[0])
++    mask = (1 << bits) - 1
++    if m == "add":
++        return [f"_cf = ((uint32_t)(({dst} + {src}) & 0x{mask:X}u)"
++                f" < (uint32_t)({dst} & 0x{mask:X}u)); /* add carry */"]
++    if m == "sub":
++        return [f"_cf = ((uint32_t)({dst} & 0x{mask:X}u)"
++                f" < (uint32_t)({src} & 0x{mask:X}u)); /* sub borrow */"]
++    if m in ("and", "or"):
++        return [f"_cf = 0; /* {m} clears carry */"]
++    return []
++
++
++def _reg32(name):
++    """Map a sub-register name onto its 32-bit parent."""
++    name = str(name).lower()
++    if name in ("eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp"):
++        return name
++    if name in ("ax", "bx", "cx", "dx", "si", "di", "bp", "sp"):
++        return "e" + name
++    if len(name) == 2 and name[1] in ("l", "h"):
++        return "e" + name[0] + "x"
++    return name
++
++
++def _flag_operand_regs(ops):
++    """Full 32-bit registers an operand list reads."""
++    regs = set()
++    for op in ops:
++        if op.type == "reg":
++            if str(op.reg).lower() in _FLAG_SNAPSHOT_REGS:
++                regs.add(_reg32(op.reg))
++        elif op.type == "mem":
++            for part in (getattr(op, "mem_base", None),
++                         getattr(op, "mem_index", None)):
++                if part and str(part).lower() in _FLAG_SNAPSHOT_REGS:
++                    regs.add(_reg32(part))
++    return regs
++
++
++def _written_regs(insn):
++    """Full 32-bit registers an instruction overwrites."""
++    ops = list(insn.operands)
++    # Instructions that overwrite a register the operand list never names.
++    # Without these the scan below sees no destination and reports a clean
++    # operand, so a deferred condition re-reads a register the instruction
++    # already replaced. CDQ is the one that reaches real code: the compiler
++    # emits "cmp edx, N / cdq / jne", and CDQ rewrites EDX from EAX's sign.
++    implicit = _IMPLICIT_REG_WRITES.get(insn.mnemonic)
++    if implicit:
++        return set(implicit)
++    string_form = _STRING_REG_WRITES.get(insn.mnemonic)
++    if string_form and not _is_xmm_form(ops):
++        return set(string_form)
++    # POP also advances ESP when its explicit destination is another register.
++    if insn.mnemonic == "pop":
++        return {"esp"} | {_reg32(op.reg) for op in ops
++                          if op.type == "reg"
++                          and str(op.reg).lower() in _FLAG_SNAPSHOT_REGS}
++    # XCHG replaces both operands, not just the first.
++    if insn.mnemonic == "xchg":
++        return {_reg32(op.reg) for op in ops
++                if op.type == "reg"
++                and str(op.reg).lower() in _FLAG_SNAPSHOT_REGS}
++    if not ops or insn.mnemonic in ("push", "cmp", "test", "nop"):
++        return set()
++    dest = ops[0]
++    if dest.type != "reg":
++        return set()
++    if str(dest.reg).lower() not in _FLAG_SNAPSHOT_REGS:
++        return set()
++    return {_reg32(dest.reg)}
++
++
++class _RawOperand:
++    """A flag operand already rendered as C, used for snapshot temporaries."""
++
++    type = "raw"
++
++    def __init__(self, text, bits=32):
++        self.text = text
++        self.bits = bits
++
++
++_SETCC_MNEMONICS = frozenset({
++    "sete", "setne", "setb", "setae", "setbe", "seta",
++    "setl", "setge", "setle", "setg", "sets", "setns",
++    "cmove", "cmovne", "cmovb", "cmovae", "cmovbe", "cmova",
++    "cmovl", "cmovge", "cmovle", "cmovg", "cmovs", "cmovns",
++})
++
++
++def _deferred_consumer_clobbers(insns, idx, setter, flags_preserve=None):
++    """True when a deferred condition consumes these flags after a clobber.
++
++    Scans forward from the flag setter over EFLAGS-preserving instructions.
++    Returns True only when one of them overwrites a register the condition
++    reads before the consumer runs, which is exactly when the deferred
++    re-read would evaluate the wrong values.
++
++    Conditional jumps count as consumers too. try_match_cmp_jcc only pairs a
++    cmp/test with an *adjacent* jcc; anything in between sends the jump down
++    the same deferred path SETcc uses, where the clobber is just as fatal.
++    """
++    if flags_preserve is None:
++        flags_preserve = _EFLAGS_PRESERVE
++    watched = _flag_operand_regs(setter.operands)
++    if not watched:
++        return False
++    dirty = set()
++    for insn in insns[idx + 1:]:
++        if insn.mnemonic in _SETCC_MNEMONICS or insn.is_cond_jump:
++            return bool(dirty)
++        if insn.is_branch or insn.is_call or insn.is_ret:
++            return False
++        if insn.mnemonic not in flags_preserve:
++            return False
++        dirty |= _written_regs(insn) & watched
++    return False
+ 
+ 
+ # ── Condition code mapping ───────────────────────────────────
+@@ -248,7 +521,7 @@
+     "movapd", "movupd",
+     "addpd", "subpd", "mulpd", "divpd",
+     # SSE/MMX integer
+-    "movd", "movq", "movntq",
++    "movd", "movq", "movntq", "cvtps2pi", "pavgb",
+     "emms",
+     "paddb", "paddw", "paddd", "paddq",
+     "psubb", "psubw", "psubd",
+@@ -272,6 +545,33 @@
+     "prefetchnta", "prefetcht0", "prefetcht1", "prefetcht2",
+ })
+ 
++# x87 instructions leave EFLAGS alone: they report their comparisons through
++# the FPU status word, and only the FCOMI/FUCOMI family and SAHF move that
++# into EFLAGS. Those are deliberately absent here and stay flag setters.
++#
++# Without this set the deferred-condition scan stopped at the first FPU
++# instruction and reported "not a preserving instruction", which reads as
++# "flags are gone" and suppressed the operand snapshot -- while the consumer
++# still emitted the comparison. Interleaved float code is exactly where the
++# compiler parks work between a CMP and its JCC, so the surviving stale
++# branches were nearly all of this shape.
++_X87_EFLAGS_PRESERVE = frozenset({
++    "fld", "fst", "fstp", "fild", "fist", "fistp",
++    "fadd", "faddp", "fsub", "fsubp", "fsubr", "fsubrp",
++    "fmul", "fmulp", "fdiv", "fdivp", "fdivr", "fdivrp",
++    "fiadd", "fisub", "fisubr", "fimul", "fidiv", "fidivr",
++    "fchs", "fabs", "fsqrt", "frndint", "fscale", "fxch",
++    "fsin", "fcos", "fsincos", "fptan", "fpatan",
++    "f2xm1", "fyl2x", "fyl2xp1",
++    "fld1", "fldz", "fldpi", "fldl2e", "fldl2t", "fldlg2", "fldln2",
++    "fnstsw", "fnstcw", "fldcw", "fnclex", "fninit",
++    "ffree", "fincstp", "fdecstp", "fnop",
++    "fcmovb", "fcmove", "fcmovbe", "fcmovu",
++    "fcmovnb", "fcmovne", "fcmovnbe", "fcmovnu",
++})
++
++_EFLAGS_PRESERVE = _EFLAGS_PRESERVE | _X87_EFLAGS_PRESERVE
++
+ 
+ def _make_condition(jcc, flag_setter, flag_ops):
+     """
+@@ -284,8 +584,9 @@
+     cmp_macro, test_macro, desc = cond_info
+ 
+     if len(flag_ops) >= 2:
+-        lhs = _fmt_operand_read(flag_ops[0])
+-        rhs = _fmt_operand_read(flag_ops[1])
++        bits = _operand_bits(flag_ops[0])
++        lhs = _fmt_flag_operand_read(flag_ops[0], bits)
++        rhs = _fmt_flag_operand_read(flag_ops[1], bits)
+     elif len(flag_ops) == 1:
+         lhs = _fmt_operand_read(flag_ops[0])
+         rhs = None
+@@ -306,7 +607,7 @@
+         }
+         op = fpu_cmp_map.get(jcc)
+         if op:
+-            return f"(_fpu_cmp {op} 0) /* {flag_setter} */", desc
++            return f"(g_fp_cmp {op} 0) /* {flag_setter} */", desc
+         if jcc == "jp":
+             return "0 /* fpu: unordered/NaN */", desc
+         if jcc == "jnp":
+@@ -320,7 +621,9 @@
+     # ── comiss/ucomiss: float comparison, sets CF/ZF/PF ──
+     if flag_setter in ("comiss", "comisd", "ucomiss", "ucomisd"):
+         def _sse_op(op):
+-            if op.type == "reg":
++            if op.type == "reg" and op.reg and op.reg.startswith("xmm"):
++                return f"{op.reg}.f[0]"
++            elif op.type == "reg":
+                 return op.reg
+             elif op.type == "mem":
+                 if op.mem_size == 8:
+@@ -357,15 +660,27 @@
+         if jcc == "jns":
+             return f"((int32_t)({lhs} - {rhs}) >= 0)", desc
+         if jcc in ("jp", "jnp"):
+-            return f"1 /* {jcc} after cmp - parity */", desc
++            sense = "" if jcc == "jp" else "!"
++            return f"{sense}PARITY8({lhs} - {rhs})", desc
+         return None
+ 
+     # ── test: flags from (a & b), operands unchanged ──
+     if flag_setter == "test":
++        if jcc in ("js", "jns") and bits in (8, 16):
++            sign_bit = 1 << (bits - 1)
++            comparison = "!=" if jcc == "js" else "=="
++            return (f"((({lhs} & {rhs}) & 0x{sign_bit:X}u) "
++                    f"{comparison} 0)"), desc
+         if test_macro:
+             return f"{test_macro}({lhs}, {rhs})", desc
+         if cmp_macro:
+-            return f"{cmp_macro}({lhs} & {rhs}, 0)", desc
++            result = f"{lhs} & {rhs}"
++            bits = _operand_bits(flag_ops[0])
++            if (cmp_macro in ("CMP_L", "CMP_LE", "CMP_G", "CMP_GE")
++                    and bits < 32):
++                cast = {8: "int8_t", 16: "int16_t"}[bits]
++                result = f"({cast})({result})"
++            return f"{cmp_macro}({result}, 0)", desc
+         if jcc == "js":
+             return f"((int32_t)({lhs} & {rhs}) < 0)", desc
+         if jcc == "jns":
+@@ -375,7 +690,10 @@
+         if jcc == "jno":
+             return "1", desc
+         if jcc in ("jp", "jnp"):
+-            return f"1 /* {jcc} after test - parity */", desc
++            # PF is the even-parity of the low byte of the result. The CRT
++            # branches on it after FNSTSW/TEST AH, so compute it.
++            sense = "" if jcc == "jp" else "!"
++            return f"{sense}PARITY8({lhs} & {rhs})", desc
+         return None
+ 
+     # ── sub: a = a - b, flags from (a_orig - b) ──
+@@ -570,9 +888,9 @@
+     # ── repe cmpsb / repne scasb: string comparison ──
+     if "cmps" in flag_setter or "scas" in flag_setter:
+         if jcc in ("je", "jz"):
+-            return "1 /* strings matched (repe cmpsb) */", desc
++            return "(_flags != 0)", desc
+         if jcc in ("jne", "jnz"):
+-            return "0 /* strings differed (repe cmpsb) */", desc
++            return "(_flags == 0)", desc
+         return None
+ 
+     return None
+@@ -605,8 +923,10 @@
+     if target is None:
+         return f"if ({cond_expr}) {{ /* {jcc}: {desc} - indirect */ }}"
+     if lifter and lifter._is_external_target(target):
++        # Conditional tail call: same frame bridge as the unconditional tail
++        # jmp in _lift_jmp, applied only on the taken path.
+         name = lifter._call_target_name(target)
+-        return (f"if ({cond_expr}) {{ {name}(); return; }}"
++        return (f"if ({cond_expr}) {{ g_seh_ebp = ebp; {name}(); return; }}"
+                 f" /* {jcc}: {desc} */")
+     return f"if ({cond_expr}) goto loc_{target:08X}; /* {jcc}: {desc} */"
+ 
+@@ -718,11 +1038,17 @@
+     return prolog, epilog
+ 
+ 
++def _uses_mmx(insn):
++    return any(op.type == "reg" and op.reg in
++               ("mm0", "mm1", "mm2", "mm3", "mm4", "mm5", "mm6", "mm7")
++               for op in insn.operands)
++
++
+ class Lifter:
+     """Translates x86 instructions to C statements."""
+ 
+     def __init__(self, func_db=None, label_db=None, abi_db=None, xbe_data=None,
+-                 seh_prolog=None, seh_epilog=None):
++                 manual_call_targets=None, seh_prolog=None, seh_epilog=None):
+         """
+         func_db: dict of func_addr → func_info (for naming call targets)
+         label_db: dict of addr → name (for kernel imports, etc.)
+@@ -734,9 +1060,14 @@
+         self.label_db = label_db or {}
+         self.abi_db = abi_db or {}
+         self.xbe_data = xbe_data
++        self.manual_call_targets = frozenset(manual_call_targets or ())
++        self.manual_call_rewrites = []
+         self._fp_top = 0  # FPU stack top index
+         self.func_start = 0  # Set per-function by translator
+         self.func_end = 0
++        self.current_function_has_ebp = False
++        self.mmx_enabled = True
++        self.jump_table_targets = {}
+         # Every direct call target we emit a name for, as {addr: name}. The
+         # batch translator diffs this against the functions it actually defined
+         # so it can stub out the remainder (see translate_batch_split).
+@@ -770,6 +1101,16 @@
+         self.referenced_calls[addr] = name
+         return name
+ 
++    def configure_mmx(self, instructions):
++        # Partial MMX support must not activate stores fed by omitted producers.
++        # Preserve baseline output for the whole body until every MMX form lifts.
++        self.mmx_enabled = True
++        unsupported = [insn for insn in instructions
++                       if _uses_mmx(insn)
++                       and all(line.lstrip().startswith("/*")
++                               for line in self.lift_instruction(insn))]
++        self.mmx_enabled = not unsupported
++
+     def lift_instruction(self, insn):
+         """
+         Translate a single x86 instruction to one or more C statements.
+@@ -778,6 +1119,11 @@
+         m = insn.mnemonic
+         ops = insn.operands
+         nops = len(ops)
++
++        if (not self.mmx_enabled and _uses_mmx(insn)
++                and m in ("movq", "cvtps2pi", "packssdw", "pavgb")):
++            prefix = "SSE: " if m == "movq" else "TODO: "
++            return [f"/* {prefix}{m} {insn.op_str} */"]
+ 
+         # ── NOP ──
+         if m == "nop" or (m == "lea" and nops == 2 and
+@@ -829,6 +1175,8 @@
+             return self._lift_sar(insn, ops)
+         if m in ("rol", "ror"):
+             return self._lift_rotate(insn, ops, m)
++        if m in ("bsf", "bsr"):
++            return self._lift_bit_scan(insn, ops, m)
+ 
+         # ── Comparison / test (standalone, not part of cmp+jcc pattern) ──
+         if m == "cmp":
+@@ -885,6 +1233,9 @@
+             return [f"/* bt {insn.op_str} */"]
+         if m == "emms":
+             return ["/* emms - empty MMX state */"]
++        if m in ("xlat", "xlatb"):
++            # AL = [EBX + zero_extend(AL)] in 32-bit addressing.
++            return ["SET_LO8(eax, MEM8(ebx + LO8(eax))); /* xlatb */"]
+         if m in ("sete", "setne", "setb", "setae", "setbe", "seta",
+                  "setl", "setge", "setle", "setg", "sets", "setns"):
+             return self._lift_setcc(insn, ops, m)
+@@ -894,6 +1245,7 @@
+ 
+         # ── SSE (scalar float) ──
+         if m in ("movss", "movsd", "movaps", "movups", "movlps", "movhps",
++                 "movlhps", "movhlps", "movapd", "movupd",
+                  "addss", "subss", "mulss", "divss", "sqrtss",
+                  "addsd", "subsd", "mulsd", "divsd", "sqrtsd",
+                  "minss", "maxss", "minsd", "maxsd",
+@@ -901,8 +1253,8 @@
+                  "cvtsi2ss", "cvtss2si", "cvttss2si",
+                  "cvtsi2sd", "cvtsd2si", "cvttsd2si",
+                  "cvtss2sd", "cvtsd2ss",
+-                 "xorps", "xorpd", "andps", "orps",
+-                 "movd", "movq",
++                 "xorps", "xorpd", "andps", "orps", "andnps",
++                 "movd", "movq", "cvtps2pi", "packssdw", "pavgb",
+                  "shufps", "unpcklps", "unpckhps",
+                  "addps", "subps", "mulps", "divps",
+                  "minps", "maxps", "rsqrtss", "rcpss",
+@@ -999,7 +1351,7 @@
+ 
+     # ── ALU binary operations ──
+ 
+-    def _lift_alu_binop(self, insn, ops, m):
++    def _lift_alu_binop(self, insn, ops, m, preserve_carry=False):
+         if len(ops) < 2:
+             return [f"/* {m}: bad operands */"]
+         c_op = {"add": "+", "sub": "-", "and": "&", "or": "|", "xor": "^"}[m]
+@@ -1007,9 +1359,18 @@
+         src = _fmt_operand_read(ops[1])
+         # XOR reg, reg → zero
+         if m == "xor" and ops[0].type == "reg" and ops[1].type == "reg" and ops[0].reg == ops[1].reg:
+-            return [_fmt_operand_write(ops[0], "0") + " /* xor self */"]
+-        expr = f"{dst} {c_op} {src}"
+-        return [_fmt_operand_write(ops[0], expr)]
++            statements = []
++            if preserve_carry:
++                # xor clears CF unconditionally.
++                statements.append("_cf = 0; /* xor clears carry */")
++            statements.append(
++                _fmt_operand_write(ops[0], "0") + " /* xor self */")
++            return statements
++        statements = []
++        if preserve_carry:
++            statements.extend(_emit_carry_capture(m, ops, dst, src))
++        statements.append(_fmt_operand_write(ops[0], f"{dst} {c_op} {src}"))
++        return statements
+ 
+     def _lift_inc_dec(self, insn, ops, m):
+         if len(ops) < 1:
+@@ -1024,11 +1385,16 @@
+         else:
+             return [_fmt_operand_write(ops[0], f"{val} {op_char} {delta}")]
+ 
+-    def _lift_neg(self, insn, ops):
++    def _lift_neg(self, insn, ops, preserve_carry=False):
+         if len(ops) < 1:
+             return ["/* neg: no operand */"]
+         val = _fmt_operand_read(ops[0])
+-        return [_fmt_operand_write(ops[0], f"(uint32_t)(-(int32_t){val})")]
++        statements = []
++        if preserve_carry:
++            statements.append(f"_cf = ({val} != 0); /* neg carry */")
++        statements.append(
++            _fmt_operand_write(ops[0], f"(uint32_t)(-(int32_t){val})"))
++        return statements
+ 
+     def _lift_not(self, insn, ops):
+         if len(ops) < 1:
+@@ -1036,7 +1402,7 @@
+         val = _fmt_operand_read(ops[0])
+         return [_fmt_operand_write(ops[0], f"~{val}")]
+ 
+-    def _lift_sbb(self, insn, ops):
++    def _lift_sbb(self, insn, ops, preserve_carry=False):
+         """SBB: subtract with borrow. Common idiom: sbb reg, reg → -CF (0 or -1)."""
+         if len(ops) < 2:
+             return ["/* sbb: bad operands */"]
+@@ -1044,16 +1410,41 @@
+         src = _fmt_operand_read(ops[1])
+         # sbb reg, reg is a common idiom: result is 0 or 0xFFFFFFFF depending on CF
+         if ops[0].type == "reg" and ops[1].type == "reg" and ops[0].reg == ops[1].reg:
++            # CF is unchanged in value terms: the borrow out equals the borrow in.
+             return [_fmt_operand_write(ops[0], "_cf ? 0xFFFFFFFF : 0") + " /* sbb self (CF extend) */"]
+-        return [_fmt_operand_write(ops[0], f"{dst} - {src} - _cf") + " /* sbb */"]
+-
+-    def _lift_adc(self, insn, ops):
++        if not preserve_carry:
++            return [_fmt_operand_write(ops[0], f"{dst} - {src} - _cf")
++                    + " /* sbb */"]
++        # Chained SBB: the borrow out feeds the next limb. Both it and the
++        # subtraction read the INCOMING borrow, so latch it first - updating
++        # _cf in place would feed the borrow out back into the subtraction.
++        bits = _operand_bits(ops[0])
++        mask = (1 << bits) - 1
++        write = _fmt_operand_write(ops[0], f"{dst} - {src} - _cf_in")
++        return [f"{{ const int _cf_in = _cf;"
++                f" _cf = ((uint64_t)({dst} & 0x{mask:X}u)"
++                f" < (uint64_t)({src} & 0x{mask:X}u) + (uint64_t)_cf_in);"
++                f" {write} }} /* sbb */"]
++
++    def _lift_adc(self, insn, ops, preserve_carry=False):
+         """ADC: add with carry."""
+         if len(ops) < 2:
+             return ["/* adc: bad operands */"]
+         dst = _fmt_operand_read(ops[0])
+         src = _fmt_operand_read(ops[1])
+-        return [_fmt_operand_write(ops[0], f"{dst} + {src} + _cf") + " /* adc */"]
++        if not preserve_carry:
++            return [_fmt_operand_write(ops[0], f"{dst} + {src} + _cf")
++                    + " /* adc */"]
++        # Chained ADC: the carry out feeds the next limb. Latch the incoming
++        # carry so the addition does not read the carry it just produced.
++        bits = _operand_bits(ops[0])
++        mask = (1 << bits) - 1
++        write = _fmt_operand_write(ops[0], f"{dst} + {src} + _cf_in")
++        return [f"{{ const int _cf_in = _cf;"
++                f" _cf = (((uint64_t)({dst} & 0x{mask:X}u)"
++                f" + (uint64_t)({src} & 0x{mask:X}u) + (uint64_t)_cf_in)"
++                f" > (uint64_t)0x{mask:X}u);"
++                f" {write} }} /* adc */"]
+ 
+     def _lift_shld(self, insn, ops):
+         """SHLD: double-precision shift left."""
+@@ -1141,6 +1532,38 @@
+         func = "ROL32" if m == "rol" else "ROR32"
+         return [_fmt_operand_write(ops[0], f"{func}({dst}, {cnt})")]
+ 
++    def _lift_bit_scan(self, insn, ops, m):
++        if len(ops) < 2:
++            return [f"/* {m}: bad operands */"]
++
++        src = _fmt_operand_read(ops[1])
++        is_16_bit = (
++            (ops[1].type == "mem" and ops[1].mem_size == 2) or
++            (ops[1].type == "reg" and ops[1].reg in {
++                "ax", "bx", "cx", "dx", "si", "di", "bp", "sp",
++            })
++        )
++        value = (f"(uint32_t)(uint16_t)({src})" if is_16_bit
++                 else f"(uint32_t)({src})")
++        if m == "bsr":
++            initial_index = 15 if is_16_bit else 31
++            shift = "--_bs_index"
++        else:
++            initial_index = 0
++            shift = "++_bs_index"
++        write = _fmt_operand_write(ops[0], "_bs_index")
++        return [
++            "{",
++            f"    uint32_t _bs_value = {value};",
++            "    if (_bs_value != 0) {",
++            f"        uint32_t _bs_index = {initial_index};",
++            "        while (((_bs_value >> _bs_index) & 1u) == 0u) "
++            f"{shift};",
++            f"        {write}",
++            "    }",
++            f"}} /* {m} */",
++        ]
++
+     # ── Compare / Test (standalone) ──
+ 
+     def _lift_cmp(self, insn, ops):
+@@ -1186,9 +1609,22 @@
+         # x86 'call' pushes return address then jumps.
+         # With global esp, we push a dummy return address (0) then call.
+         # The callee's 'ret' will pop it back off.
++        lines = []
++        if self.current_function_has_ebp:
++            lines.append("g_seh_ebp = ebp; /* publish caller frame */")
+         if insn.call_target:
+-            name = self._call_target_name(insn.call_target)
+-            lines = [f"PUSH32(esp, 0); {name}(); /* call 0x{insn.call_target:08X} */"]
++            if insn.call_target in self.manual_call_targets:
++                lines.append(
++                    "PUSH32(esp, 0); "
++                    f"RECOMP_ICALL_SAFE(0x{insn.call_target:08X}u, "
++                    "_icall_esp); /* selected direct call */")
++                self.manual_call_rewrites.append(
++                    (self.func_start, insn.address, insn.call_target))
++            else:
++                name = self._call_target_name(insn.call_target)
++                lines.append(
++                    f"PUSH32(esp, 0); {name}();"
++                    f" /* call 0x{insn.call_target:08X} */")
+             # After __SEH_prolog/__SEH_epilog, read back the frame pointer.
+             if insn.call_target in (self.SEH_PROLOG, self.SEH_EPILOG):
+                 lines.append("ebp = g_seh_ebp; /* read back frame from SEH helper */")
+@@ -1196,7 +1632,12 @@
+         elif len(ops) >= 1:
+             target = _fmt_operand_read(ops[0])
+             # Mark indirect calls for post-processing by _fixup_icall_esp_save
+-            return [f"PUSH32(esp, 0); RECOMP_ICALL_SAFE({target}, _icall_esp); /* indirect call */"]
++            lines.append(
++                f"{{ uint32_t _icall_target = {target}; "
++                "PUSH32(esp, 0); "
++                "RECOMP_ICALL_SAFE(_icall_target, _icall_esp); }"
++                " /* indirect call */")
++            return lines
+         return ["/* call: no target */"]
+ 
+     def _lift_ret(self, insn, ops):
+@@ -1218,8 +1659,9 @@
+ 
+     def _read_jump_table(self, table_va, max_entries=256):
+         """Read 32-bit jump table entries from the XBE at a given VA.
+-        Returns list of target addresses. Stops when an entry is not a
+-        valid code address or max_entries is reached."""
++        Returns list of target addresses. A biased index may leave slot zero
++        invalid and unreachable, so tolerate that one leading hole. Stops at
++        any later non-code entry or when max_entries is reached."""
+         if not self.xbe_data:
+             return []
+         offset = va_to_file_offset(table_va)
+@@ -1232,6 +1674,8 @@
+                 break
+             val = struct.unpack_from('<I', self.xbe_data, o)[0]
+             if not is_code_address(val):
++                if i == 0:
++                    continue
+                 break
+             targets.append(val)
+         return targets
+@@ -1248,7 +1692,9 @@
+         if not op.mem_disp or not (op.mem_index or op.mem_base):
+             return []
+         table_va = op.mem_disp
+-        targets = self._read_jump_table(table_va)
++        targets = self.jump_table_targets.get(table_va)
++        if targets is None:
++            targets = self._read_jump_table(table_va)
+         if not targets:
+             return []
+         # Check that ALL targets are within the current function
+@@ -1261,6 +1707,15 @@
+             if self._is_external_target(insn.jump_target):
+                 # Tail call - no return address push (reuses current frame's)
+                 # Bridge ebp so the target function can inherit our frame pointer.
++                if insn.jump_target in self.manual_call_targets:
++                    self.manual_call_rewrites.append(
++                        (self.func_start, insn.address, insn.jump_target))
++                    return [
++                        (("g_seh_ebp = ebp; "
++                          if self.current_function_has_ebp else "") +
++                        f"RECOMP_ITAIL(0x{insn.jump_target:08X}u); return; "
++                        f"/* selected tail jmp 0x{insn.jump_target:08X} */")
++                    ]
+                 name = self._call_target_name(insn.jump_target)
+                 return [f"g_seh_ebp = ebp; {name}(); return; /* tail jmp 0x{insn.jump_target:08X} */"]
+             return [f"goto loc_{insn.jump_target:08X};"]
+@@ -1290,7 +1745,7 @@
+             if target:
+                 if self._is_external_target(target):
+                     name = self._call_target_name(target)
+-                    return [f"if ({cond}) {{ {name}(); return; }} /* {jcc} */"]
++                    return [f"if ({cond}) {{ g_seh_ebp = ebp; {name}(); return; }} /* {jcc} */"]
+                 return [f"if ({cond}) goto loc_{target:08X}; /* {jcc} */"]
+             return [f"/* {jcc} - no target */"]
+ 
+@@ -1299,7 +1754,7 @@
+         if target:
+             if self._is_external_target(target):
+                 name = self._call_target_name(target)
+-                return [f"if (_flags /* {jcc}: {desc} */) {{ {name}(); return; }}"]
++                return [f"if (_flags /* {jcc}: {desc} */) {{ g_seh_ebp = ebp; {name}(); return; }}"]
+             return [f"if (_flags /* {jcc}: {desc} */) goto loc_{target:08X};"]
+         return [f"/* {jcc}: {desc} - no target */"]
+ 
+@@ -1341,9 +1796,29 @@
+                 "{ uint32_t _i; for (_i = 0; _i < ecx; _i++) MEM16(edi + _i*2) = LO16(eax); }",
+                 "edi += ecx * 2; ecx = 0; /* rep stosw */"
+             ]
+-        if "cmpsb" in m or "cmpsw" in m or "cmpsd" in m:
++        if "cmpsb" in m:
++            continue_on_equal = "repne" not in m and "repnz" not in m
++            stop_condition = "!_flags" if continue_on_equal else "_flags"
++            return [
++                "while (ecx != 0) {",
++                "    _flags = (MEM8(esi) == MEM8(edi));",
++                "    esi++; edi++; ecx--;",
++                f"    if ({stop_condition}) break;",
++                f"}} /* {m} */",
++            ]
++        if "scasb" in m:
++            continue_on_equal = "repne" not in m and "repnz" not in m
++            stop_condition = "!_flags" if continue_on_equal else "_flags"
++            return [
++                "while (ecx != 0) {",
++                "    _flags = (LO8(eax) == MEM8(edi));",
++                "    edi++; ecx--;",
++                f"    if ({stop_condition}) break;",
++                f"}} /* {m} */",
++            ]
++        if "cmpsw" in m or "cmpsd" in m:
+             return [f"/* {m} - string compare, ecx iterations */"]
+-        if "scasb" in m or "scasw" in m or "scasd" in m:
++        if "scasw" in m or "scasd" in m:
+             return [f"/* {m} - string scan, ecx iterations */"]
+         return [f"/* {m} */"]
+ 
+@@ -1378,10 +1853,50 @@
+         if nops < 1:
+             return [f"/* {m}: no operands */"]
+ 
+-        # SSE register names (xmm0-xmm7) are used as float locals
++        def _is_xmm(op):
++            return op.type == "reg" and op.reg and op.reg.startswith("xmm")
++
++        def _is_mmx(op):
++            return (op.type == "reg" and op.reg and op.reg.startswith("mm")
++                    and not op.reg.startswith("xmm"))
++
++        def _mmx_read(op):
++            if _is_mmx(op):
++                return op.reg
++            if op.type == "mem" and op.mem_size == 8:
++                return f"MMX_MEM({_fmt_mem(op)})"
++            return None
++
++        if nops == 2 and m == "cvtps2pi" and _is_mmx(ops[0]):
++            if _is_xmm(ops[1]):
++                low, high = f"{ops[1].reg}.f[0]", f"{ops[1].reg}.f[1]"
++            elif ops[1].type == "mem" and ops[1].mem_size == 8:
++                address = _fmt_mem(ops[1])
++                low, high = f"MEMF({address})", f"MEMF(({address}) + 4u)"
++            else:
++                return [f"/* unsupported {m} {insn.op_str} */"]
++            return [f"{ops[0].reg} = MMX_CVTPS2PI({low}, {high}); /* {m} */"]
++
++        if nops == 2 and m in ("packssdw", "pavgb") and _is_mmx(ops[0]):
++            source = _mmx_read(ops[1])
++            if source is not None:
++                return [f"{ops[0].reg} = MMX_{m.upper()}({ops[0].reg}, {source}); /* {m} */"]
++
++        if nops == 2 and m == "movq":
++            source = _mmx_read(ops[1])
++            if _is_mmx(ops[0]) and source is not None:
++                return [f"{ops[0].reg} = {source}; /* movq */"]
++            if ops[0].type == "mem" and ops[0].mem_size == 8 and _is_mmx(ops[1]):
++                return [f"MMX_STORE({_fmt_mem(ops[0])}, {ops[1].reg}); /* movq */"]
++
++        # ── Scalar (lane 0) access ──
++        # movss/addss/... genuinely operate on one 32-bit value, so they read
++        # and write lane 0 explicitly rather than the whole register.
+         def _sse_read(op):
+-            if op.type == "reg":
+-                return op.reg  # xmm0, xmm1, etc.
++            if _is_xmm(op):
++                return f"{op.reg}.f[0]"
++            elif op.type == "reg":
++                return op.reg
+             elif op.type == "mem":
+                 if op.mem_size == 8:
+                     return f"MEMD({_fmt_mem(op)})"
+@@ -1391,7 +1906,9 @@
+             return f"/* sse_read? */"
+ 
+         def _sse_write(op, val):
+-            if op.type == "reg":
++            if _is_xmm(op):
++                return f"{op.reg}.f[0] = {val};"
++            elif op.type == "reg":
+                 return f"{op.reg} = {val};"
+             elif op.type == "mem":
+                 if op.mem_size == 8:
+@@ -1399,20 +1916,101 @@
+                 return f"MEMF({_fmt_mem(op)}) = {val};"
+             return f"/* sse_write? */;"
+ 
++        # ── Packed (128-bit) access ──
++        # A whole-register read yields a RecompXmm value; a whole-register
++        # write is a statement. Memory goes through the guest translation.
++        def _packed_read(op):
++            if _is_xmm(op):
++                return op.reg
++            if op.type == "mem":
++                return f"XMM_MEM({_fmt_mem(op)})"
++            return None
++
++        def _packed_write(op, val):
++            if _is_xmm(op):
++                return f"{op.reg} = {val};"
++            if op.type == "mem":
++                return f"XMM_STORE({_fmt_mem(op)}, {val});"
++            return None
++
++        def _packed_binary(helper):
++            """dst = helper(dst, src) for a two-operand packed op."""
++            if nops < 2:
++                return None
++            a = _packed_read(ops[0])
++            b = _packed_read(ops[1])
++            if a is None or b is None:
++                return None
++            written = _packed_write(ops[0], f"{helper}({a}, {b})")
++            if written is None:
++                return None
++            return [written + f" /* {m} */"]
++
+         # ── Moves ──
+-        if m in ("movss", "movsd", "movaps", "movups", "movlps", "movhps"):
++        # movaps/movups move all 16 bytes. Treating them like movss was the
++        # defect that left every packed value 4 bytes wide.
++        if m in ("movaps", "movups", "movapd", "movupd"):
+             if nops >= 2:
++                src = _packed_read(ops[1])
++                if src is not None:
++                    written = _packed_write(ops[0], src)
++                    if written is not None:
++                        return [written + f" /* {m} */"]
++            return [f"/* {m} {insn.op_str} */"]
++
++        # movlps/movhps transfer 8 bytes into or out of one half.
++        if m in ("movlps", "movhps"):
++            half = "LOW" if m == "movlps" else "HIGH"
++            if nops >= 2:
++                if _is_xmm(ops[0]) and ops[1].type == "mem":
++                    return [f"XMM_LOAD_{half}({ops[0].reg}, "
++                            f"{_fmt_mem(ops[1])}); /* {m} */"]
++                if ops[0].type == "mem" and _is_xmm(ops[1]):
++                    return [f"XMM_STORE_{half}({_fmt_mem(ops[0])}, "
++                            f"{ops[1].reg}); /* {m} */"]
++            return [f"/* {m} {insn.op_str} */"]
++
++        if m in ("movlhps", "movhlps"):
++            helper = ("XMM_MOVE_LOW_TO_HIGH" if m == "movlhps"
++                      else "XMM_MOVE_HIGH_TO_LOW")
++            lifted = _packed_binary(helper)
++            if lifted is not None:
++                return lifted
++            return [f"/* {m} {insn.op_str} */"]
++
++        # movss/movsd are scalar. Loading from memory zeroes the upper lanes;
++        # a register-to-register move leaves them untouched.
++        if m in ("movss", "movsd"):
++            if nops >= 2:
++                scalar = ("XMM_SCALAR" if m == "movss"
++                          else "XMM_SCALAR_DOUBLE")
++                if _is_xmm(ops[0]) and ops[1].type == "mem":
++                    return [f"{ops[0].reg} = "
++                            f"{scalar}({_sse_read(ops[1])}); /* {m} */"]
+                 src = _sse_read(ops[1])
+                 return [_sse_write(ops[0], src) + f" /* {m} */"]
+             return [f"/* {m} {insn.op_str} */"]
+ 
++        # movd moves 32 bits without converting. Into an XMM register it also
++        # zeroes the upper lanes. The generated code redefines memcpy as a
++        # guest-to-guest copy, so the bits are moved through the union instead
++        # of taking the address of a host local.
+         if m == "movd":
+             if nops >= 2:
+-                src = _fmt_operand_read(ops[1]) if ops[1].type != "reg" or not ops[1].reg.startswith("xmm") else _sse_read(ops[1])
+-                if ops[0].type == "reg" and ops[0].reg.startswith("xmm"):
+-                    return [f"memcpy(&{ops[0].reg}, &{src}, 4); /* movd to xmm */"]
+-                else:
+-                    return [f"{_fmt_operand_write(ops[0], src)} /* movd */"]
++                if _is_xmm(ops[0]):
++                    if _is_xmm(ops[1]):
++                        src = f"{ops[1].reg}.u[0]"
++                    elif _is_mmx(ops[1]):
++                        src = f"(uint32_t){ops[1].reg}"
++                    else:
++                        src = _fmt_operand_read(ops[1])
++                    return [f"{ops[0].reg} = XMM_SCALAR_BITS({src});"
++                            " /* movd to xmm */"]
++                if _is_xmm(ops[1]):
++                    return [f"{_fmt_operand_write(ops[0], ops[1].reg + '.u[0]')}"
++                            " /* movd */"]
++                src = _fmt_operand_read(ops[1])
++                return [f"{_fmt_operand_write(ops[0], src)} /* movd */"]
+             return [f"/* movd {insn.op_str} */"]
+ 
+         # ── Arithmetic ──
+@@ -1441,11 +2039,15 @@
+                 return [_sse_write(ops[0], f"({a} > {b} ? {a} : {b})") + f" /* {m} */"]
+ 
+         # ── Packed arithmetic ──
++        # These used to emit a bare comment, so a matrix concatenation built
++        # from shufps + mulps + addps executed as nothing at all.
+         if m in ("addps", "subps", "mulps", "divps"):
+-            if nops >= 2:
+-                c_op = {"addps": "+", "subps": "-", "mulps": "*", "divps": "/"}[m]
+-                d, s = _sse_read(ops[0]), _sse_read(ops[1])
+-                return [f"/* {m}: {d} {c_op}= {s} (packed 4xfloat) */"]
++            helper = {"addps": "XMM_ADD", "subps": "XMM_SUB",
++                      "mulps": "XMM_MUL", "divps": "XMM_DIV"}[m]
++            lifted = _packed_binary(helper)
++            if lifted is not None:
++                return lifted
++            return [f"/* {m} {insn.op_str} */"]
+ 
+         # ── Conversions ──
+         if m == "cvtsi2ss":
+@@ -1475,19 +2077,31 @@
+                 return [f"/* {m} {_sse_read(ops[0])}, {_sse_read(ops[1])} - sets EFLAGS */"]
+ 
+         # ── Bitwise ──
++        # Done on the integer lanes: these carry sign-mask and select idioms
++        # (fabs, negate, blend) that are meaningless as float arithmetic.
+         if m in ("xorps", "xorpd"):
+-            if nops >= 2 and ops[0].type == "reg" and ops[1].type == "reg" and ops[0].reg == ops[1].reg:
+-                return [_sse_write(ops[0], "0.0f") + f" /* {m} self = zero */"]
+-            if nops >= 2:
+-                return [f"/* {m} {_sse_read(ops[0])}, {_sse_read(ops[1])} */"]
+-        if m in ("andps", "orps"):
+-            if nops >= 2:
+-                return [f"/* {m} {_sse_read(ops[0])}, {_sse_read(ops[1])} */"]
++            if (nops >= 2 and _is_xmm(ops[0]) and _is_xmm(ops[1])
++                    and ops[0].reg == ops[1].reg):
++                return [f"{ops[0].reg} = XMM_ZERO(); /* {m} self = zero */"]
++            lifted = _packed_binary("XMM_XOR")
++            if lifted is not None:
++                return lifted
++            return [f"/* {m} {insn.op_str} */"]
++        if m in ("andps", "orps", "andnps"):
++            helper = {"andps": "XMM_AND", "orps": "XMM_OR",
++                      "andnps": "XMM_ANDN"}[m]
++            lifted = _packed_binary(helper)
++            if lifted is not None:
++                return lifted
++            return [f"/* {m} {insn.op_str} */"]
+ 
+         # ── Packed min/max ──
+         if m in ("minps", "maxps"):
+-            if nops >= 2:
+-                return [f"/* {m} {_sse_read(ops[0])}, {_sse_read(ops[1])} (packed 4xfloat) */"]
++            helper = "XMM_MIN" if m == "minps" else "XMM_MAX"
++            lifted = _packed_binary(helper)
++            if lifted is not None:
++                return lifted
++            return [f"/* {m} {insn.op_str} */"]
+ 
+         # ── Reciprocal / rsqrt ──
+         if m == "rsqrtss":
+@@ -1521,13 +2135,22 @@
+ 
+         # ── Packed comparison ──
+         if m in ("cmpneqps", "cmpeqps", "cmpltps", "cmpleps"):
+-            if nops >= 2:
+-                return [f"/* {m} {_sse_read(ops[0])}, {_sse_read(ops[1])} (packed compare) */"]
++            helper = {"cmpeqps": "XMM_CMP_EQ", "cmpltps": "XMM_CMP_LT",
++                      "cmpleps": "XMM_CMP_LE", "cmpneqps": "XMM_CMP_NEQ"}[m]
++            lifted = _packed_binary(helper)
++            if lifted is not None:
++                return lifted
++            return [f"/* {m} {insn.op_str} */"]
+ 
+         # ── Move mask ──
++        # This feeds branches, so a hardcoded 0 silently picked one side.
+         if m == "movmskps":
+             if nops >= 2:
+-                return [_fmt_operand_write(ops[0], f"0 /* movmskps {_sse_read(ops[1])} */")]
++                src = _packed_read(ops[1])
++                if src is not None:
++                    return [_fmt_operand_write(ops[0], f"XMM_MOVEMASK({src})")
++                            + f" /* {m} */"]
++            return [f"/* {m} {insn.op_str} */"]
+ 
+         # ── MMX / integer SIMD ──
+         if m in ("pand", "pandn", "por", "pxor", "pcmpgtd"):
+@@ -1535,7 +2158,24 @@
+                 return [f"/* {m} {insn.op_str} (MMX/SIMD integer) */"]
+ 
+         # ── Shuffle/unpack ──
+-        if m in ("shufps", "unpcklps", "unpckhps"):
++        # shufps is the broadcast in every matrix concatenation.
++        if m == "shufps":
++            if nops >= 3 and ops[2].type == "imm":
++                a = _packed_read(ops[0])
++                b = _packed_read(ops[1])
++                if a is not None and b is not None:
++                    written = _packed_write(
++                        ops[0],
++                        f"XMM_SHUFFLE({a}, {b}, {_fmt_imm(ops[2].imm)})")
++                    if written is not None:
++                        return [written + f" /* {m} */"]
++            return [f"/* {m} {insn.op_str} */"]
++        if m in ("unpcklps", "unpckhps"):
++            helper = ("XMM_UNPACK_LOW" if m == "unpcklps"
++                      else "XMM_UNPACK_HIGH")
++            lifted = _packed_binary(helper)
++            if lifted is not None:
++                return lifted
+             return [f"/* {m} {insn.op_str} */"]
+ 
+         return [f"/* SSE: {m} {insn.op_str} */"]
+@@ -1555,16 +2195,28 @@
+                     elif ops[0].mem_size == 8:
+                         return [f"fp_push(MEMD({_fmt_mem(ops[0])})); /* fld double */"]
+                     return [f"fp_push(MEMF({_fmt_mem(ops[0])})); /* fld */"]
++                source = _fmt_fpu_operand(ops[0])
++                if source is not None:
++                    return [f"fp_push({source}); /* fld {insn.op_str} */"]
+             return [f"/* fld {insn.op_str} */"]
+ 
+         if m in ("fst", "fstp"):
+-            pop = "p" if m == "fstp" else ""
++            pop = " fp_pop();" if m == "fstp" else ""
+             if len(ops) >= 1 and ops[0].type == "mem":
+                 if ops[0].mem_size == 4:
+-                    return [f"MEMF({_fmt_mem(ops[0])}) = (float)fp_top(); fp_pop{pop}(); /* {m} */"]
++                    return [f"MEMF({_fmt_mem(ops[0])}) = (float)fp_top();{pop} /* {m} */"]
+                 elif ops[0].mem_size == 8:
+-                    return [f"MEMD({_fmt_mem(ops[0])}) = fp_top(); fp_pop{pop}(); /* {m} */"]
+-            return [f"/* {m} {insn.op_str} */"]
++                    return [f"MEMD({_fmt_mem(ops[0])}) = fp_top();{pop} /* {m} */"]
++            # x87 register destination: "fstp st(i)" copies st0 into st(i) and
++            # pops. The pop is the whole point of the common "fstp st(0)" idiom
++            # for discarding the top of the stack, so it must not be dropped.
++            if len(ops) >= 1 and ops[0].type == "reg":
++                dest = _fmt_fpu_operand(ops[0])
++                if dest is not None:
++                    if dest == "fp_st(0)":
++                        return [f"{pop.strip()} /* {m} {insn.op_str} */"]
++                    return [f"{dest} = fp_top();{pop} /* {m} {insn.op_str} */"]
++            return [f"{pop.strip()} /* {m} {insn.op_str} */"]
+ 
+         if m == "fild":
+             if len(ops) >= 1 and ops[0].type == "mem":
+@@ -1574,51 +2226,207 @@
+ 
+         if m in ("fist", "fistp"):
+             if len(ops) >= 1 and ops[0].type == "mem":
+-                mem_acc = _mem_accessor(ops[0].mem_size)
+-                return [f"{mem_acc}({_fmt_mem(ops[0])}) = (int32_t)fp_top(); /* {m} */"]
++                size = ops[0].mem_size
++                mem_acc = _smem_accessor(size)
++                int_type = {2: "int16_t", 4: "int32_t", 8: "int64_t"}.get(
++                    size, "int32_t")
++                pop = " fp_pop();" if m == "fistp" else ""
++                return [f"{mem_acc}({_fmt_mem(ops[0])}) = "
++                        f"({int_type})llrint(fp_top());{pop} /* {m} */"]
+             return [f"/* {m} {insn.op_str} */"]
+ 
+         if m == "fadd":
++            if ops:
++                source = _fmt_fpu_operand(ops[-1])
++                if source is not None:
++                    return [f"fp_top() += {source}; /* fadd {insn.op_str} */"]
+             return [f"fp_st1() += fp_top(); fp_pop(); /* fadd */"]
+         if m == "faddp":
+-            return [f"fp_st1() += fp_top(); fp_pop(); /* faddp */"]
++            # Capstone reports the destination alone for the pop form.
++            dest = _fmt_fpu_stack_register(ops[0]) if ops else "fp_st1()"
++            return [f"{dest} += fp_top(); fp_pop(); /* faddp */"]
+         if m == "fsub":
++            if ops:
++                source = _fmt_fpu_operand(ops[-1])
++                if source is not None:
++                    return [f"fp_top() -= {source}; /* fsub {insn.op_str} */"]
+             return [f"fp_st1() -= fp_top(); fp_pop(); /* fsub */"]
+         if m == "fsubp":
+-            return [f"fp_st1() -= fp_top(); fp_pop(); /* fsubp */"]
++            dest = _fmt_fpu_stack_register(ops[0]) if ops else "fp_st1()"
++            return [f"{dest} -= fp_top(); fp_pop(); /* fsubp */"]
+         if m == "fmul":
++            if ops:
++                source = _fmt_fpu_operand(ops[-1])
++                if source is not None:
++                    return [f"fp_top() *= {source}; /* fmul {insn.op_str} */"]
+             return [f"fp_st1() *= fp_top(); fp_pop(); /* fmul */"]
+         if m == "fmulp":
+-            return [f"fp_st1() *= fp_top(); fp_pop(); /* fmulp */"]
++            dest = _fmt_fpu_stack_register(ops[0]) if ops else "fp_st1()"
++            return [f"{dest} *= fp_top(); fp_pop(); /* fmulp */"]
+         if m == "fdiv":
++            if ops:
++                source = _fmt_fpu_operand(ops[-1])
++                if source is not None:
++                    return [f"fp_top() /= {source}; /* fdiv {insn.op_str} */"]
+             return [f"fp_st1() /= fp_top(); fp_pop(); /* fdiv */"]
+         if m == "fdivp":
+             return [f"fp_st1() /= fp_top(); fp_pop(); /* fdivp */"]
++        # Reverse forms compute source-minus-destination, not the other way
++        # round. There was no case for them, so they fell through to the
++        # bare-comment catch-all below and executed as nothing: fdivr against
++        # the constant 1.0 is the reciprocal inside the vector-normalize
++        # helper, so dropping it turned "v / len" into "v * len".
++        if m == "fsubr":
++            if ops:
++                source = _fmt_fpu_operand(ops[-1])
++                if source is not None:
++                    return [f"fp_top() = {source} - fp_top();"
++                            f" /* fsubr {insn.op_str} */"]
++            return [f"fp_st1() = fp_top() - fp_st1(); fp_pop(); /* fsubr */"]
++        if m == "fsubrp":
++            return [f"fp_st1() = fp_top() - fp_st1(); fp_pop(); /* fsubrp */"]
++        if m == "fdivr":
++            if ops:
++                source = _fmt_fpu_operand(ops[-1])
++                if source is not None:
++                    return [f"fp_top() = {source} / fp_top();"
++                            f" /* fdivr {insn.op_str} */"]
++            return [f"fp_st1() = fp_top() / fp_st1(); fp_pop(); /* fdivr */"]
++        if m == "fdivrp":
++            return [f"fp_st1() = fp_top() / fp_st1(); fp_pop(); /* fdivrp */"]
++        # Integer-memory arithmetic: the operand is a signed integer in
++        # memory, converted to double before the operation.
++        if m in ("fiadd", "fisub", "fisubr", "fimul", "fidiv", "fidivr"):
++            if ops and ops[0].type == "mem":
++                smem = _smem_accessor(ops[0].mem_size)
++                source = f"(double){smem}({_fmt_mem(ops[0])})"
++                op_text = {
++                    "fiadd": f"fp_top() += {source};",
++                    "fisub": f"fp_top() -= {source};",
++                    "fisubr": f"fp_top() = {source} - fp_top();",
++                    "fimul": f"fp_top() *= {source};",
++                    "fidiv": f"fp_top() /= {source};",
++                    "fidivr": f"fp_top() = {source} / fp_top();",
++                }[m]
++                return [op_text + f" /* {m} {insn.op_str} */"]
++            return [f"/* {m} {insn.op_str} - no memory operand */"]
+         if m == "fchs":
+             return [f"fp_top() = -fp_top(); /* fchs */"]
+         if m == "fabs":
+             return [f"fp_top() = fabs(fp_top()); /* fabs */"]
+         if m == "fsqrt":
+             return [f"fp_top() = sqrt(fp_top()); /* fsqrt */"]
++        # Transcendentals. fpatan is the core of the atan2 helper the
++        # view-matrix path calls; dropping it left an unbalanced stack value.
++        if m == "fpatan":
++            return [f"fp_st1() = atan2(fp_st1(), fp_top()); fp_pop();"
++                    f" /* fpatan */"]
++        if m == "fsin":
++            return [f"fp_top() = sin(fp_top()); /* fsin */"]
++        if m == "fcos":
++            return [f"fp_top() = cos(fp_top()); /* fcos */"]
++        if m == "fsincos":
++            return [f"{{ double _s = sin(fp_top()); "
++                    f"fp_top() = cos(fp_top()); fp_push(_s); }} /* fsincos */"]
++        if m == "fptan":
++            return [f"fp_top() = tan(fp_top()); fp_push(1.0); /* fptan */"]
++        if m == "f2xm1":
++            return [f"fp_top() = pow(2.0, fp_top()) - 1.0; /* f2xm1 */"]
++        if m == "fprem":
++            return [
++                "{ fp_top() = fmod(fp_top(), fp_st1()); "
++                "g_fp_cmp = (int)(0x10000u | ((g_fp_top & 7u) << 11)); } "
++                "/* fprem: complete, C2 clear */"
++            ]
++        if m == "fyl2x":
++            return [f"fp_st1() = fp_st1() * log2(fp_top()); fp_pop();"
++                    f" /* fyl2x */"]
++        if m == "fyl2xp1":
++            return [f"fp_st1() = fp_st1() * log2(fp_top() + 1.0); fp_pop();"
++                    f" /* fyl2xp1 */"]
++        if m == "fscale":
++            return [f"fp_top() = fp_top() * pow(2.0, trunc(fp_st1()));"
++                    f" /* fscale */"]
++        if m == "frndint":
++            return [f"fp_top() = rint(fp_top()); /* frndint */"]
++        if m == "fldpi":
++            return [f"fp_push(3.14159265358979323846); /* fldpi */"]
++        if m == "fldl2e":
++            return [f"fp_push(1.44269504088896340736); /* fldl2e */"]
++        if m == "fldl2t":
++            return [f"fp_push(3.32192809488736234787); /* fldl2t */"]
++        if m == "fldlg2":
++            return [f"fp_push(0.30102999566398119521); /* fldlg2 */"]
++        if m == "fldln2":
++            return [f"fp_push(0.69314718055994530942); /* fldln2 */"]
++        if m == "ftst":
++            return [f"g_fp_cmp = (fp_top() < 0.0) ? -1 : "
++                    f"(fp_top() > 0.0) ? 1 : 0; /* ftst */"]
++        if m == "fxam":
++            # Loaded float/double subnormals are normal x87 extended values;
++            # the shared double stack has no tag state for empty/raw-80 cases.
++            return [
++                "{ double _v = fp_top(); int _c = fpclassify(_v); "
++                "g_fp_cmp = (int)(0x10000u | ((g_fp_top & 7u) << 11) | "
++                "(copysign(1.0, _v) < 0.0 ? 0x0200u : 0u) | "
++                "(_c == FP_NAN ? 0x0100u : "
++                "_c == FP_INFINITE ? 0x0500u : "
++                "_c == FP_ZERO ? 0x4000u : "
++                "0x0400u)); } /* fxam */"
++            ]
+         if m == "fxch":
+-            return [f"{{ double _t = fp_top(); fp_top() = fp_st1(); fp_st1() = _t; }} /* fxch */"]
++            # Capstone may include implicit ST0 before the exchanged register.
++            dest = _fmt_fpu_stack_register(ops[-1]) if ops else "fp_st1()"
++            return [f"{{ double _t = fp_top(); fp_top() = {dest}; {dest} = _t; }} /* fxch */"]
+         if m in ("fcom", "fcomp", "fcompp", "fucom", "fucomp", "fucompp"):
+-            # Set _fpu_cmp for the fcomp/fnstsw/sahf pattern
+-            return [f"_fpu_cmp = (fp_top() < fp_st1()) ? -1 : (fp_top() > fp_st1()) ? 1 : 0;"
++            # Set g_fp_cmp for the fcomp/fnstsw/sahf pattern
++            source = _fmt_fpu_operand(ops[-1]) if ops else "fp_st1()"
++            pops = 2 if m.endswith("pp") else 1 if m.endswith("p") else 0
++            pop_code = " fp_pop();" * pops
++            return [f"g_fp_cmp = (fp_top() < {source}) ? -1 : "
++                    f"(fp_top() > {source}) ? 1 : 0;{pop_code}"
+                     f" /* {m} {insn.op_str} */"]
+         if m in ("fcompi", "fcomip", "fucomi", "fucompi", "fucomip", "fcomi"):
+             # These set EFLAGS directly (CF, ZF, PF) from FPU comparison
+             # fcompi/fucompi pop st(0) after comparing; fcomi/fucomi do not
+             pops = m.endswith("pi") or m.endswith("ip")
+             pop_code = " fp_pop();" if pops else ""
+-            return [f"_fpu_cmp = (fp_top() < fp_st1()) ? -1 : (fp_top() > fp_st1()) ? 1 : 0;"
++            return [f"g_fp_cmp = (fp_top() < fp_st1()) ? -1 : (fp_top() > fp_st1()) ? 1 : 0;"
+                     f"{pop_code} /* {m} */"]
+         if m == "fnstsw":
+-            return [f"/* fnstsw {insn.op_str} - store FPU status word */"]
++            # C3/C2/C0 occupy bits 14/10/8, which land in AH as 0x40/0x04/
++            # 0x01. The CRT tests AH to classify the preceding compare, so
++            # rebuild them from g_fp_cmp instead of dropping the store.
++            status = ("(uint16_t)((g_fp_cmp >= (int)0x10000u) ?"
++                      " (g_fp_cmp & 0xFFFFu) :"
++                      " g_fp_cmp < 0 ? 0x0100u :"
++                      " g_fp_cmp > 0 ? 0x0000u : 0x4000u)")
++            if ops and ops[0].type == "mem":
++                return [f"MEM16({_fmt_mem(ops[0])}) = {status};"
++                        f" /* fnstsw {insn.op_str} */"]
++            if ops and ops[0].type == "reg":
++                return [_fmt_set_reg(ops[0].reg, status)
++                        + f" /* fnstsw {insn.op_str} */"]
++            return [f"/* fnstsw {insn.op_str} - no destination operand */"]
+         if m == "fnstcw":
+-            return [f"/* fnstcw {insn.op_str} - store FPU control word */"]
++            # The CRT reads the control word back to decide whether an
++            # exception is masked, so it must be stored, not dropped.
++            if ops and ops[0].type == "mem":
++                return [f"MEM16({_fmt_mem(ops[0])}) = g_fp_control_word;"
++                        f" /* fnstcw {insn.op_str} */"]
++            if ops and ops[0].type == "reg":
++                return [_fmt_set_reg(ops[0].reg, "g_fp_control_word")
++                        + f" /* fnstcw {insn.op_str} */"]
++            return [f"/* fnstcw {insn.op_str} - no destination operand */"]
+         if m == "fldcw":
+-            return [f"/* fldcw {insn.op_str} - load FPU control word */"]
++            if ops and ops[0].type == "mem":
++                return [f"g_fp_control_word = MEM16({_fmt_mem(ops[0])});"
++                        f" /* fldcw {insn.op_str} */"]
++            if ops and ops[0].type == "reg":
++                return [f"g_fp_control_word = (uint16_t)"
++                        f"{_fmt_operand_read(ops[0])};"
++                        f" /* fldcw {insn.op_str} */"]
++            return [f"/* fldcw {insn.op_str} - no source operand */"]
+         if m == "fldz":
+             return [f"fp_push(0.0); /* fldz */"]
+         if m == "fld1":
+@@ -1627,7 +2435,7 @@
+         return [f"/* FPU: {m} {insn.op_str} */"]
+ 
+ 
+-def lift_basic_block(lifter, bb, flag_state=None):
++def lift_basic_block(lifter, bb, flag_state=None, threaded_jumps=None):
+     """
+     Lift a basic block to C statements.
+     Tracks flags to generate proper conditions for jcc/setcc/cmovcc.
+@@ -1637,6 +2445,8 @@
+         bb: BasicBlock with instructions
+         flag_state: tuple of (flag_setter_mnemonic, flag_operands) from
+                     a preceding block, or None
++        threaded_jumps: map from a direct local jmp address to the target
++                        block's first conditional jump, or None
+ 
+     Returns:
+         (stmts, flag_state) where stmts is a list of C statement strings
+@@ -1644,6 +2454,8 @@
+     """
+     stmts = []
+     insns = bb.instructions
++    flags_preserve = (_EFLAGS_PRESERVE if lifter.mmx_enabled else
++                      _EFLAGS_PRESERVE - {"cvtps2pi", "pavgb"})
+     i = 0
+ 
+     # Track the last instruction that set flags
+@@ -1652,6 +2464,46 @@
+     else:
+         last_flag_setter = None
+         last_flag_ops = []
++
++    # A deferred condition re-reads its operands at the consumer, so any
++    # register overwritten between the flag setter and the consumer would
++    # change the condition. Record those and substitute a value captured at
++    # the setter instead. Only SETcc and CMOVcc need this: try_match_cmp_jcc
++    # already pairs a cmp/test with an adjacent jcc.
++    clobbered = set()
++    snapshot_names = {}
++    flag_setter_in_block = False
++
++    def _resolve_flag_ops(ops):
++        """Swap clobbered flag operands for their pre-clobber snapshots."""
++        if not clobbered:
++            return ops
++        resolved = []
++        for op in ops:
++            regs = _flag_operand_regs([op])
++            stale = regs & clobbered
++            if stale and all(r in snapshot_names for r in stale):
++                text = _fmt_operand_read(op)
++                for reg in sorted(stale, key=len, reverse=True):
++                    text = re.sub(
++                        r"\b" + reg + r"\b", snapshot_names[reg], text)
++                resolved.append(_RawOperand(text, _operand_bits(op)))
++            else:
++                resolved.append(op)
++        return resolved
++
++    def _emit_flag_snapshot(ops, address):
++        """Capture the flag operands' registers before they are clobbered."""
++        lines_out = []
++        for reg in sorted(_flag_operand_regs(ops)):
++            # Address-qualified so two blocks in the same flattened C function
++            # cannot collide on one name.
++            name = "_flagsnap_%08X_%s" % (address, reg)
++            snapshot_names[reg] = name
++            lines_out.append(
++                "uint32_t %s = %s; /* preserve flag operand */"
++                % (name, reg))
++        return lines_out
+ 
+     while i < len(insns):
+         curr = insns[i]
+@@ -1666,6 +2518,7 @@
+             flag_insn = insns[i]
+             last_flag_setter = flag_insn.mnemonic
+             last_flag_ops = list(flag_insn.operands)
++            flag_setter_in_block = True
+             i += consumed
+             continue
+ 
+@@ -1679,7 +2532,8 @@
+         # Check if this instruction uses flags (jcc, setcc, cmovcc)
+         if curr.is_cond_jump and last_flag_setter:
+             result = _make_condition(
+-                curr.mnemonic, last_flag_setter, last_flag_ops)
++                curr.mnemonic, last_flag_setter,
++                _resolve_flag_ops(last_flag_ops))
+             if result:
+                 cond_expr, desc = result
+                 target = curr.jump_target
+@@ -1694,7 +2548,8 @@
+                               "sets", "setns")
+                 and last_flag_setter and len(curr.operands) >= 1):
+             cond = _make_setcc_value(
+-                curr.mnemonic, last_flag_setter, last_flag_ops)
++                curr.mnemonic, last_flag_setter,
++                _resolve_flag_ops(last_flag_ops))
+             if cond:
+                 stmts.append(
+                     _fmt_operand_write(curr.operands[0],
+@@ -1708,7 +2563,8 @@
+                               "cmovle", "cmovg", "cmovs", "cmovns")
+                 and last_flag_setter and len(curr.operands) >= 2):
+             cond = _make_cmovcc_cond(
+-                curr.mnemonic, last_flag_setter, last_flag_ops)
++                curr.mnemonic, last_flag_setter,
++                _resolve_flag_ops(last_flag_ops))
+             if cond:
+                 src = _fmt_operand_read(curr.operands[1])
+                 stmts.append(
+@@ -1718,34 +2574,90 @@
+                 i += 1
+                 continue
+ 
+-        # Lift the instruction normally
+-        results = lifter.lift_instruction(insns[i])
++        # A direct jump into a conditional block carries the producer's flags
++        # into that block. Thread the conditional here so a later fallthrough
++        # block cannot replace the source edge's flag state while blocks are
++        # emitted in address order.
++        threaded_jcc = (threaded_jumps or {}).get(curr.address)
++        if (curr.mnemonic == "jmp" and threaded_jcc is not None
++                and flag_setter_in_block and last_flag_setter):
++            result = _make_condition(
++                threaded_jcc.mnemonic, last_flag_setter,
++                _resolve_flag_ops(last_flag_ops))
++            if result and threaded_jcc.jump_target is not None:
++                cond_expr, desc = result
++                stmts.append(_emit_cond_goto(
++                    cond_expr, threaded_jcc.mnemonic, desc,
++                    threaded_jcc.jump_target, lifter))
++                if threaded_jcc.end_address < lifter.func_end:
++                    stmts.append(
++                        f"goto loc_{threaded_jcc.end_address:08X};"
++                        f" /* threaded {threaded_jcc.mnemonic} fallthrough */")
++                i += 1
++                continue
++
++        # ADC and SBB read CF as a value. Every carry producer that reaches
++        # one must therefore publish it. Only NEG used to do so, which
++        # silently dropped the carry for the far more common producers: the
++        # ADD/ADC and SUB/SBB pair of a 64-bit add or subtract, and the
++        # ADD 0x7FFFFFFF / ADC that implements the CRT's _ftol2 rounding.
++        # Look ahead over EFLAGS-preserving instructions for the consumer.
++        if (curr.mnemonic in _CARRY_PRODUCERS
++                and _carry_is_consumed(insns, i, flags_preserve)):
++            if curr.mnemonic == "neg":
++                results = lifter._lift_neg(
++                    curr, curr.operands, preserve_carry=True)
++            elif curr.mnemonic == "sbb":
++                results = lifter._lift_sbb(
++                    curr, curr.operands, preserve_carry=True)
++            elif curr.mnemonic == "adc":
++                results = lifter._lift_adc(
++                    curr, curr.operands, preserve_carry=True)
++            else:
++                results = lifter._lift_alu_binop(
++                    curr, curr.operands, curr.mnemonic, preserve_carry=True)
++        else:
++            results = lifter.lift_instruction(insns[i])
+         stmts.extend(results)
+ 
+         # Track flag-setting instructions
+         if curr.mnemonic in FLAG_SETTERS:
+             last_flag_setter = curr.mnemonic
+             last_flag_ops = list(curr.operands)
++            flag_setter_in_block = True
++            clobbered = set()
++            snapshot_names = {}
++            if _deferred_consumer_clobbers(insns, i, curr, flags_preserve):
++                stmts.extend(_emit_flag_snapshot(last_flag_ops, curr.address))
+         elif curr.mnemonic in _FLAGS_UNDEFINED:
+             # Flags are undefined after these - clear tracking
+             last_flag_setter = None
+             last_flag_ops = []
++            clobbered = set()
++            snapshot_names = {}
+         elif curr.mnemonic in _EFLAGS_SETTERS:
+             # Additional flag-setting instructions
+             last_flag_setter = curr.mnemonic
+             last_flag_ops = list(curr.operands)
+-        elif curr.mnemonic in _EFLAGS_PRESERVE:
+-            pass  # These don't affect EFLAGS
++            flag_setter_in_block = True
++            clobbered = set()
++            snapshot_names = {}
++        elif curr.mnemonic in flags_preserve:
++            # These preserve EFLAGS but can still overwrite a register the
++            # deferred condition will re-read.
++            clobbered |= _written_regs(curr)
+         elif curr.mnemonic in ("fcompi", "fcomip", "fucomi", "fucompi",
+                                 "fucomip", "fcomi"):
+             # FPU compare-to-EFLAGS: sets CF, ZF, PF directly
+             last_flag_setter = curr.mnemonic
+             last_flag_ops = list(curr.operands)
++            flag_setter_in_block = True
+         elif curr.mnemonic == "sahf":
+             # sahf loads AH into flags - typically after fnstsw ax
+             # in the fcomp/fnstsw/sahf pattern for FPU comparisons
+             last_flag_setter = "sahf"
+             last_flag_ops = list(curr.operands)
++            flag_setter_in_block = True
+         elif curr.mnemonic.startswith("f") or curr.mnemonic.startswith("cmov"):
+             pass  # FPU and already-handled CMOVcc
+         elif curr.mnemonic.startswith("j"):
+@@ -1757,12 +2669,14 @@
+             # repe cmpsb/repne scasb = comparison, sets flags
+             rest = curr.op_str.strip() if hasattr(curr, 'op_str') else ""
+             raw_m = curr.mnemonic
+-            if "cmps" in raw_m or "scas" in raw_m:
++            if "cmpsb" in raw_m or "scasb" in raw_m:
+                 last_flag_setter = raw_m
+                 last_flag_ops = list(curr.operands)
+-            elif "cmps" in rest or "scas" in rest:
++                flag_setter_in_block = True
++            elif "cmpsb" in rest or "scasb" in rest:
+                 last_flag_setter = raw_m
+                 last_flag_ops = list(curr.operands)
++                flag_setter_in_block = True
+             else:
+                 pass  # rep movs/stos = data movement, flags preserved
+         else:
+--- a/tools/recomp/translator.py
++++ b/tools/recomp/translator.py
+@@ -11,8 +11,11 @@
+ Produces compilable C code using recomp_types.h macros.
+ """
+ 
++import bisect
+ import json
+ import os
++import struct
++import sys
+ 
+ # Import the functions, not the VA constants: configure_from_xbe() rebinds those
+ # at startup, so a by-value import would freeze the fallback layout.
+@@ -96,7 +99,8 @@
+     """Translates individual x86 functions to C source code."""
+ 
+     def __init__(self, xbe_data, func_db, label_db=None, classification_db=None,
+-                 abi_db=None, seh_prolog=None, seh_epilog=None):
++                 abi_db=None, manual_call_targets=None,
++                 seh_prolog=None, seh_epilog=None):
+         """
+         xbe_data: bytes - raw XBE file contents
+         func_db: dict - addr → function info from functions.json
+@@ -111,9 +115,701 @@
+         self.classification_db = classification_db or {}
+         self.abi_db = abi_db or {}
+         self.disasm = Disassembler()
+-        self.lifter = Lifter(func_db=func_db, label_db=label_db, abi_db=abi_db,
+-                             xbe_data=xbe_data, seh_prolog=seh_prolog,
+-                             seh_epilog=seh_epilog)
++        self.lifter = Lifter(
++            func_db=func_db,
++            label_db=label_db,
++            abi_db=abi_db,
++            xbe_data=xbe_data,
++            manual_call_targets=manual_call_targets,
++            seh_prolog=seh_prolog,
++            seh_epilog=seh_epilog)
++        self.owned_function_starts = set()
++        self.recovered_function_starts = set()
++        self.extended_function_starts = set()
++        self.coalesced_function_starts = set()
++        self._recovered_cfg = {}
++        self._ownership_ready = False
++        self.translated_function_starts = set()
++
++    def discover_static_indirect_targets(self):
++        """Recover function entries from bounded static callback tables."""
++        original_starts = sorted(self.func_db)
++        recovered_callers = {}
++
++        for caller, func_info in list(self.func_db.items()):
++            end = func_info.get("end", caller)
++            raw_bytes = self._read_func_bytes(caller, end)
++            if not raw_bytes:
++                continue
++            instructions = self.disasm.disassemble_function(
++                raw_bytes, caller, end)
++            for lower, upper in self._find_static_indirect_ranges(instructions):
++                targets = self._read_static_callback_table(
++                    lower, upper, original_starts)
++                if targets is None:
++                    continue
++                for target in targets:
++                    if target not in self.func_db:
++                        recovered_callers.setdefault(target, set()).add(caller)
++
++        for target, callers in sorted(recovered_callers.items()):
++            next_index = bisect.bisect_right(original_starts, target)
++            if next_index == 0 or next_index >= len(original_starts):
++                continue
++            previous = self.func_db[original_starts[next_index - 1]]
++            next_start = original_starts[next_index]
++            next_func = self.func_db[next_start]
++            if previous.get("end", previous["_addr"]) > target:
++                continue
++            section = next_func.get("section", "")
++            if section in (".rdata", ".data"):
++                continue
++
++            raw_bytes = self._read_func_bytes(target, next_start)
++            if not raw_bytes:
++                continue
++            instructions = self.disasm.disassemble_function(
++                raw_bytes, target, next_start)
++            if not instructions or not any(insn.is_ret for insn in instructions):
++                continue
++
++            self.func_db[target] = {
++                "_addr": target,
++                "start": f"0x{target:08X}",
++                "end": next_start,
++                "size": next_start - target,
++                "name": self.label_db.get(target, f"sub_{target:08X}"),
++                "section": section,
++                "confidence": 0.9,
++                "detection_method": "static_indirect_table",
++                "num_instructions": len(instructions),
++                "has_prologue": self._func_has_prologue(instructions),
++                "calls_to": [],
++                "called_by": sorted(callers),
++            }
++            self.recovered_function_starts.add(target)
++
++        return self.recovered_function_starts
++
++    def adopt_external_functions(self, entries):
++        """Recover function entries supplied with externally analyzed bounds.
++
++        Applies the same containment and section validation as the static
++        callback recovery. The caller supplies the exact end, so adjacent
++        recovered entries cannot overlap each other the way an inferred
++        next-start boundary would, and the body need not contain a ret:
++        tail calls and computed-jump tails are accepted because the external
++        analysis already established where the function ends.
++        """
++        for entry in sorted(entries, key=lambda e: e["start"]):
++            target = entry["start"]
++            end = entry["end"]
++            coalesce_starts = entry.get("coalesce_starts")
++            if coalesce_starts is not None:
++                self._coalesce_detected_function(
++                    target, end, coalesce_starts,
++                    entry.get("coalesce_bridges", []))
++                continue
++            if end <= target:
++                continue
++            if target in self.func_db:
++                self._extend_detected_function(target, end)
++                continue
++
++            original_starts = sorted(self.func_db)
++            index = bisect.bisect_right(original_starts, target)
++            if index == 0 or index >= len(original_starts):
++                continue
++            previous = self.func_db[original_starts[index - 1]]
++            if previous.get("end", previous["_addr"]) > target:
++                continue
++            if end > original_starts[index]:
++                continue
++            section = self.func_db[original_starts[index]].get("section", "")
++            if section in (".rdata", ".data"):
++                continue
++
++            raw_bytes = self._read_func_bytes(target, end)
++            if not raw_bytes:
++                continue
++            instructions = self.disasm.disassemble_function(
++                raw_bytes, target, end)
++            if not instructions:
++                continue
++
++            self.func_db[target] = {
++                "_addr": target,
++                "start": f"0x{target:08X}",
++                "end": end,
++                "size": end - target,
++                "name": self.label_db.get(target, f"sub_{target:08X}"),
++                "section": section,
++                "confidence": 0.9,
++                "detection_method": "external_boundary",
++                "num_instructions": len(instructions),
++                "has_prologue": self._func_has_prologue(instructions),
++                "calls_to": [],
++                "called_by": [],
++            }
++            self.recovered_function_starts.add(target)
++
++        return self.recovered_function_starts
++
++    def _coalesce_detected_function(
++            self, target, end, expected_starts, bridge_starts):
++        """Merge an explicitly named set of false interior function starts.
++
++        Some detector seed sets split one real loop at each branch target.
++        Generated cross-fragment back-edges then recurse on the host stack.
++        Coalescence is deliberately explicit and fail-closed: the recovery
++        entry must name every current interior start, none may have independent
++        entry evidence, every fragment must end within the requested extent,
++        and the decoded CFG must tile that extent. Unlike a skipped disjoint
++        recovery, any mismatch rejects the whole recovery batch.
++        """
++        def reject(reason):
++            raise ValueError(
++                f"Invalid recovery coalescence "
++                f"0x{target:08X}->0x{end:08X}: {reason}")
++
++        if target not in self.func_db:
++            reject("start is not a detected function")
++        if end <= target:
++            reject("end does not follow start")
++
++        expected = list(expected_starts)
++        if (not expected or expected != sorted(set(expected))
++                or any(start <= target or start >= end
++                       for start in expected)):
++            reject("coalesce_starts must be sorted unique interior starts")
++        bridges = list(bridge_starts)
++        if (bridges != sorted(set(bridges))
++                or any(start <= target or start >= end
++                       for start in bridges)):
++            reject("coalesce_bridges must be sorted unique interior starts")
++        if any(start in self.func_db for start in bridges):
++            reject("coalesce bridge is already a detected function start")
++
++        actual = sorted(
++            start for start in self.func_db if target < start < end)
++        if actual != expected:
++            formatted = ", ".join(f"0x{start:08X}" for start in actual)
++            reject(f"current interior starts are [{formatted}]")
++        # Seed-derived fragments are not independent evidence. The legacy
++        # authenticated bounds file and the standalone detector both record
++        # strong-entry fields on addresses that are mid-function branch
++        # targets: 0x000985BD is reached only by a conditional jump from
++        # inside 0x00098570, yet the adopted input marks it external_entry.
++        # The seed set is exactly what coalescence is allowed to correct,
++        # so coalesce ignores those fields for such fragments.
++        strong = [
++            start for start in actual
++            if self._is_strong_entry(self.func_db[start])
++            and not self.func_db[start].get("seed_derived")
++        ]
++        if strong:
++            reject(
++                f"interior start 0x{strong[0]:08X} has independent evidence")
++        overruns = [
++            start for start in actual
++            if self.func_db[start].get("end", start) > end
++        ]
++        if overruns:
++            reject(f"interior function 0x{overruns[0]:08X} crosses end")
++
++        # A bridge exists only to re-enter the decode after an alignment gap
++        # that no direct edge reaches. Prove each one really is that gap:
++        # a single wide no-op padding exactly up to a named false start.
++        # Unchecked, a bridge could name any interior address and make an
++        # otherwise unprovable extent appear to tile.
++        for bridge in bridges:
++            raw_gap = self._read_func_bytes(bridge, end)
++            decoded = (
++                self.disasm.disassemble_function(raw_gap, bridge, end)
++                if raw_gap else None)
++            if not decoded or not self._is_multi_byte_nop(decoded[0]):
++                reject(f"bridge 0x{bridge:08X} is not a multi-byte no-op")
++            if decoded[0].end_address not in expected:
++                reject(
++                    f"bridge 0x{bridge:08X} pads to "
++                    f"0x{decoded[0].end_address:08X}, not a coalesced start")
++
++        # Decode through the gap before the next detected function. A local
++        # jump table may begin exactly at ``end``; its entries are analysis
++        # input, not bytes owned by the coalesced function. The exact tiling
++        # checks below still fail closed if decoded code reaches past ``end``.
++        current_starts = sorted(self.func_db)
++        next_index = bisect.bisect_left(current_starts, end)
++        analysis_end = (
++            current_starts[next_index]
++            if next_index < len(current_starts) else end)
++        recovered = self._recover_cfg(
++            target, analysis_end, set(bridges), set())
++        if recovered is None:
++            reject("could not decode CFG")
++        instructions, jump_tables, _ = recovered
++        # MSVC aligns an interior branch target with a single wide no-op that
++        # no direct edge reaches, so the decode tiles up to the padding and
++        # resumes after it. Close such a gap automatically rather than making
++        # every caller name a bridge: the gap start is the tiler's own
++        # coverage stop, so unlike a caller-supplied bridge it cannot be a
++        # misaligned offset inside a real instruction, and the padding must be
++        # one no-op ending exactly where the decode resumes. The strict tiling
++        # checks below still fail closed on anything this does not cover.
++        padding = self._alignment_padding_gaps(target, end, instructions)
++        if padding:
++            recovered = self._recover_cfg(
++                target, analysis_end, set(bridges) | padding, set())
++            if recovered is None:
++                reject("could not decode CFG")
++            instructions, jump_tables, _ = recovered
++        if not instructions or instructions[0].address != target:
++            reject("CFG does not start at the requested start")
++        covered_end = target
++        for instruction in instructions:
++            if instruction.address != covered_end:
++                reject(f"CFG gap at 0x{covered_end:08X}")
++            if instruction.end_address > end:
++                reject(
++                    f"CFG reaches 0x{instruction.end_address:08X}, "
++                    "past the requested end")
++            covered_end = instruction.end_address
++        if covered_end != end:
++            reject(
++                f"CFG covers through 0x{covered_end:08X}, not the requested "
++                "end")
++
++        existing = self.func_db[target]
++        original_end = existing.get("end", target)
++        for start in actual:
++            del self.func_db[start]
++            self._recovered_cfg.pop(start, None)
++            self.owned_function_starts.discard(start)
++            self.recovered_function_starts.discard(start)
++            self.extended_function_starts.discard(start)
++        existing["end"] = end
++        existing["size"] = end - target
++        existing["num_instructions"] = len(instructions)
++        existing["detection_method"] = "external_coalescence"
++        existing["calls_to"] = sorted({
++            f"0x{instruction.call_target:08X}"
++            for instruction in instructions
++            if instruction.is_call and instruction.call_target is not None
++        })
++        self._recovered_cfg[target] = {
++            "end": end,
++            "instructions": instructions,
++            "jump_tables": jump_tables,
++        }
++        self.coalesced_function_starts.add(target)
++        print(
++            f"Coalesced detected function 0x{target:08X} from "
++            f"0x{original_end:08X} to 0x{end:08X}, removing "
++            f"{len(actual)} false interior starts "
++            f"({len(instructions)} instructions)",
++            file=sys.stderr)
++
++    def _extend_detected_function(self, target, end):
++        """Extend one detected function whose end truncated its real body.
++
++        A computed-jump dispatch can be detected with an end at the first
++        table target, leaving the rest of the body unowned and its interior
++        labels unreachable. An explicit recovery entry that repeats the
++        detected start may push that end outward, but only when the extent
++        is proven: the request must stay inside the gap before the next
++        function, and the decoded CFG must tile the requested extent exactly.
++        An explicit extension names an exact extent, so anything unproven is
++        a bad input rather than a weak inference: it fails the batch closed.
++        Repeating the already detected bounds stays a benign no-op.
++        """
++        existing = self.func_db[target]
++        original_end = existing.get("end", target)
++
++        def reject(reason):
++            raise ValueError(
++                f"Invalid recovery extension 0x{target:08X}->0x{end:08X}: "
++                f"{reason}")
++
++        if end == original_end:
++            return
++        if end < original_end:
++            reject(
++                f"shrinks detected end 0x{original_end:08X}")
++
++        # Compare against current state so an entry adopted earlier in this
++        # same pass still counts as an owner.
++        current_starts = sorted(self.func_db)
++        index = bisect.bisect_right(current_starts, target)
++        if index >= len(current_starts):
++            reject("no following function to bound the extension")
++        next_start = current_starts[index]
++        if end > next_start:
++            reject(
++                f"crosses next function start 0x{next_start:08X}")
++
++        # No other function may already own the newly claimed bytes. An
++        # interior start is caught by the bound above; this catches an
++        # earlier function whose extent reaches into the extension.
++        overlapping = sorted(
++            other for other, info in self.func_db.items()
++            if other != target and other < end
++            and info.get("end", other) > original_end)
++        if overlapping:
++            reject(
++                f"overlaps detected function 0x{overlapping[0]:08X}")
++
++        # Decode across the whole gap before the next function: a dispatch's
++        # jump tables commonly sit just past the last instruction, and they
++        # must be readable to resolve the interior targets. Ownership is
++        # still limited to the requested extent, proven below.
++        recovered = self._recover_cfg(target, next_start, set(), set())
++        if recovered is None:
++            reject("could not decode CFG")
++        instructions, jump_tables, _ = recovered
++        if not instructions:
++            reject("no decoded instructions")
++
++        padding = self._alignment_padding_gaps(target, end, instructions)
++        if padding:
++            recovered = self._recover_cfg(target, next_start, padding, set())
++            if recovered is None:
++                reject("could not decode CFG")
++            instructions, jump_tables, _ = recovered
++
++        # The decoded CFG must tile the requested extent exactly: no gap, no
++        # instruction past the end. That is what proves the requested bytes
++        # are this function's body rather than adjacent data or padding.
++        if instructions[0].address != target:
++            reject("CFG does not start at the requested start")
++        beyond = [insn for insn in instructions if insn.end_address > end]
++        if beyond:
++            reject(
++                f"CFG reaches 0x{max(i.end_address for i in beyond):08X}, "
++                f"past the requested end")
++        covered_end = target
++        for insn in instructions:
++            if insn.address != covered_end:
++                reject(
++                    f"CFG gap at 0x{covered_end:08X}")
++            covered_end = insn.end_address
++        if covered_end != end:
++            reject(
++                f"CFG covers through 0x{covered_end:08X}, not the requested "
++                f"end")
++
++        existing["end"] = end
++        existing["size"] = end - target
++        existing["num_instructions"] = len(instructions)
++        existing["detection_method"] = "external_extension"
++        self._recovered_cfg[target] = {
++            "end": end,
++            "instructions": instructions,
++            "jump_tables": jump_tables,
++        }
++        self.extended_function_starts.add(target)
++        print(f"Extended detected function 0x{target:08X} from "
++              f"0x{original_end:08X} to 0x{end:08X} "
++              f"({len(instructions)} instructions)", file=sys.stderr)
++
++    @staticmethod
++    def _find_static_indirect_ranges(instructions, max_bytes=0x10000):
++        """Find immediate-backed ranges in functions that call a register."""
++        constants = {}
++        ranges = set()
++        has_indirect_call = False
++
++        for insn in instructions:
++            operands = insn.operands
++            if (insn.mnemonic == "mov" and len(operands) >= 2
++                    and operands[0].type == "reg"):
++                destination = operands[0].reg
++                source = operands[1]
++                if source.type == "imm":
++                    constants[destination] = source.imm
++                elif source.type == "reg" and source.reg in constants:
++                    constants[destination] = constants[source.reg]
++                else:
++                    constants.pop(destination, None)
++            elif (insn.mnemonic == "cmp" and len(operands) >= 2
++                    and operands[0].type == "reg"
++                    and operands[1].type == "reg"):
++                lower = constants.get(operands[0].reg)
++                upper = constants.get(operands[1].reg)
++                if (lower is not None and upper is not None
++                        and lower < upper and lower % 4 == 0
++                        and upper % 4 == 0 and upper - lower <= max_bytes):
++                    ranges.add((lower, upper))
++            elif (insn.is_call and insn.call_target is None
++                    and operands and operands[0].type == "reg"):
++                has_indirect_call = True
++
++        return sorted(ranges) if has_indirect_call else []
++
++    def _read_static_callback_table(self, lower, upper, original_starts):
++        """Validate and return a bounded table of static code pointers."""
++        targets = []
++        for entry_va in range(lower, upper, 4):
++            offset = va_to_file_offset(entry_va)
++            if offset is None or offset + 4 > len(self.xbe_data):
++                return None
++            target = struct.unpack_from('<I', self.xbe_data, offset)[0]
++            if target in (0, 0xFFFFFFFF):
++                continue
++
++            index = bisect.bisect_right(original_starts, target)
++            if index and self.func_db[original_starts[index - 1]].get(
++                    "end", original_starts[index - 1]) > target:
++                targets.append(target)
++                continue
++            if index == 0 or index >= len(original_starts):
++                return None
++            previous = self.func_db[original_starts[index - 1]]
++            following = self.func_db[original_starts[index]]
++            if (previous.get("section") != following.get("section")
++                    or following.get("section") in (".rdata", ".data")
++                    or va_to_file_offset(target) is None):
++                return None
++            targets.append(target)
++
++        return targets if targets else None
++
++    @staticmethod
++    def _is_strong_entry(func_info):
++        """Return whether an entry has evidence independent of seed recovery."""
++        return bool(
++            func_info.get("external_entry")
++            or func_info.get("has_prologue")
++            or func_info.get("called_by"))
++
++    @staticmethod
++    def _is_multi_byte_nop(instruction):
++        """Return whether one instruction is wide alignment padding.
++
++        An assembler aligns the next branch target with a single wide
++        instruction that has no effect: either an explicit multi-byte ``nop``
++        or the classic ``lea reg, [reg]`` form, which reloads a register with
++        its own address. Both appear in this XBE.
++        """
++        if instruction.size < 2:
++            return False
++        if instruction.mnemonic == "nop":
++            return True
++        if instruction.mnemonic != "lea" or len(instruction.operands) != 2:
++            return False
++        destination, source = instruction.operands
++        return (destination.type == "reg" and source.type == "mem"
++                and source.mem_base == destination.reg
++                and not source.mem_index and source.mem_disp == 0)
++
++    def _alignment_padding_gaps(self, target, end, instructions):
++        """Return gap starts that hold a wide alignment no-op sequence.
++
++        A decode gap is only treated as padding when the bytes at the coverage
++        stop must start with a multi-byte no-op, contain only no-ops, and end
++        precisely where the decode picks up again. Real unreached code fails
++        that test, so this cannot invent a body: it only re-seeds the walk
++        across padding the assembler inserted to align the following branch
++        target.
++        """
++        covered = {}
++        for instruction in instructions:
++            covered[instruction.address] = instruction.end_address
++        addresses = sorted(covered)
++        resume = set(addresses)
++        gaps = set()
++        cursor = target
++        for address in addresses:
++            if address > cursor:
++                if cursor >= end:
++                    break
++                raw_gap = self._read_func_bytes(cursor, end)
++                decoded = (
++                    self.disasm.disassemble_function(raw_gap, cursor, end)
++                    if raw_gap else None)
++                if decoded and self._is_multi_byte_nop(decoded[0]):
++                    padding_end = cursor
++                    for instruction in decoded:
++                        if (instruction.address != padding_end
++                                or instruction.end_address > address
++                                or (instruction.mnemonic != "nop"
++                                    and not self._is_multi_byte_nop(
++                                        instruction))):
++                            break
++                        padding_end = instruction.end_address
++                        if padding_end == address:
++                            if address in resume:
++                                gaps.add(cursor)
++                            break
++            cursor = max(cursor, covered[address])
++        return gaps
++
++    def recover_external_cfgs(self):
++        """Recover CFGs whose authenticated input records an exact count."""
++        for start, info in sorted(self.func_db.items()):
++            expected = info.get("external_cfg_instruction_count")
++            if expected is None:
++                continue
++            end = info.get("end", start)
++            recovered = self._recover_cfg(start, end, set(), set())
++            actual = 0 if recovered is None else len(recovered[0])
++            if recovered is None or actual != expected:
++                raise ValueError(
++                    f"External CFG 0x{start:08X}->0x{end:08X} has "
++                    f"{actual} instructions, expected {expected}")
++            if actual == 0:
++                # An entry that authenticates an empty body would install a
++                # CFG that owns bytes it never decoded, so refuse the record
++                # rather than let a zero count agree with itself.
++                raise ValueError(
++                    f"External CFG 0x{start:08X}->0x{end:08X} decoded no "
++                    "instructions")
++            instructions, jump_tables, _ = recovered
++            self._recovered_cfg[start] = {
++                "end": end,
++                "instructions": instructions,
++                "jump_tables": jump_tables,
++            }
++
++    def discover_cfg_ownership(self):
++        """Reassign weak seeds reached through a split computed-jump CFG."""
++        if self._ownership_ready:
++            return
++        self._ownership_ready = True
++
++        by_section = {}
++        weak_by_section = {}
++        for addr, info in self.func_db.items():
++            section = info.get("section", "")
++            if self._is_strong_entry(info):
++                by_section.setdefault(section, []).append(addr)
++            else:
++                weak_by_section.setdefault(section, []).append(addr)
++
++        for section, strong_starts in by_section.items():
++            strong_starts.sort()
++            weak_starts = sorted(weak_by_section.get(section, []))
++            for index, start in enumerate(strong_starts[:-1]):
++                original_end = self.func_db[start].get("end", start)
++                upper = strong_starts[index + 1]
++                if original_end >= upper:
++                    continue
++
++                weak_index = bisect.bisect_left(weak_starts, original_end)
++                if (weak_index >= len(weak_starts)
++                        or weak_starts[weak_index] >= upper):
++                    continue
++
++                raw_prefix = self._read_func_bytes(start, original_end)
++                if not raw_prefix:
++                    continue
++                prefix = self.disasm.disassemble_function(
++                    raw_prefix, start, original_end)
++                bridges = {
++                    insn.jump_target
++                    for insn in prefix
++                    if (insn.is_cond_jump and insn.jump_target is not None
++                        and original_end <= insn.jump_target < upper)
++                }
++                has_indexed_jump = any(
++                    insn.is_jump and insn.jump_target is None
++                    and insn.operands and insn.operands[0].type == "mem"
++                    and insn.operands[0].mem_index
++                    for insn in prefix)
++                if not bridges or not has_indexed_jump:
++                    continue
++
++                stop_addresses = {
++                    addr for addr in self.func_db if start < addr < upper
++                }
++                recovered = self._recover_cfg(
++                    start, upper, bridges, stop_addresses)
++                if recovered is None:
++                    continue
++                instructions, jump_tables, cfg_targets = recovered
++                owned = {
++                    addr for addr in weak_starts[weak_index:]
++                    if addr < upper and addr in cfg_targets
++                }
++                if not owned:
++                    continue
++
++                self.owned_function_starts.update(owned)
++                self._recovered_cfg[start] = {
++                    "end": max(insn.end_address for insn in instructions),
++                    "instructions": instructions,
++                    "jump_tables": jump_tables,
++                }
++
++    def _recover_cfg(self, start, upper, bridge_targets, stop_addresses):
++        """Decode direct CFG edges and local indexed-table destinations."""
++        raw_bytes = self._read_func_bytes(start, upper)
++        if not raw_bytes:
++            return None
++
++        entry_points = {start, *bridge_targets}
++        jump_tables = {}
++        while True:
++            instructions = self.disasm.disassemble_cfg(
++                raw_bytes, start, upper, entry_points,
++                stop_addresses=stop_addresses)
++            changed = False
++            for insn in instructions:
++                if not insn.is_jump or insn.jump_target is not None:
++                    continue
++                if not insn.operands or insn.operands[0].type != "mem":
++                    continue
++                operand = insn.operands[0]
++                if not operand.mem_index or operand.mem_base:
++                    continue
++                table_va = operand.mem_disp
++                if not (start <= table_va < upper):
++                    continue
++                targets = self._read_local_jump_table(table_va, start, upper)
++                if not targets:
++                    continue
++                jump_tables[table_va] = targets
++                for target in targets:
++                    if target not in entry_points:
++                        entry_points.add(target)
++                        changed = True
++            if not changed:
++                cfg_targets = {
++                    insn.jump_target
++                    for insn in instructions
++                    if insn.jump_target is not None
++                    and start <= insn.jump_target < upper
++                }
++                for targets in jump_tables.values():
++                    cfg_targets.update(targets)
++                return instructions, jump_tables, cfg_targets
++
++    def _read_local_jump_table(self, table_va, lower, upper,
++                               max_entries=256):
++        """Read the contiguous pointer cluster around an indexed-jump base."""
++        def scan(step, first):
++            targets = []
++            for index in range(first, max_entries + first):
++                entry_va = table_va + step * index * 4
++                offset = va_to_file_offset(entry_va)
++                if offset is None or offset + 4 > len(self.xbe_data):
++                    break
++                target = struct.unpack_from('<I', self.xbe_data, offset)[0]
++                if not (lower <= target < upper):
++                    break
++                targets.append(target)
++            return targets
++
++        backward = scan(-1, 1)
++        forward = scan(1, 0)
++        if not forward:
++            # Some MSVC tables use the alignment remainder directly as the
++            # index. Slot zero is unreachable on this path and overlaps the
++            # preceding instruction, while slots one onward are real targets.
++            forward = scan(1, 1)
++        if len(backward) + len(forward) < 2:
++            return []
++        backward.reverse()
++        return backward + forward
+ 
+     def _read_func_bytes(self, start_va, end_va):
+         """Read raw bytes for a function from the XBE."""
+@@ -148,7 +844,8 @@
+         Returns a string of C source code, or None on failure.
+         """
+         start = func_addr
+-        end = func_info.get("end")
++        recovered = self._recovered_cfg.get(start)
++        end = recovered["end"] if recovered else func_info.get("end")
+         if not end:
+             end = start + func_info.get("size", 0)
+         if end <= start:
+@@ -165,11 +862,43 @@
+         # Set function bounds for the lifter
+         self.lifter.func_start = start
+         self.lifter.func_end = end
++        self.lifter.jump_table_targets = (
++            recovered["jump_tables"] if recovered else {})
+ 
+         # Disassemble
+-        instructions = self.disasm.disassemble_function(raw_bytes, start, end)
++        instructions = (recovered["instructions"] if recovered else
++                        self.disasm.disassemble_function(raw_bytes, start, end))
+         if not instructions:
+             return None
++
++        if not recovered:
++            addresses = {insn.address for insn in instructions}
++            linear_jump_tables = {}
++            for insn in instructions:
++                if (insn.mnemonic != "jmp" or insn.jump_target
++                        or not insn.operands
++                        or insn.operands[0].type != "mem"):
++                    continue
++                operand = insn.operands[0]
++                if not operand.mem_index or operand.mem_base:
++                    continue
++                targets = self._read_local_jump_table(
++                    operand.mem_disp, start, end)
++                if targets:
++                    linear_jump_tables[operand.mem_disp] = targets
++            missing_switch_target = any(
++                target not in addresses
++                for targets in linear_jump_tables.values()
++                for target in targets)
++            if missing_switch_target:
++                recovered = self._recover_cfg(start, end, set(), set())
++                if recovered:
++                    instructions, jump_tables, _ = recovered
++                    self.lifter.jump_table_targets = jump_tables
++            else:
++                self.lifter.jump_table_targets = linear_jump_tables
++        self.translated_function_starts.add(start)
++        self.lifter.configure_mmx(instructions)
+ 
+         # Collect switch table targets as extra block leaders
+         switch_leaders = set()
+@@ -216,23 +945,47 @@
+         if any(insn.mnemonic == "leave" for insn in instructions):
+             used_regs.add("ebp")
+ 
++        # Guest control leaves the bottom of this function when its last
++        # instruction neither returns, jumps, nor traps. A function the lifter
++        # split into consecutive pieces continues into the next piece exactly
++        # as an unconditional tail jump would, so bridge to it the same way.
++        # Only an address that is itself a translated function start is a
++        # usable target; anything else is an analysis boundary gap with no
++        # callable symbol.
++        last_insn = instructions[-1]
++        continues_past_end = not (
++            last_insn.is_terminator
++            or last_insn.mnemonic in ("int3", "ud2", "hlt"))
++        fallthrough_target = None
++        if (continues_past_end and end in self.func_db
++                and end not in self.owned_function_starts):
++            fallthrough_target = end
++
+         # Ensure ebp tracked if function has tail jumps (lifter emits
+-        # g_seh_ebp = ebp before external jmp and indirect jmp).
++        # g_seh_ebp = ebp before external jmp, external jcc, and indirect jmp,
++        # and translate_function emits it before a fallthrough tail call).
+         has_tail_jump = any(
+-            insn.mnemonic == "jmp" and (
++            (insn.mnemonic == "jmp" and (
+                 (insn.jump_target and not (start <= insn.jump_target < end))
+                 or not insn.jump_target  # indirect jmp
+-            )
++            ))
++            or (insn.is_cond_jump and insn.jump_target
++                and not (start <= insn.jump_target < end))
+             for insn in instructions
+         )
+-        if has_tail_jump:
++        if has_tail_jump or fallthrough_target is not None:
+             used_regs.add("ebp")
+ 
+         # Ensure ebp tracked if function calls __SEH_prolog or __SEH_epilog
+         # (lifter emits ebp = g_seh_ebp readback after these calls).
+-        SEH_FUNCS = {0x00244784, 0x002447BF}
++        SEH_FUNCS = {0x001BB5DC, 0x001BB617}
+         if any(insn.call_target in SEH_FUNCS for insn in instructions):
+             used_regs.add("ebp")
++
++        # A translated callee that inherits or saves EBP reads g_seh_ebp at
++        # its C entry boundary. Publish this function's live local EBP before
++        # each call so that boundary observes the hardware caller context.
++        self.lifter.current_function_has_ebp = "ebp" in used_regs
+ 
+         # Build call targets list
+         call_targets = set()
+@@ -293,34 +1046,30 @@
+         if has_carry:
+             lines.append(f"    int _cf = 0; /* carry flag */")
+ 
+-        # Add _fpu_cmp for FPU compare instructions (both old and new style)
+-        has_fpu_cmp = any(insn.mnemonic in ("fcompi", "fcomip", "fucomi",
+-                                             "fucompi", "fucomip", "fcomi",
+-                                             "fcom", "fcomp", "fcompp",
+-                                             "fucom", "fucomp", "fucompp")
+-                          for insn in instructions)
+-        if has_fpu_cmp:
+-            lines.append(f"    int _fpu_cmp = 0; /* FPU compare result: -1/0/1 */")
+-
+         # SSE/MMX register declarations
+         if used_xmm:
+             xmm_regs = sorted([r for r in used_xmm if r.startswith("xmm")])
+             mmx_regs = sorted([r for r in used_xmm if r.startswith("mm")
+                                and not r.startswith("xmm")])
+-            if xmm_regs:
+-                lines.append(f"    float {', '.join(xmm_regs)};")
++            # XMM is architectural state and is declared globally by the
++            # runtime, exactly like the GPRs and the x87 stack. Declaring it
++            # here would shadow that global with a fresh zeroed local, so a
++            # value produced in one block and read in the next - a return
++            # value in xmm0, or a spill straddling a branch - would be lost.
+             if mmx_regs:
+                 lines.append(f"    uint64_t {', '.join(mmx_regs)};")
+ 
+-        # FPU stack (simplified)
++        # The x87 stack is architectural state and survives guest calls. Some
++        # detector boundaries also split one original CRT helper into several
++        # generated C functions, so function-local storage loses live ST values.
+         if has_fpu:
+-            lines.append(f"    double _fp_stack[8];")
+-            lines.append(f"    int _fp_top = 0;")
+-            lines.append(f"    #define fp_push(v) (_fp_stack[--_fp_top & 7] = (v))")
+-            lines.append(f"    #define fp_pop() (_fp_top++)")
+-            lines.append(f"    #define fp_popp() (fp_pop())")
+-            lines.append(f"    #define fp_top() _fp_stack[_fp_top & 7]")
+-            lines.append(f"    #define fp_st1() _fp_stack[(_fp_top + 1) & 7]")
++            lines.append(f"    #define fp_push(v) do {{ double _fp_value = (v); \\")
++            lines.append(f"        g_fp_top = (g_fp_top + 7u) & 7u; \\")
++            lines.append(f"        g_fp_stack[g_fp_top] = _fp_value; }} while (0)")
++            lines.append(f"    #define fp_pop() (g_fp_top = (g_fp_top + 1u) & 7u)")
++            lines.append(f"    #define fp_top() g_fp_stack[g_fp_top]")
++            lines.append(f"    #define fp_st(i) g_fp_stack[(g_fp_top + (i)) & 7u]")
++            lines.append(f"    #define fp_st1() fp_st(1)")
+ 
+         # For fpo_leaf functions that use ebp: initialize from g_seh_ebp.
+         # In x86, these functions inherit EBP from their caller (typically
+@@ -351,6 +1100,32 @@
+                     label_addrs.add(t)
+ 
+         flag_state = None
++        # A direct local jump can enter a conditional block whose flags come
++        # from that jump's source. Address-order emission would otherwise
++        # thread the later fallthrough block's flag state into the join.
++        threaded_jumps = {}
++        blocks_by_start = {bb.start: bb for bb in blocks}
++        predecessors = {bb.start: 0 for bb in blocks}
++        for bb in blocks:
++            for successor in bb.successors:
++                if successor in predecessors:
++                    predecessors[successor] += 1
++        for bb in blocks:
++            last = bb.last_insn
++            if not last or last.mnemonic != "jmp":
++                continue
++            target = last.jump_target
++            if target is None or not (start <= target < end):
++                continue
++            if predecessors.get(target, 0) < 2:
++                continue
++            target_bb = blocks_by_start.get(target)
++            if (target_bb and target_bb.instructions
++                    and target_bb.instructions[0].is_cond_jump
++                    and target_bb.instructions[0].end_address < end
++                    and target_bb.instructions[0].end_address in blocks_by_start):
++                threaded_jumps[last.address] = target_bb.instructions[0]
++
+         for bb in blocks:
+             # Emit label if this block is a branch target
+             if bb.start in label_addrs or bb.start == start:
+@@ -365,10 +1140,18 @@
+             # This handles patterns like: test eax,eax / ja X / jb Y
+             # where jb uses the same flags as ja from the preceding block.
+             stmts, flag_state = lift_basic_block(
+-                self.lifter, bb, flag_state=flag_state)
++                self.lifter, bb, flag_state=flag_state,
++                threaded_jumps=threaded_jumps)
+             for stmt in stmts:
+                 lines.append(f"    {stmt}")
+ 
++            lines.append(f"")
++
++        # Continue into the next function when control runs off the bottom.
++        if fallthrough_target is not None:
++            ft_name = self.lifter._call_target_name(fallthrough_target)
++            lines.append(f"    g_seh_ebp = ebp; {ft_name}(); return;"
++                         f" /* fallthrough 0x{fallthrough_target:08X} */")
+             lines.append(f"")
+ 
+         # Insert _icall_esp save points before RECOMP_ICALL_SAFE arg pushes.
+@@ -418,8 +1201,8 @@
+         if has_fpu:
+             lines.append(f"    #undef fp_push")
+             lines.append(f"    #undef fp_pop")
+-            lines.append(f"    #undef fp_popp")
+             lines.append(f"    #undef fp_top")
++            lines.append(f"    #undef fp_st")
+             lines.append(f"    #undef fp_st1")
+ 
+         lines.append(f"}}")
+@@ -467,10 +1250,15 @@
+ 
+     def __init__(self, xbe_path, func_json_path, labels_json_path=None,
+                  identified_json_path=None, abi_json_path=None,
+-                 output_dir=None, seh_prolog=None, seh_epilog=None):
++                 output_dir=None, recovery_json_path=None,
++                 manual_call_targets=None,
++                 manual_call_targets_sha256=None,
++                 seh_prolog=None, seh_epilog=None):
+         self.xbe_path = xbe_path
+         self.output_dir = output_dir or os.path.join(
+             os.path.dirname(__file__), "output")
++        self.manual_call_targets = frozenset(manual_call_targets or ())
++        self.manual_call_targets_sha256 = manual_call_targets_sha256
+ 
+         # Load XBE
+         with open(xbe_path, "rb") as f:
+@@ -486,6 +1274,20 @@
+             func["_addr"] = addr
+             if "end" in func:
+                 func["end"] = int(func["end"], 16)
++            # The legacy authenticated bounds file records "external_entry":
++            # true on every entry, including mid-function branch targets the
++            # runtime has proven are not real entries (0x985BD is reached
++            # only by a conditional jump from inside 0x98570). Treat that
++            # field as absent for such bounds, which coalescence is
++            # explicitly allowed to correct.
++            if func.get("detection_method") == "authenticated_prior_bounds":
++                func["external_entry"] = False
++                func["seed_derived"] = True
++            if "seed" in str(func.get("detection_method", "")):
++                func["seed_derived"] = True
++                func["external_entry"] = False
++                func["has_prologue"] = bool(func.get("has_prologue")) and False
++                func["called_by"] = []
+             self.func_db[addr] = func
+ 
+         # Load labels
+@@ -529,7 +1331,145 @@
+         self.translator = FunctionTranslator(
+             self.xbe_data, self.func_db, self.label_db,
+             self.classification_db, self.abi_db,
++            manual_call_targets=self.manual_call_targets,
+             seh_prolog=seh_prolog, seh_epilog=seh_epilog)
++        self.translator.recover_external_cfgs()
++        self.translator.discover_static_indirect_targets()
++        if recovery_json_path:
++            recovery_json_paths = (
++                [recovery_json_path]
++                if isinstance(recovery_json_path, (str, os.PathLike))
++                else recovery_json_path)
++            entries = []
++            for path in recovery_json_paths:
++                with open(path, "r") as recovery_file:
++                    recovery_list = json.load(recovery_file)
++                for entry in recovery_list:
++                    parsed = {
++                        "start": int(entry["start"], 16),
++                        "end": int(entry["end"], 16),
++                    }
++                    if "coalesce_starts" in entry:
++                        parsed["coalesce_starts"] = [
++                            int(start, 16)
++                            for start in entry["coalesce_starts"]
++                        ]
++                    if "coalesce_bridges" in entry:
++                        parsed["coalesce_bridges"] = [
++                            int(start, 16)
++                            for start in entry["coalesce_bridges"]
++                        ]
++                    entries.append(parsed)
++            before = len(self.translator.recovered_function_starts)
++            self.translator.adopt_external_functions(entries)
++            adopted = (len(self.translator.recovered_function_starts) - before)
++            print(f"Adopted {adopted} of {len(entries)} externally analyzed "
++                  f"function bounds from {len(recovery_json_paths)} file(s)",
++                  file=sys.stderr)
++        self.translator.discover_cfg_ownership()
++        unknown_targets = self.manual_call_targets.difference(self.func_db)
++        if unknown_targets:
++            formatted = ", ".join(
++                f"0x{target:08X}" for target in sorted(unknown_targets))
++            raise ValueError(f"Unknown manual-call targets: {formatted}")
++        owned_targets = self.manual_call_targets.intersection(
++            self.translator.owned_function_starts)
++        if owned_targets:
++            formatted = ", ".join(
++                f"0x{target:08X}" for target in sorted(owned_targets))
++            raise ValueError(
++                f"Manual-call targets are internal CFG blocks: {formatted}")
++
++    def _expected_manual_call_sites(self, function_starts):
++        """Census the selected direct calls present in the translated input.
++
++        Re-disassembles each translated function and records every direct
++        call whose target is selected. This is the independent expectation
++        the emitted receipts are compared against, so a call that was lifted
++        directly instead of rewritten is caught rather than merely counted.
++        """
++        expected = set()
++        for start in sorted(function_starts):
++            func_info = self.func_db.get(start)
++            if not func_info:
++                continue
++            recovered = self.translator._recovered_cfg.get(start)
++            end = recovered["end"] if recovered else func_info.get("end")
++            if not end:
++                end = start + func_info.get("size", 0)
++            if end <= start:
++                continue
++            if recovered:
++                instructions = recovered["instructions"]
++            else:
++                raw_bytes = self.translator._read_func_bytes(start, end)
++                if not raw_bytes:
++                    continue
++                instructions = self.translator.disasm.disassemble_function(
++                    raw_bytes, start, end)
++            for insn in instructions or ():
++                target = getattr(insn, "call_target", None)
++                if target is None and getattr(insn, "mnemonic", None) == "jmp":
++                    target = getattr(insn, "jump_target", None)
++                if target in self.manual_call_targets:
++                    expected.add((start, insn.address, target))
++        return expected
++
++    def _manual_call_rewrite_receipts(self, function_starts=None):
++        rewrites = sorted(set(self.translator.lifter.manual_call_rewrites))
++        if function_starts is None:
++            function_starts = self.translator.translated_function_starts
++        expected = self._expected_manual_call_sites(function_starts)
++        observed = set(rewrites)
++
++        # Fail closed on any disagreement: a selected call that stayed direct
++        # shows up as missing, an unselected rewrite shows up as unexpected.
++        missing = expected.difference(observed)
++        unexpected = observed.difference(expected)
++        if missing or unexpected:
++            def fmt(sites):
++                return ", ".join(
++                    f"caller=0x{caller:08X} callsite=0x{callsite:08X} "
++                    f"target=0x{target:08X}"
++                    for caller, callsite, target in sorted(sites))
++
++            detail = []
++            if missing:
++                detail.append(f"not rewritten: {fmt(missing)}")
++            if unexpected:
++                detail.append(f"unexpected rewrites: {fmt(unexpected)}")
++            raise RuntimeError(
++                "Manual-call rewrite census mismatch "
++                f"(expected {len(expected)}, emitted {len(observed)}); "
++                + "; ".join(detail))
++
++        receipts = []
++        for caller, callsite, target in rewrites:
++            receipt = {
++                "caller": f"0x{caller:08X}",
++                "callsite": f"0x{callsite:08X}",
++                "target": f"0x{target:08X}",
++            }
++            receipts.append(receipt)
++            print(
++                "Manual call rewrite: "
++                f"caller={receipt['caller']} "
++                f"callsite={receipt['callsite']} "
++                f"target={receipt['target']}",
++                file=sys.stderr)
++        print(
++            f"Manual call census: {len(receipts)} rewrites match "
++            f"{len(expected)} expected selected callsites",
++            file=sys.stderr)
++        return receipts
++
++    def _record_manual_call_stats(self, stats):
++        stats["manual_call_targets"] = [
++            f"0x{target:08X}" for target in sorted(self.manual_call_targets)]
++        stats["manual_call_targets_sha256"] = (
++            self.manual_call_targets_sha256)
++        stats["manual_call_rewrites"] = (
++            self._manual_call_rewrite_receipts())
+ 
+     def get_functions_by_category(self, categories=None, exclude_categories=None):
+         """
+@@ -538,6 +1478,8 @@
+         """
+         result = []
+         for addr, func_info in sorted(self.func_db.items()):
++            if addr in self.translator.owned_function_starts:
++                continue
+             cls_info = self.classification_db.get(addr, {})
+             cat = cls_info.get("category", "unknown")
+ 
+@@ -560,7 +1502,11 @@
+         func_info = self.func_db.get(addr)
+         if not func_info:
+             return None
+-        return self.translator.translate_function(addr, func_info)
++        code = self.translator.translate_function(addr, func_info)
++        # Only this function was translated, so only its own selected calls
++        # can be expected; unrelated selected targets live elsewhere.
++        self._manual_call_rewrite_receipts(function_starts={addr})
++        return code
+ 
+     def translate_batch(self, func_list, output_file=None, max_funcs=None,
+                         verbose=False):
+@@ -575,6 +1521,9 @@
+         Returns dict with statistics.
+         """
+         os.makedirs(self.output_dir, exist_ok=True)
++
++        func_list = [item for item in func_list
++                     if item[0] not in self.translator.owned_function_starts]
+ 
+         if max_funcs:
+             func_list = func_list[:max_funcs]
+@@ -630,6 +1579,8 @@
+                 c_chunks.append("")
+                 stats["failed"] += 1
+ 
++        self._record_manual_call_stats(stats)
++
+         # Write output
+         if output_file is None:
+             output_file = os.path.join(self.output_dir, "recompiled.c")
+@@ -688,6 +1639,9 @@
+         import sys
+ 
+         os.makedirs(output_dir, exist_ok=True)
++
++        func_list = [item for item in func_list
++                     if item[0] not in self.translator.owned_function_starts]
+ 
+         # Translate all functions first, collecting results
+         translations = []
+@@ -715,6 +1669,8 @@
+                 stub += f"void {name}(void) {{ /* translation failed */ }}\n"
+                 translations.append((addr, name, stub))
+                 stats["failed"] += 1
++
++        self._record_manual_call_stats(stats)
+ 
+         # Any address called but never defined needs a stub, or the link fails.
+         # These are almost all mid-function entry points the function detector

@@ -32,6 +32,16 @@ game-specific evidence or obsolete workflow assumptions and are not public
 tooling. New import or analysis tools must expose a game-independent interface
 and keep all derived game data local.
 
+## Build from an ISO
+
+`BuildGame.cmd` runs `build_game.py` to extract a supported ISO, reproduce the
+accepted generation recipe and compile a Win32 Release runner. The recipe and
+all its inputs are unchanged from the accepted 0.0.1 package. Generated files
+must match their recorded hashes before compilation. See the
+[build guide](../docs/building.md#build-a-local-runner-from-a-user-owned-iso).
+`RunGame.cmd` uses the successful build receipt and verifies the selected
+runner and game executable before launch.
+
 ## ISO extraction
 
 Windows users can drop one ISO onto the root `ExtractIso.cmd` launcher.

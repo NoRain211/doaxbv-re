@@ -42,7 +42,13 @@
     "tools/recomp-net-patches/README.md",
     "tools/recomp-net-patches/rollback-seals.patch",
     "third_party/rbengine",
-    "third_party/recomp-net"
+    "third_party/recomp-net",
+    ".gitattributes",
+    "BuildGame.cmd",
+    "tools/build_game.py",
+    "tools/test_build_game.py",
+    "tools/game-recipe/**",
+    "CHANGELOG.md"
   ],
   "quarantine": [
     "decomp/**",
