@@ -1,6 +1,30 @@
 #include "d3d_draw_model.h"
 
 #include <string.h>
+#include <math.h>
+
+bool recomp_d3d_normal_transform(const float world[16], float normal[16])
+{
+    float n[16] = {0};
+    if (world == NULL || normal == NULL) return false;
+    for (uint32_t i = 0; i < 16; ++i) if (!isfinite(world[i])) return false;
+    for (uint32_t row = 0; row < 3; ++row) {
+        uint32_t a = (row + 1) % 3, b = (row + 2) % 3;
+        for (uint32_t col = 0; col < 3; ++col) {
+            uint32_t c = (col + 1) % 3, d = (col + 2) % 3;
+            n[row*4+col] = world[a*4+c]*world[b*4+d] - world[a*4+d]*world[b*4+c];
+        }
+    }
+    float determinant = world[0]*n[0] + world[1]*n[1] + world[2]*n[2];
+    if (!isfinite(determinant) || determinant == 0) return false;
+    for (uint32_t i = 0; i < 16; ++i) {
+        n[i] /= determinant;
+        if (!isfinite(n[i])) return false;
+    }
+    memcpy(normal, n, sizeof n);
+    return true;
+}
+
 
 enum {
     /* Fixed-function FVF component bits this seam decodes. */

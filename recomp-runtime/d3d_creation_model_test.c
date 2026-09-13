@@ -371,6 +371,12 @@ int recomp_d3d_creation_model_test(void)
         RECOMP_D3D_DEVICE_ADDRESS);
     passed &= expect_u32(
         "creation flag", *recomp_memory_u32(0x001f3620u), 1u);
+    for (uint32_t offset = 0x518u; offset <= 0x52cu; offset += 4u) {
+        if (offset == 0x520u || offset == 0x524u) continue;
+        passed &= expect_u32("creation viewport sample scale",
+            *recomp_memory_u32(RECOMP_D3D_DEVICE_ADDRESS + offset), 0x3f800000u);
+    }
+
     for (uint32_t slot = 0u; slot < 10u; ++slot) {
         for (uint32_t word = 0u; word < 16u; ++word) {
             passed &= expect_u32("creation transform identity",
@@ -525,7 +531,13 @@ int recomp_d3d_creation_model_test(void)
         *recomp_memory_u32(RECOMP_D3D_DEVICE_ADDRESS + 8u) = 0x00004001u;
         *recomp_memory_u32(0x001f2c94u) = 0x00010101u;
         prepare_reset_call(call_memory, reset_presentation);
+        *recomp_memory_u32(RECOMP_D3D_DEVICE_ADDRESS + 0x518u) = 0u;
+        *recomp_memory_u32(RECOMP_D3D_DEVICE_ADDRESS + 0x528u) = 0u;
         reset_adapter();
+        passed &= expect_u32("reset viewport sample scale",
+            *recomp_memory_u32(RECOMP_D3D_DEVICE_ADDRESS + 0x518u), 0x3f800000u);
+        passed &= expect_u32("reset framebuffer sample scale",
+            *recomp_memory_u32(RECOMP_D3D_DEVICE_ADDRESS + 0x528u), 0x3f800000u);
         passed &= expect_u32(
             "reset HRESULT", recomp_runtime.registers.eax, RECOMP_D3D_OK);
         passed &= expect_u32(

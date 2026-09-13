@@ -10,13 +10,12 @@ the starting point, with game logic gradually replaced by hand-written code.
 
 ## Try the Alpha
 
-**Corrected 0.0.2 package:** the download now uses the current proven local
-generation recipe, including the camera arithmetic correction. If you built
-from the first 0.0.2 upload, rebuild from the corrected ZIP in a new folder;
+**0.3 Alpha:** improved pool water, character/platform shading, inventory actions,
+picture settings and activity transitions. Rebuild from this ZIP in a new folder;
 preserve your previous installation and saves.
 
-Download **DOAXBV-0.0.2-Alpha.zip** from the
-[Alpha release page](https://github.com/NoRain211/doaxbv-re/releases/tag/v0.0.2).
+Download **DOAXBV-0.3-Alpha.zip** from the
+[Alpha release page](https://github.com/NoRain211/doaxbv-re/releases/tag/v0.3).
 Use the named Alpha ZIP for bundled prerequisites. GitHub's automatic source
 archives contain source only; see the source build guide for their prerequisites.
 
@@ -44,18 +43,23 @@ Development builds have demonstrated:
 - Movie playback, natural endings and supported skips, with native audio.
 - Representative purchases, saves and reloads with interrupted-save recovery.
 - Restored character portraits and selected store and item previews.
+- Pool water with visible floor/reflections, shaded characters and platforms,
+  and playable Hopping Game entry at daytime and dusk.
+- Working picture controls, remembered control-mode choices, and corrected
+  accessory-equip/lotion-use action text.
 
 This is still an experimental port. Lighting, camera behavior, rendering
 coverage and offline activities remain incomplete. Development results do not
 mean every route works in the Alpha package, which has not passed full gameplay
-acceptance. The release notes also identify a known island-menu stop.
+acceptance. Casino, collection, activity variants and complete rendering fidelity
+remain open in the acceptance tracker.
 
 The [offline acceptance tracker](https://github.com/NoRain211/doaxbv-re/issues/16)
 records the remaining work. See the
 [detailed status](https://github.com/NoRain211/doaxbv-re/blob/main/docs/public-status.md)
 and [controller guide](docs/recomp-controls.md) for tested behavior and limits.
-New/reset controller settings default to the game's Digital mode; existing
-saves can retain Analog settings.
+New and older saves start in Digital mode unless you have explicitly selected
+a PC control-mode preference. Later Analog or Digital choices are remembered.
 
 Planned PC features, including rollback multiplayer, are tracked in the
 [extension dashboard](https://github.com/NoRain211/doaxbv-re/issues/20).

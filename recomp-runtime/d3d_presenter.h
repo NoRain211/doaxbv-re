@@ -33,6 +33,7 @@ typedef enum RecompD3dPresenterCommandType {
     RECOMP_D3D_PRESENTER_COMMAND_CLEAR,
     RECOMP_D3D_PRESENTER_COMMAND_PRESENT,
     RECOMP_D3D_PRESENTER_COMMAND_DRAW,
+    RECOMP_D3D_PRESENTER_COMMAND_GAMMA,
 } RecompD3dPresenterCommandType;
 
 /* Resolved by the adapter. Surface wrappers sharing pixel storage have the
@@ -61,6 +62,18 @@ typedef struct RecompD3dPresenterPresentCommand {
     uint32_t swap_counter;
 } RecompD3dPresenterPresentCommand;
 
+/* Directional diffuse/ambient lighting for the material-source path. */
+typedef struct RecompD3dDirectionalLighting {
+    bool enabled;
+    bool normalize;
+    uint32_t count;
+    float normal_transforms[4][16];
+    float ambient_emissive[4];
+    float material_diffuse[4];
+    float directions[8][4];
+    float colors[8][4];
+} RecompD3dDirectionalLighting;
+
 /* One indexed draw. Buffer contents stay in guest memory: the adapter passes
    host pointers and byte counts it has already bounds-checked, so the
    presenter never decodes guest addresses itself. */
@@ -71,6 +84,13 @@ typedef struct RecompD3dPresenterDrawCommand {
     uint32_t vertex_count;
     uint32_t vertex_stride;
     uint32_t fvf;
+    /* Bounded API-level vertex program; zero count selects fixed function. */
+    uint32_t program_count;
+    uint32_t program[136][4];
+    float program_constants[192][4];
+    bool program_alpha_mask;
+    float program_mask_lod_bias;
+    RecompD3dDirectionalLighting directional;
     const void *vertex_bytes;
     const void *index_bytes;
     /* World-view-projection rows, already composed by the adapter. */
@@ -116,6 +136,7 @@ typedef struct RecompD3dPresenterDrawCommand {
     /* Fixed-function texture-alpha reflection blend, followed by diffuse modulation. */
     bool has_reflection;
     bool reflection_normalize;
+    bool reflection_mesh_uv;
     RecompD3dTextureDesc reflection_texture;
     const void *reflection_bytes;
     uint32_t reflection_byte_count;
@@ -132,6 +153,8 @@ typedef struct RecompD3dPresenterCommand {
         RecompD3dPresenterClearCommand clear;
         RecompD3dPresenterPresentCommand present;
         RecompD3dPresenterDrawCommand draw;
+        /* Xbox gamma ramp: separate 256-entry 8-bit red, green, blue planes. */
+        uint8_t gamma[3][256];
     } data;
 } RecompD3dPresenterCommand;
 
@@ -163,6 +186,11 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
     const RecompD3dPresenterCommand *command);
 RecompD3dPresenterError recomp_d3d_presenter_destroy(
     RecompD3dPresenter **presenter);
+
+/* Retire pixels only when their backing allocation is released, not when a
+   nonowning surface wrapper is destroyed. Accepts guest RAM aliases. */
+RecompD3dPresenterError recomp_d3d_presenter_release_memory(
+    RecompD3dPresenter *presenter, uint32_t base, uint32_t size);
 
 /* Process-wide host pacing toggle. When enabled, presents use
    DXGI_PRESENT_DO_NOT_WAIT instead of vsync so the guest frame loop runs at

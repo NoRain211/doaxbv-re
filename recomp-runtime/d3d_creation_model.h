@@ -52,6 +52,7 @@ typedef struct RecompD3dCreateResources {
 
 typedef struct RecompD3dDeviceState {
     bool created;
+    float framebuffer_scale[2];
     uint32_t address;
     uint32_t width;
     uint32_t height;

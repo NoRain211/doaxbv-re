@@ -23,6 +23,7 @@
 enum {
     D3D_DEVICE_CLEAR_ADDRESS = 0x001e72d0u,
     D3D_DEVICE_SWAP_ADDRESS = 0x001e8f30u,
+    D3D_DEVICE_SET_GAMMA_ADDRESS = 0x001e3640u,
 };
 
 static RecompD3dFrameState frame_state;
@@ -1375,9 +1376,31 @@ void recomp_d3d_swap_adapter(void)
     recomp_runtime.registers.esp = entry_esp + 8u;
 }
 
+static void set_gamma_ramp(void)
+{
+    const uint32_t entry_esp = recomp_runtime.registers.esp;
+    RecompD3dPresenterCommand command = {0};
+    const uint32_t address = stack_argument(entry_esp, 1u);
+    const uint8_t *ramp = recomp_memory(address, sizeof command.data.gamma);
+    RecompD3dPresenterError error;
+
+    if (address == 0u || ramp == NULL) {
+        recomp_stop(2, "d3d-gamma:invalid-ramp");
+    }
+    command.type = RECOMP_D3D_PRESENTER_COMMAND_GAMMA;
+    memcpy(command.data.gamma, ramp, sizeof command.data.gamma);
+    error = recomp_d3d_presenter_submit(presenter, &command);
+    if (error != RECOMP_D3D_PRESENTER_OK) {
+        recomp_stop(2, "d3d-gamma:presenter:%u", (unsigned)error);
+    }
+    recomp_runtime.registers.esp = entry_esp + 12u;
+}
+
 RecompFunction recomp_d3d_frame_lookup_manual(uint32_t guest_address)
 {
     switch (guest_address) {
+    case D3D_DEVICE_SET_GAMMA_ADDRESS:
+        return set_gamma_ramp;
     case D3D_DEVICE_CLEAR_ADDRESS:
         return recomp_d3d_clear_adapter;
     case D3D_DEVICE_SWAP_ADDRESS:

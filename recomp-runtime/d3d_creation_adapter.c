@@ -11,6 +11,7 @@
 
 #include <inttypes.h>
 #include <stdio.h>
+#include <string.h>
 
 enum {
     DIRECT3D_CREATE_DEVICE_ADDRESS = 0x001e9100u,
@@ -56,9 +57,22 @@ static RecompD3dPresentationParameters read_presentation(uint32_t address)
     return presentation;
 }
 
+/* SetRenderTarget restores the current viewport scale from these framebuffer
+   scales. Leaving them zero collapses programmable geometry after a restore. */
+static void write_viewport_scale(const RecompD3dDeviceState *device)
+{
+    uint32_t bits[2];
+    memcpy(bits, device->framebuffer_scale, sizeof bits);
+    for (uint32_t axis = 0; axis < 2; ++axis) {
+        *recomp_memory_u32(device->address + 0x518u + axis * 4u) = bits[axis];
+        *recomp_memory_u32(device->address + 0x528u + axis * 4u) = bits[axis];
+    }
+}
+
 static void write_device_state(const RecompD3dDeviceState *device)
 {
     recomp_guest_memset(device->address, 0, RECOMP_D3D_DEVICE_SIZE);
+    write_viewport_scale(device);
     /* D3D8 initializes VIEW, PROJECTION, TEXTURE0..3 and WORLD0..3 to identity. */
     for (uint32_t slot = 0u; slot < 10u; ++slot) {
         for (uint32_t diagonal = 0u; diagonal < 4u; ++diagonal) {
@@ -131,6 +145,7 @@ static void write_reset_device_state(
     const RecompD3dDeviceState *device,
     const RecompD3dPresentationParameters *presentation)
 {
+    write_viewport_scale(device);
     *recomp_memory_u32(device->address + 0x0008u) = device->flags;
     *recomp_memory_u32(device->address + 0x0a98u) = device->width;
     *recomp_memory_u32(device->address + 0x0a9cu) = device->height;

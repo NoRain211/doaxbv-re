@@ -37,3 +37,8 @@ unsupported MMX operations, so newly enabled stores cannot consume an omitted
 producer. This checks instruction support; register liveness still needs review
 before enabling a function. CVTPS2PI follows host MXCSR rounding. Guest rounding
 state and unmasked guest exceptions are not modeled by this patch.
+
+The ISO setup builder applies `local-parity.patch` to its pinned upstream revision.
+It includes the x87 destination and result-sign corrections used by the 0.3
+recipe, plus the existing authenticated-generation interface. Its synthetic
+x87 and result-sign tests contain no game instructions or data.

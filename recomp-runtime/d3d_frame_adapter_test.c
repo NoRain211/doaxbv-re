@@ -259,6 +259,23 @@ int recomp_d3d_frame_adapter_test(void)
             elapsed >= recomp_xapi_performance_frequency() / 20u - 3u, 1u);
     }
 
+    {
+        const uint32_t args[] = {1u, TEST_CALL_BASE + 0x800u};
+        RecompFunction gamma = recomp_d3d_frame_lookup_manual(0x001e3640u);
+        uint8_t expected[768];
+        for (size_t i = 0u; i < sizeof expected; ++i) expected[i] = (uint8_t)(i * 7u);
+        prepare_stack(call_memory, args, 2u);
+        memcpy(call_memory + 0x800u, expected, sizeof expected);
+        if (gamma == NULL || recomp_lookup_manual(0x001e3640u) != gamma) return 0;
+        gamma();
+        memset(call_memory + 0x800u, 0, sizeof expected);
+        passed &= expect_u32("Gamma ESP", recomp_runtime.registers.esp, TEST_ENTRY_ESP + 12u);
+        if (!recomp_d3d_presenter_memory_snapshot(&snapshot) || snapshot.command_count == 0u) return 0;
+        const RecompD3dPresenterCommand *command = &snapshot.commands[snapshot.command_count-1u];
+        passed &= expect_u32("Gamma command", command->type, RECOMP_D3D_PRESENTER_COMMAND_GAMMA);
+        passed &= memcmp(command->data.gamma, expected, sizeof expected) == 0;
+    }
+
     recomp_d3d_frame_adapter_reset();
     if (recomp_d3d_presenter_memory_snapshot(&snapshot)) {
         fprintf(stderr, "D3D frame adapter: reset left a presenter\n");

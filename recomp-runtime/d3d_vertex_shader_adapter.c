@@ -95,6 +95,11 @@ void recomp_d3d_set_vertex_shader_adapter(void)
     if (old_flags != new_flags) {
         dirty |= D3D_VERTEX_DECLARATION_DIRTY_BITS;
     }
+    /* SelectVertexShader invalidates constants even when two programs have
+       identical declaration flags and texture-coordinate masks. */
+    if ((new_flags & 0x10u) != 0u) {
+        dirty |= 0x1070u;
+    }
 
     if (!recomp_d3d_bind_vertex_shader(
             &d3d_vertex_shader_model, handle, declaration)) {

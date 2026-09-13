@@ -965,6 +965,11 @@ int recomp_d3d_render_state_model_test(void)
         }
         stages[1][21] = 2; stages[1][28] = 0x30000; stages[3][12] = 1;
         passed &= expect_u32("reflection material", recomp_d3d_reflection_material(stages), 1);
+        stages[1][21] = stages[1][28] = 0;
+        passed &= expect_u32("environment material with mesh UV0", recomp_d3d_reflection_material(stages), 1);
+        stages[1][28] = 1;
+        passed &= expect_u32("unavailable mesh UV1 remains unsupported", recomp_d3d_reflection_material(stages), 0);
+        stages[1][21] = 2;
         stages[1][28] = 2;
         passed &= expect_u32("stream UV2 is not generated reflection", recomp_d3d_reflection_material(stages), 0);
         stages[1][28] = 0x30000; stages[2][14] = 2;

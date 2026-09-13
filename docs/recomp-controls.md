@@ -5,8 +5,10 @@ controller menu navigation and scored Exhibition play have been observed.
 Physical two-controller play remains unproven.
 
 The original game contains separate digital and analog control modes, including
-button assignments. The port defaults new/reset settings to Digital; loading a
-saved Analog choice preserves it. Use its digital mode for an XInput
+button assignments. The current candidate starts in Digital, including when
+loading an older Analog save. An explicit later choice in Controller Settings
+is remembered as a PC preference. A manual restart restored an explicit Analog
+choice, followed by the player selecting and storing Digital. Use its digital mode for an XInput
 controller: the host's face buttons report released or fully pressed, while
 triggers retain their
 analog values. The original digital volleyball defaults are:
@@ -41,11 +43,16 @@ and reopened it with the setting retained and the soft/strong labels visible.
 In a running Exhibition match, scripted full-pressure face-button inputs also
 produced the distinct strong masks for A/B and soft masks for X/Y. Actual shot
 outcomes and physical-controller strength selection still need verification.
-Loading an existing vacation save can restore that save's Analog setting;
-check the control mode again after loading.
+Earlier candidates restored an existing vacation save's Analog setting; the
+current candidate applies the separate explicit PC preference after loading.
 
 Scripted input also opened Analog calibration from a paused Exhibition match
 and returned to visible active play twice without crashing (#31 complete).
 The native Digital configuration prototype is accepted (#10 complete).
 Physical shot outcomes and pool-jump verification remain under offline
 acceptance #16; the prototype does not establish complete controller support.
+
+Manual sessions use physical host input without scripted pulses. Keyboard
+bindings apply only while the game process owns the foreground window. A
+reported hands-off menu back-out remains under investigation; this focus guard
+is not established as its cause or complete fix.

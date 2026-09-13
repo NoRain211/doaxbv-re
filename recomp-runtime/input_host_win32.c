@@ -63,6 +63,10 @@ bool recomp_input_host_sample(RecompInputGamepad *gamepad)
         gamepad->thumb_rx = state.Gamepad.sThumbRX;
         gamepad->thumb_ry = state.Gamepad.sThumbRY;
     }
+    DWORD foreground_process = 0;
+    GetWindowThreadProcessId(GetForegroundWindow(), &foreground_process);
+    if (foreground_process != GetCurrentProcessId()) return true;
+
     if (pressed(VK_UP)) gamepad->buttons |= XBOX_DPAD_UP;
     if (pressed(VK_DOWN)) gamepad->buttons |= XBOX_DPAD_DOWN;
     if (pressed(VK_LEFT)) gamepad->buttons |= XBOX_DPAD_LEFT;

@@ -1,5 +1,6 @@
 #include "d3d_presenter.h"
 #include "d3d_draw_model.h"
+#include "d3d_vertex_program.h"
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -29,10 +30,9 @@ constexpr wchar_t kWindowTitle[] = L"DOAXBV Recomp";
    serve both, so the shader is assembled per FVF from the decoded layout and
    cached with its matching input layout.
 
-   Vertex color is the guest's when the FVF carries one, otherwise the normal
-   visualized as |n|. A bound texture modulates diffuse color or supplies RGBA
-   directly when there is no diffuse component. Real lighting is a separate
-   seam. */
+   Vertex color comes from the stream or the admitted directional-lighting
+   path. Unsupported lighting configurations retain the earlier texture/normal
+   fallback. Texture alpha remains independent of directional diffuse RGB. */
 constexpr char kDrawShaderPrologue[] =
     "cbuffer Transform : register(b0) {\n"
     "    row_major float4x4 wvp[4];\n"
@@ -46,6 +46,13 @@ constexpr char kDrawShaderPrologue[] =
     "    row_major float4x4 reflection_transform;\n"
     "    float4 reflection_diffuse;\n"
     "    float4 reflection_flags;\n"
+    "    float4 vc[192];\n"
+    "    row_major float4x4 directional_normals[4];\n"
+    "    float4 directional_base;\n"
+    "    float4 directional_material;\n"
+    "    float4 directional_directions[8];\n"
+    "    float4 directional_colors[8];\n"
+    "    float4 directional_flags;\n"
     "}\n"
     "Texture2D guest_texture : register(t0);\n"
     "SamplerState guest_sampler : register(s0);\n"
@@ -124,7 +131,9 @@ void buildDrawShaderSource(
         "        float4 base = guest_texture.Sample(guest_sampler, input.texcoord);\n"
         "        base.a *= reflection_diffuse.a;\n"
         "        float4 env = alpha_mask.Sample(guest_sampler, input.reflection_coord);\n"
-        "        shaded = lerp(base, env, env.a) * reflection_diffuse;\n"
+        "        float4 diffuse = reflection_diffuse;\n"
+        "        if (directional_flags.x > 0.5f) diffuse.rgb = input.color.rgb;\n"
+        "        shaded = lerp(base, env, env.a) * diffuse;\n"
         "    } else\n"
         "%s"
         "    if (blend_flags.y == 1.0f) {\n"
@@ -133,11 +142,13 @@ void buildDrawShaderSource(
         "        float4 sampled = guest_texture.Sample(guest_sampler, input.texcoord * texture_flags.xy);\n"
         "        if (lighting_flags.y > 0.5f) sampled.rgb = 1.0f;\n"
         "        shaded %s sampled;\n"
+        "        if (directional_flags.x > 0.5f) shaded.rgb *= input.color.rgb;\n"
         "        if (lighting_flags.x > 0.5f) shaded.rgb = 0.0f;\n"
         "        shaded.a = blend_flags.w > 0.5f\n"
         "            ? blend_flags.z : shaded.a * blend_flags.z;\n"
         "        if (blend_flags.y > 1.5f) shaded *= texture_factor;\n"
         "    }\n"
+        "    if (reflection_flags.z > 0.5f) shaded.a *= alpha_mask.SampleBias(mask_sampler, input.reflection_coord, reflection_flags.w).a;\n"
         /* NV2A compares rounded 8-bit alpha. Function values follow
            RecompD3dCompareFunc, from NEVER (0) to ALWAYS (7). */
         "    if (draw_flags.y > 0.5f) {\n"
@@ -180,8 +191,10 @@ void buildDrawShaderSource(
               "    output.texcoord2 = input.texcoord2;\n"
               "    output.texcoord3 = input.texcoord3;\n"
             : layout.texcoord_count == 2u ? "    output.texcoord1 = input.texcoord1;\n" : "",
-        has_normal && !layout.pretransformed
-            ? "    if (reflection_flags.x > 0.5f) {\n"
+        has_normal && has_texcoord && !layout.pretransformed
+            ? "    if (reflection_flags.x > 1.5f) {\n"
+              "        output.reflection_coord = input.texcoord;\n"
+              "    } else if (reflection_flags.x > 0.5f) {\n"
               "        float3 eye = mul(float4(input.position, 1), reflection_world_view).xyz;\n"
               "        float3 n = mul(float4(input.normal, 0), reflection_normal).xyz;\n"
               "        if (reflection_flags.y > 0.5f) n = normalize(n);\n"
@@ -224,10 +237,14 @@ void releaseCom(T *&object)
 }
 
 /* Compiled state for one FVF. */
-constexpr uint32_t kDrawPipelineSlots = 8u;
+/* ponytail: 16 pipelines cover the measured ten-pipeline pool working set.
+   Revisit the bound if another scene exceeds it and causes compilation churn. */
+constexpr uint32_t kDrawPipelineSlots = 16u;
 
 struct DrawPipeline {
     uint32_t fvf;
+    uint32_t program_count;
+    uint32_t program[136][4];
     bool used;
     bool failed;
     ID3D11VertexShader *vertex_shader;
@@ -283,8 +300,10 @@ struct TextureEntry {
 };
 
 /* Rendered pixels have no CPU copy to re-upload after texture FIFO eviction.
-   ponytail: retain 16 targets; add guest lifetime tracking if this fills. */
-constexpr uint32_t kRenderTargetSlots = 16u;
+   Retain targets until their guest backing storage is released.
+   ponytail: bound host target texels to 64 MiB; guest-arena suballocation
+   retirement is needed if retained scene targets exhaust this byte budget. */
+constexpr uint64_t kTargetByteLimit = 64u * 1024u * 1024u;
 
 struct RenderTargetEntry {
     RecompD3dTextureDesc desc;
@@ -292,9 +311,7 @@ struct RenderTargetEntry {
     ID3D11ShaderResourceView *sample_view;
 };
 
-/* Depth belongs to its guest resource, which can serve several color targets.
-   ponytail: retain 16 depths; add guest lifetime tracking if this fills. */
-constexpr uint32_t kDepthTargetSlots = 16u;
+/* Depth belongs to its guest storage, which can serve several color targets. */
 
 struct DepthTargetEntry {
     RecompD3dTextureDesc desc;
@@ -314,6 +331,11 @@ struct RecompD3dPresenter {
     ID3D11DeviceContext *context = nullptr;
     IDXGISwapChain *swap_chain = nullptr;
     ID3D11RenderTargetView *render_target_view = nullptr;
+    ID3D11RenderTargetView *present_target_view = nullptr;
+    ID3D11VertexShader *gamma_vertex_shader = nullptr;
+    ID3D11PixelShader *gamma_pixel_shader = nullptr;
+    ID3D11Buffer *gamma_buffer = nullptr;
+    bool gamma_enabled = false;
     ID3D11Texture2D *back_buffer_copy = nullptr;
     ID3D11ShaderResourceView *back_buffer_sample = nullptr;
     ID3D11Texture2D *depth_texture = nullptr;
@@ -338,12 +360,12 @@ struct RecompD3dPresenter {
     TextureEntry textures[kTextureSlots]{};
     uint32_t texture_count = 0u;
     uint32_t next_texture_slot = 0u;
-    RenderTargetEntry render_targets[kRenderTargetSlots]{};
-    uint32_t render_target_count = 0u;
-    DepthTargetEntry depth_targets[kDepthTargetSlots]{};
-    uint32_t depth_target_count = 0u;
+    std::vector<RenderTargetEntry> render_targets;
+    std::vector<DepthTargetEntry> depth_targets;
+    uint64_t target_bytes = 0u;
     ID3D11SamplerState *draw_sampler = nullptr;
     ID3D11SamplerState *filter_sampler = nullptr;
+    ID3D11SamplerState *program_mask_sampler = nullptr;
     bool draw_shared_ready = false;
     bool draw_shared_failed = false;
     uint32_t draw_count = 0u;
@@ -400,6 +422,10 @@ void releaseGraphics(RecompD3dPresenter *presenter)
         presenter->context->ClearState();
         presenter->context->Flush();
     }
+    releaseCom(presenter->present_target_view);
+    releaseCom(presenter->gamma_vertex_shader);
+    releaseCom(presenter->gamma_pixel_shader);
+    releaseCom(presenter->gamma_buffer);
     releaseCom(presenter->draw_rasterizer_state);
     releaseCom(presenter->draw_constant_buffer);
     releaseCom(presenter->draw_index_buffer);
@@ -438,17 +464,19 @@ void releaseGraphics(RecompD3dPresenter *presenter)
     }
     presenter->texture_count = 0u;
     presenter->next_texture_slot = 0u;
-    for (uint32_t i = 0u; i < presenter->render_target_count; ++i) {
+    for (uint32_t i = 0u; i < presenter->render_targets.size(); ++i) {
         releaseCom(presenter->render_targets[i].sample_view);
         releaseCom(presenter->render_targets[i].render_view);
     }
-    presenter->render_target_count = 0u;
-    for (uint32_t i = 0u; i < presenter->depth_target_count; ++i) {
+    presenter->render_targets.clear();
+    for (uint32_t i = 0u; i < presenter->depth_targets.size(); ++i) {
         releaseCom(presenter->depth_targets[i].view);
     }
-    presenter->depth_target_count = 0u;
+    presenter->depth_targets.clear();
+    presenter->target_bytes = 0u;
     releaseCom(presenter->draw_sampler);
     releaseCom(presenter->filter_sampler);
+    releaseCom(presenter->program_mask_sampler);
     presenter->draw_vertex_capacity = 0u;
     presenter->draw_index_capacity = 0u;
     presenter->draw_shared_ready = false;
@@ -607,7 +635,22 @@ HRESULT createGraphics(RecompD3dPresenter *presenter)
         reinterpret_cast<void **>(&back_buffer));
     if (SUCCEEDED(result)) {
         result = presenter->device->CreateRenderTargetView(
-            back_buffer, nullptr, &presenter->render_target_view);
+            back_buffer, nullptr, &presenter->present_target_view);
+    }
+    /* Keep guest pixels uncorrected: gamma is display state and must not feed
+       back into later draws or compound when a frame is presented twice. */
+    if (SUCCEEDED(result)) {
+        D3D11_TEXTURE2D_DESC desc{};
+        back_buffer->GetDesc(&desc);
+        desc.BindFlags = D3D11_BIND_RENDER_TARGET;
+        desc.MiscFlags = 0u;
+        ID3D11Texture2D *guest_buffer = nullptr;
+        result = presenter->device->CreateTexture2D(&desc, nullptr, &guest_buffer);
+        if (SUCCEEDED(result)) {
+            result = presenter->device->CreateRenderTargetView(
+                guest_buffer, nullptr, &presenter->render_target_view);
+        }
+        releaseCom(guest_buffer);
     }
     releaseCom(back_buffer);
     if (FAILED(result)) {
@@ -652,7 +695,7 @@ RenderTargetEntry *findRenderTarget(
     RecompD3dPresenter *presenter,
     const RecompD3dTextureDesc &desc)
 {
-    for (uint32_t i = 0u; i < presenter->render_target_count; ++i) {
+    for (uint32_t i = 0u; i < presenter->render_targets.size(); ++i) {
         RenderTargetEntry &entry = presenter->render_targets[i];
 
         if (entry.desc.data == desc.data &&
@@ -704,7 +747,7 @@ RecompD3dPresenterError lookupDepthTarget(
             desc.data, desc.format_byte, width, height, desc.depth ? 1 : 0);
         return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
     }
-    for (uint32_t i = 0u; i < presenter->depth_target_count; ++i) {
+    for (uint32_t i = 0u; i < presenter->depth_targets.size(); ++i) {
         const DepthTargetEntry &entry = presenter->depth_targets[i];
         if (entry.desc.data == desc.data &&
             entry.desc.format_byte == desc.format_byte &&
@@ -713,12 +756,10 @@ RecompD3dPresenterError lookupDepthTarget(
             return RECOMP_D3D_PRESENTER_OK;
         }
     }
-    if (presenter->depth_target_count == kDepthTargetSlots) {
-        std::fprintf(stderr,
-            "recomp d3d presenter: depth target cache full (%u) "
-            "data=0x%08X fmt=0x%02X size=%ux%u\n",
-            kDepthTargetSlots, desc.data, desc.format_byte, width, height);
-        return RECOMP_D3D_PRESENTER_HOST_FAILURE;
+    const uint64_t bytes = static_cast<uint64_t>(width) * height * 4u;
+    if (bytes > kTargetByteLimit - presenter->target_bytes) {
+        std::fprintf(stderr, "recomp d3d presenter: target memory budget exhausted\n");
+        return RECOMP_D3D_PRESENTER_OUT_OF_MEMORY;
     }
 
     D3D11_TEXTURE2D_DESC texture_desc{};
@@ -747,7 +788,13 @@ RecompD3dPresenterError lookupDepthTarget(
             static_cast<unsigned long>(result));
         return RECOMP_D3D_PRESENTER_HOST_FAILURE;
     }
-    presenter->depth_targets[presenter->depth_target_count++] = {desc, view};
+    try {
+        presenter->depth_targets.push_back({desc, view});
+    } catch (const std::bad_alloc &) {
+        releaseCom(view);
+        return RECOMP_D3D_PRESENTER_OUT_OF_MEMORY;
+    }
+    presenter->target_bytes += bytes;
     std::fprintf(stderr,
         "recomp d3d presenter: depth target data=0x%08X fmt=0x%02X size=%ux%u\n",
         desc.data, desc.format_byte, width, height);
@@ -782,11 +829,10 @@ RecompD3dPresenterError bindTarget(
 
         RenderTargetEntry *entry = findRenderTarget(presenter, desc);
         if (entry == nullptr) {
-            if (presenter->render_target_count == kRenderTargetSlots) {
-                std::fprintf(stderr,
-                    "recomp d3d presenter: render target cache full (%u)\n",
-                    kRenderTargetSlots);
-                return RECOMP_D3D_PRESENTER_HOST_FAILURE;
+            const uint64_t bytes = static_cast<uint64_t>(desc.width) * desc.height * 4u;
+            if (bytes > kTargetByteLimit - presenter->target_bytes) {
+                std::fprintf(stderr, "recomp d3d presenter: target memory budget exhausted\n");
+                return RECOMP_D3D_PRESENTER_OUT_OF_MEMORY;
             }
             D3D11_TEXTURE2D_DESC texture_desc{};
             texture_desc.Width = desc.width;
@@ -823,8 +869,15 @@ RecompD3dPresenterError bindTarget(
                 return RECOMP_D3D_PRESENTER_HOST_FAILURE;
             }
             created.desc = desc;
-            entry = &presenter->render_targets[presenter->render_target_count++];
-            *entry = created;
+            try {
+                presenter->render_targets.push_back(created);
+            } catch (const std::bad_alloc &) {
+                releaseCom(created.sample_view);
+                releaseCom(created.render_view);
+                return RECOMP_D3D_PRESENTER_OUT_OF_MEMORY;
+            }
+            presenter->target_bytes += bytes;
+            entry = &presenter->render_targets.back();
             std::fprintf(stderr,
                 "recomp d3d presenter: render target data=0x%08X "
                 "fmt=0x%02X size=%ux%u\n",
@@ -952,11 +1005,57 @@ bool createDrawPipeline(
 
     char source[8192];
     buildDrawShaderSource(layout, source, sizeof source);
+    std::string compiled_source(source);
+    if (layout.normal_offset != RECOMP_D3D_FVF_ABSENT && !layout.pretransformed &&
+        layout.diffuse_offset == RECOMP_D3D_FVF_ABSENT) {
+        std::string lighting = "    if (directional_flags.x > 0.5f) {\n"
+            "        float3 n = mul(float4(input.normal,0),directional_normals[0]).xyz;\n";
+        if (layout.blend_weight_count) {
+            lighting += "        if (blend_flags.x > 0.5f) { n=0; float remainder=1;\n";
+            for (uint32_t i=0; i<layout.blend_weight_count; ++i) {
+                const auto index=std::to_string(i);
+                lighting += "n += input.weights["+index+"] * mul(float4(input.normal,0),directional_normals["+index+"]).xyz;\n"
+                    "remainder -= input.weights["+index+"];\n";
+            }
+            lighting += "n += remainder * mul(float4(input.normal,0),directional_normals["+
+                std::to_string(layout.blend_weight_count)+"]).xyz; }\n";
+        }
+        lighting += "        if (directional_flags.y > 0.5f && dot(n,n)>0) n *= rsqrt(dot(n,n));\n"
+            "        float3 rgb=directional_base.rgb;\n"
+            "        for (uint i=0; i<(uint)directional_flags.z; ++i)\n"
+            "            rgb += directional_material.rgb * directional_colors[i].rgb * max(0,dot(n,directional_directions[i].xyz));\n"
+            "        output.color.rgb=saturate(rgb);\n"
+            "    }\n";
+        const auto uv = compiled_source.find("    output.texcoord =");
+        if (uv == std::string::npos) return false;
+        compiled_source.insert(uv, lighting);
+    }
+    if (pipeline.program_count) {
+        if (fvf != 0x112u) return false;
+        std::string body;
+        if (!recomp_d3d_vertex_program_source(pipeline.program, pipeline.program_count, body)) return false;
+        const auto begin = compiled_source.find("VSOut vs_main(");
+        const auto end = compiled_source.find("float4 ps_main(", begin);
+        if (begin == std::string::npos || end == std::string::npos) return false;
+        compiled_source.replace(begin, end-begin, "VSOut vs_main(VSIn input) { VSOut output;\n" + body + "return output; }\n");
+        // Preserve q until the pixel shader so projection follows interpolation.
+        const std::string declaration = "struct VSOut {";
+        const auto fields = compiled_source.find(declaration);
+        if (fields == std::string::npos) return false;
+        compiled_source.insert(fields + declaration.size(), "\n    float2 program_q : TEXCOORD5;\n");
+        const std::string pixel = "float4 ps_main(VSOut input) : SV_TARGET {";
+        const auto sample = compiled_source.find(pixel);
+        if (sample == std::string::npos) return false;
+        compiled_source.insert(sample + pixel.size(),
+            "\n    input.texcoord /= input.program_q.x;\n"
+            "    if (reflection_flags.z > 0.5f) input.reflection_coord /= input.program_q.y;\n");
+
+    }
 
     ID3DBlob *vertex_blob = nullptr;
     ID3DBlob *pixel_blob = nullptr;
-    if (!compileDrawShader(source, "vs_main", "vs_4_0", &vertex_blob) ||
-        !compileDrawShader(source, "ps_main", "ps_4_0", &pixel_blob)) {
+    if (!compileDrawShader(compiled_source.c_str(), "vs_main", "vs_4_0", &vertex_blob) ||
+        !compileDrawShader(compiled_source.c_str(), "ps_main", "ps_4_0", &pixel_blob)) {
         releaseCom(vertex_blob);
         releaseCom(pixel_blob);
         return false;
@@ -1060,7 +1159,7 @@ bool ensureSharedDrawState(RecompD3dPresenter *presenter)
     HRESULT result;
     D3D11_BUFFER_DESC constant_desc{};
     /* Four WVP matrices, draw/blend flags, and RGBA texture factor. */
-    constant_desc.ByteWidth = 560u;
+    constant_desc.ByteWidth = (140u + 192u * 4u + 140u) * sizeof(float);
     constant_desc.Usage = D3D11_USAGE_DYNAMIC;
     constant_desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     constant_desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
@@ -1103,6 +1202,12 @@ bool ensureSharedDrawState(RecompD3dPresenter *presenter)
         &sampler_desc, &presenter->filter_sampler);
     if (FAILED(result)) return false;
 
+    sampler_desc.AddressU = sampler_desc.AddressV = sampler_desc.AddressW =
+        D3D11_TEXTURE_ADDRESS_WRAP;
+    result = presenter->device->CreateSamplerState(
+        &sampler_desc, &presenter->program_mask_sampler);
+    if (FAILED(result)) return false;
+
     presenter->draw_shared_failed = false;
     presenter->draw_shared_ready = true;
     return true;
@@ -1113,12 +1218,15 @@ bool ensureSharedDrawState(RecompD3dPresenter *presenter)
    draw and does not affect any other FVF. */
 const DrawPipeline *lookupDrawPipeline(
     RecompD3dPresenter *presenter,
-    uint32_t fvf)
+    uint32_t fvf, const RecompD3dPresenterDrawCommand *draw = nullptr)
 {
+    const uint32_t count = draw ? draw->program_count : 0u;
+    if (count > 136u) return nullptr;
     for (uint32_t i = 0u; i < presenter->draw_pipeline_count; ++i) {
         DrawPipeline &pipeline = presenter->draw_pipelines[i];
 
-        if (pipeline.used && pipeline.fvf == fvf) {
+        if (pipeline.used && pipeline.fvf == fvf && pipeline.program_count == count &&
+            (!count || std::memcmp(pipeline.program, draw->program, count * 16u) == 0)) {
             return pipeline.failed ? nullptr : &pipeline;
         }
     }
@@ -1136,6 +1244,8 @@ const DrawPipeline *lookupDrawPipeline(
         ++presenter->draw_pipeline_count;
     }
     pipeline.fvf = fvf;
+    pipeline.program_count = count;
+    if (count) std::memcpy(pipeline.program, draw->program, count * 16u);
     pipeline.used = true;
     pipeline.failed = !createDrawPipeline(presenter, fvf, pipeline);
     return pipeline.failed ? nullptr : &pipeline;
@@ -1411,6 +1521,57 @@ void recompD3dPresenterCountDrawTexture(
     } else {
         ++draw_texture_tally.rejected[draw.texture.format_byte & 0xffu];
     }
+}
+
+/* Opt-in, one pair of water input readbacks after the draw-capture trigger. */
+void dumpProgramTexture(RecompD3dPresenter *presenter,
+    ID3D11ShaderResourceView *view, unsigned index)
+{
+    static const char *prefix = std::getenv("RECOMP_D3D_PROGRAM_TEXTURE_DUMP");
+    static const char *trigger = std::getenv("RECOMP_D3D_DRAW_CAPTURE_TRIGGER");
+    static unsigned captured = 0;
+    const unsigned bit = 1u << index;
+    if (!prefix || !trigger || (captured & bit) ||
+        GetFileAttributesA(trigger) == INVALID_FILE_ATTRIBUTES || !view) return;
+    captured |= bit;
+    ID3D11Resource *resource = nullptr;
+    ID3D11Texture2D *texture = nullptr, *staging = nullptr;
+    view->GetResource(&resource);
+    HRESULT result = resource->QueryInterface(__uuidof(ID3D11Texture2D),
+        reinterpret_cast<void **>(&texture));
+    releaseCom(resource);
+    if (FAILED(result)) return;
+    D3D11_TEXTURE2D_DESC desc{};
+    texture->GetDesc(&desc);
+    if (desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM &&
+        desc.Width <= 720 && desc.Height <= 512 && desc.MipLevels == 1) {
+        desc.Usage = D3D11_USAGE_STAGING;
+        desc.BindFlags = 0;
+        desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+        desc.MiscFlags = 0;
+        result = presenter->device->CreateTexture2D(&desc, nullptr, &staging);
+        if (SUCCEEDED(result)) {
+            presenter->context->CopyResource(staging, texture);
+            D3D11_MAPPED_SUBRESOURCE mapped{};
+            result = presenter->context->Map(staging, 0, D3D11_MAP_READ, 0, &mapped);
+            if (SUCCEEDED(result)) {
+                char path[1024];
+                std::snprintf(path, sizeof path, "%s.%u.%ux%u.bgra", prefix,
+                    index, desc.Width, desc.Height);
+                if (FILE *file = std::fopen(path, "wb")) {
+                    for (unsigned y = 0; y < desc.Height; ++y)
+                        std::fwrite(static_cast<const unsigned char *>(mapped.pData) +
+                            size_t(y) * mapped.RowPitch, 4, desc.Width, file);
+                    std::fclose(file);
+                    std::fprintf(stderr, "recomp program input: %s present=%u\n",
+                        path, presenter->present_count);
+                }
+                presenter->context->Unmap(staging, 0);
+            }
+        }
+    }
+    releaseCom(staging);
+    releaseCom(texture);
 }
 
 ID3D11ShaderResourceView *lookupBackBufferTexture(
@@ -1713,7 +1874,7 @@ RecompD3dPresenterError submitDraw(
         return RECOMP_D3D_PRESENTER_HOST_FAILURE;
     }
 
-    const DrawPipeline *pipeline = lookupDrawPipeline(presenter, draw.fvf);
+    const DrawPipeline *pipeline = lookupDrawPipeline(presenter, draw.fvf, &draw);
     if (pipeline == nullptr) {
         return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
     }
@@ -1793,7 +1954,7 @@ RecompD3dPresenterError submitDraw(
         mask_view = lookupTexture(presenter, mask);
         if (mask_view == nullptr || texture_view == nullptr) return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
     }
-    if (draw.has_reflection) {
+    if (draw.has_reflection || draw.program_alpha_mask) {
         if (draw.has_alpha_mask || draw.four_tap_filter || layout.pretransformed ||
             layout.normal_offset == RECOMP_D3D_FVF_ABSENT ||
             layout.texcoord_count == 0u) return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
@@ -1807,13 +1968,14 @@ RecompD3dPresenterError submitDraw(
     if (draw.four_tap_filter && texture_view == nullptr) {
         return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
     }
+    if (draw.program_count) dumpProgramTexture(presenter, texture_view, draw.program_alpha_mask);
     /* Observation only: bind counts say what the guest selected, not what a
        draw actually consumed, and only the latter can explain the frame. */
     recompD3dPresenterCountDrawTexture(draw, texture_view != nullptr);
-    float draw_constants[140]{};
+    float draw_constants[140 + 192 * 4 + 140]{};
     std::memcpy(draw_constants, draw.transform, sizeof draw.transform);
     std::memcpy(draw_constants + 16, draw.blend_transforms, sizeof draw.blend_transforms);
-    if (layout.pretransformed) {
+    if (layout.pretransformed || draw.program_count) {
         D3D11_VIEWPORT viewport{};
         UINT count = 1u;
         presenter->context->RSGetViewports(&count, &viewport);
@@ -1831,6 +1993,35 @@ RecompD3dPresenterError submitDraw(
         draw_constants[13] = 1.0f + (0.5f - viewport.TopLeftY) * draw_constants[5];
         draw_constants[14] = -viewport.MinDepth * draw_constants[10];
         draw_constants[15] = 1.0f;
+    }
+    if (draw.program_count) {
+        std::memcpy(draw_constants + 140, draw.program_constants, sizeof draw.program_constants);
+        /* Undo the guest sample grid, which may differ from the host target. */
+        for (unsigned axis = 0; axis < 2; ++axis) {
+            const float scale = draw.program_constants[58][axis];
+            if (!std::isfinite(scale) || scale == 0) return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+            draw_constants[axis * 5] = 1.0f / scale;
+            draw_constants[12 + axis] = -draw.program_constants[59][axis] / scale;
+        }
+        const float depth_scale = draw.program_constants[58][2];
+        if (!std::isfinite(depth_scale) || depth_scale <= 0) return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+        draw_constants[10] = 1.0f / depth_scale;
+        draw_constants[14] = -draw.program_constants[59][2] / depth_scale;
+        draw_constants[138] = draw.program_alpha_mask ? 1.0f : 0.0f;
+        draw_constants[139] = draw.program_mask_lod_bias;
+    }
+    if (draw.directional.enabled && !draw.program_count) {
+        const auto &light = draw.directional;
+        if (light.count > 8u) return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+        float *constants = draw_constants + 140 + 192 * 4;
+        std::memcpy(constants, light.normal_transforms, sizeof light.normal_transforms);
+        std::memcpy(constants+64, light.ambient_emissive, sizeof light.ambient_emissive);
+        std::memcpy(constants+68, light.material_diffuse, sizeof light.material_diffuse);
+        std::memcpy(constants+72, light.directions, sizeof light.directions);
+        std::memcpy(constants+104, light.colors, sizeof light.colors);
+        constants[136]=1;
+        constants[137]=light.normalize ? 1.0f:0.0f;
+        constants[138]=static_cast<float>(light.count);
     }
     draw_constants[64] = texture_view != nullptr ? 1.0f : 0.0f;
     draw_constants[65] = draw.depth.alpha_test_enable ? 1.0f : 0.0f;
@@ -1866,7 +2057,7 @@ RecompD3dPresenterError submitDraw(
         std::memcpy(draw_constants + 100, draw.reflection_normal, 64u);
         std::memcpy(draw_constants + 116, draw.reflection_transform, 64u);
         std::memcpy(draw_constants + 132, draw.reflection_diffuse, 16u);
-        draw_constants[136] = 1.0f;
+        draw_constants[136] = draw.reflection_mesh_uv ? 2.0f : 1.0f;
         draw_constants[137] = draw.reflection_normalize ? 1.0f : 0.0f;
     }
 
@@ -1906,8 +2097,9 @@ RecompD3dPresenterError submitDraw(
     ID3D11ShaderResourceView *views[] = {texture_view, mask_view};
     presenter->context->PSSetShaderResources(0u, 2u, views);
     ID3D11SamplerState *samplers[] = {
-        draw.four_tap_filter || draw.has_alpha_mask ? presenter->filter_sampler : presenter->draw_sampler,
-        presenter->filter_sampler};
+        draw.four_tap_filter || draw.has_alpha_mask || draw.program_count
+            ? presenter->filter_sampler : presenter->draw_sampler,
+        draw.program_alpha_mask ? presenter->program_mask_sampler : presenter->filter_sampler};
     presenter->context->PSSetSamplers(0u, 2u, samplers);
     presenter->context->RSSetState(presenter->draw_rasterizer_state);
     ID3D11DepthStencilState *depth_state = lookupDepthState(presenter, draw.depth);
@@ -1928,6 +2120,23 @@ RecompD3dPresenterError submitDraw(
             0xffffffffu);
     }
     presenter->context->DrawIndexed(draw_index_count, 0u, 0);
+    static const char *program_dump = std::getenv("RECOMP_D3D_PROGRAM_TEXTURE_DUMP");
+    static unsigned program_dump_count = 0;
+    if (draw.program_count && program_dump && program_dump_count < 2 &&
+        std::getenv("RECOMP_D3D_DRAW_CAPTURE_TRIGGER") &&
+        GetFileAttributesA(std::getenv("RECOMP_D3D_DRAW_CAPTURE_TRIGGER")) != INVALID_FILE_ATTRIBUTES) {
+        ++program_dump_count;
+        std::fprintf(stderr, "recomp program viewport: mask=%u c58=%g,%g,%g c59=%g,%g,%g\n",
+            draw.program_alpha_mask ? 1u:0u, draw.program_constants[58][0],
+            draw.program_constants[58][1], draw.program_constants[58][2],
+            draw.program_constants[59][0],draw.program_constants[59][1],draw.program_constants[59][2]);
+        RecompD3dTextureDesc output{};
+        output.format_byte=0x12u; output.linear=true;
+        output.width=presenter->config.width; output.height=presenter->config.height;
+        dumpProgramTexture(presenter,lookupBackBufferTexture(presenter,output),
+            draw.program_alpha_mask ? 3u:2u);
+    }
+
     ++presenter->draw_count;
 
     /* Back-buffer dumps proved the rendered content alternates vertically by
@@ -2176,6 +2385,94 @@ void dumpBackBufferOnce(RecompD3dPresenter *presenter, uint32_t present_count)
     presenter->next_frame_dump_ms = GetTickCount64() + interval_ms;
 }
 
+RecompD3dPresenterError submitGamma(
+    RecompD3dPresenter *presenter, const uint8_t (&ramp)[3][256])
+{
+    float values[256][4]{};
+    bool enabled = false;
+    for (unsigned i = 0u; i < 256u; ++i) {
+        for (unsigned channel = 0u; channel < 3u; ++channel) {
+            values[i][channel] = ramp[channel][i] / 255.0f;
+            enabled |= ramp[channel][i] != i;
+        }
+    }
+    if (enabled && presenter->gamma_buffer == nullptr) {
+        static const char shader[] =
+            "Texture2D pixels : register(t0);\n"
+            "cbuffer Gamma : register(b0) { float4 ramp[256]; };\n"
+            "float4 vs(uint id : SV_VertexID) : SV_Position {\n"
+            " float2 p = float2((id << 1) & 2, id & 2);\n"
+            " return float4(p * float2(2,-2) + float2(-1,1), 0, 1); }\n"
+            "float4 ps(float4 p : SV_Position) : SV_Target {\n"
+            " float4 c = pixels.Load(int3(p.xy,0));\n"
+            " uint3 i = (uint3)(saturate(c.rgb) * 255 + 0.5);\n"
+            " return float4(ramp[i.r].r,ramp[i.g].g,ramp[i.b].b,c.a); }\n";
+        ID3DBlob *vertex = nullptr, *pixel = nullptr;
+        HRESULT result = D3DCompile(shader, sizeof shader - 1u, nullptr,
+            nullptr, nullptr, "vs", "vs_4_0", 0u, 0u, &vertex, nullptr);
+        if (SUCCEEDED(result)) result = D3DCompile(shader, sizeof shader - 1u,
+            nullptr, nullptr, nullptr, "ps", "ps_4_0", 0u, 0u, &pixel, nullptr);
+        if (SUCCEEDED(result)) result = presenter->device->CreateVertexShader(
+            vertex->GetBufferPointer(), vertex->GetBufferSize(), nullptr,
+            &presenter->gamma_vertex_shader);
+        if (SUCCEEDED(result)) result = presenter->device->CreatePixelShader(
+            pixel->GetBufferPointer(), pixel->GetBufferSize(), nullptr,
+            &presenter->gamma_pixel_shader);
+        D3D11_BUFFER_DESC desc{};
+        desc.ByteWidth = sizeof values;
+        desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+        if (SUCCEEDED(result)) result = presenter->device->CreateBuffer(
+            &desc, nullptr, &presenter->gamma_buffer);
+        releaseCom(vertex);
+        releaseCom(pixel);
+        if (FAILED(result)) {
+            releaseCom(presenter->gamma_vertex_shader);
+            releaseCom(presenter->gamma_pixel_shader);
+            releaseCom(presenter->gamma_buffer);
+            return RECOMP_D3D_PRESENTER_HOST_FAILURE;
+        }
+    }
+    if (enabled) presenter->context->UpdateSubresource(
+        presenter->gamma_buffer, 0u, nullptr, values, 0u, 0u);
+    presenter->gamma_enabled = enabled;
+    return RECOMP_D3D_PRESENTER_OK;
+}
+
+bool renderOutput(RecompD3dPresenter *presenter, ID3D11RenderTargetView *output)
+{
+    if (output == nullptr) return false;
+    auto *context = presenter->context;
+    context->ClearState();
+    if (!presenter->gamma_enabled) {
+        ID3D11Resource *source = nullptr, *target = nullptr;
+        presenter->render_target_view->GetResource(&source);
+        output->GetResource(&target);
+        context->CopyResource(target, source);
+        releaseCom(source);
+        releaseCom(target);
+        return true;
+    }
+    RecompD3dTextureDesc desc{};
+    desc.format_byte = 0x12u;
+    desc.linear = true;
+    desc.width = presenter->config.width;
+    desc.height = presenter->config.height;
+    ID3D11ShaderResourceView *source = lookupBackBufferTexture(presenter, desc);
+    if (source == nullptr) return false;
+    const D3D11_VIEWPORT viewport = {0.0f, 0.0f,
+        static_cast<float>(desc.width), static_cast<float>(desc.height), 0.0f, 1.0f};
+    context->RSSetViewports(1u, &viewport);
+    context->OMSetRenderTargets(1u, &output, nullptr);
+    context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    context->VSSetShader(presenter->gamma_vertex_shader, nullptr, 0u);
+    context->PSSetShader(presenter->gamma_pixel_shader, nullptr, 0u);
+    context->PSSetConstantBuffers(0u, 1u, &presenter->gamma_buffer);
+    context->PSSetShaderResources(0u, 1u, &source);
+    context->Draw(3u, 0u);
+    context->ClearState();
+    return true;
+}
+
 RecompD3dPresenterError submitPresent(
     RecompD3dPresenter *presenter,
     const RecompD3dPresenterPresentCommand &present)
@@ -2209,6 +2506,9 @@ RecompD3dPresenterError submitPresent(
        unconditionally meant the throttled path was never actually throttled:
        every frame was retired immediately and only the blocking behaviour
        changed. Pace to one refresh unless immediate presenting is asked for. */
+    if (!renderOutput(presenter, presenter->present_target_view)) {
+        return RECOMP_D3D_PRESENTER_HOST_FAILURE;
+    }
     // Capture the rendered buffer before flip presentation releases it.
     dumpBackBufferOnce(presenter, presenter->present_count + 1u);
 
@@ -2319,6 +2619,8 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
     }
 
     switch (command->type) {
+    case RECOMP_D3D_PRESENTER_COMMAND_GAMMA:
+        return submitGamma(presenter, command->data.gamma);
     case RECOMP_D3D_PRESENTER_COMMAND_CLEAR:
         return submitClear(presenter, command->data.clear);
     case RECOMP_D3D_PRESENTER_COMMAND_PRESENT:
@@ -2328,6 +2630,69 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
     default:
         return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
     }
+}
+
+RecompD3dPresenterError recomp_d3d_presenter_release_memory(
+    RecompD3dPresenter *presenter, uint32_t base, uint32_t size)
+{
+    if (presenter == nullptr || presenter != active_presenter) {
+        return RECOMP_D3D_PRESENTER_NOT_INITIALIZED;
+    }
+    if (GetCurrentThreadId() != presenter->owner_thread) {
+        return RECOMP_D3D_PRESENTER_WRONG_THREAD;
+    }
+    if (base >= 0x80000000u && base < 0x84000000u) base -= 0x80000000u;
+    const uint64_t end = static_cast<uint64_t>(base) + size;
+    if (size == 0u || end > 0x100000000ull) {
+        return RECOMP_D3D_PRESENTER_INVALID_ARGUMENT;
+    }
+    const auto released = [base, end](uint32_t data) {
+        return data >= base && data < end;
+    };
+    const auto colors = presenter->render_targets.size();
+    const auto depths = presenter->depth_targets.size();
+    bool changed = false;
+    for (uint32_t i = 0u; i < presenter->render_targets.size();) {
+        RenderTargetEntry &entry = presenter->render_targets[i];
+        if (!released(entry.desc.data)) { ++i; continue; }
+        releaseCom(entry.sample_view);
+        releaseCom(entry.render_view);
+        presenter->target_bytes -= static_cast<uint64_t>(entry.desc.width) * entry.desc.height * 4u;
+        entry = presenter->render_targets.back();
+        presenter->render_targets.pop_back();
+        changed = true;
+    }
+    for (uint32_t i = 0u; i < presenter->depth_targets.size();) {
+        DepthTargetEntry &entry = presenter->depth_targets[i];
+        if (!released(entry.desc.data)) { ++i; continue; }
+        releaseCom(entry.view);
+        presenter->target_bytes -= static_cast<uint64_t>(entry.desc.width) * entry.desc.height * 4u;
+        entry = presenter->depth_targets.back();
+        presenter->depth_targets.pop_back();
+        changed = true;
+    }
+    for (uint32_t i = 0u; i < presenter->texture_count; ++i) {
+        TextureEntry &entry = presenter->textures[i];
+        if (entry.used && released(entry.data)) {
+            releaseCom(entry.view);
+            entry.used = false;
+            changed = true;
+        }
+    }
+    if (changed) {
+        // The context also owns bound views. Every subsequent draw rebinds them.
+        ID3D11ShaderResourceView *none[2]{};
+        presenter->context->PSSetShaderResources(0u, 2u, none);
+        presenter->context->OMSetRenderTargets(0u, nullptr, nullptr);
+    }
+    if (colors != presenter->render_targets.size() || depths != presenter->depth_targets.size()) {
+        std::fprintf(stderr,
+            "recomp d3d presenter: released storage base=0x%08X size=%u "
+            "color=%zu depth=%zu remaining=%zu/%zu\n", base, size,
+            colors - presenter->render_targets.size(), depths - presenter->depth_targets.size(),
+            presenter->render_targets.size(), presenter->depth_targets.size());
+    }
+    return RECOMP_D3D_PRESENTER_OK;
 }
 
 RecompD3dPresenterError recomp_d3d_presenter_destroy(

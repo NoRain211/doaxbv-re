@@ -98,6 +98,7 @@ uint32_t recomp_d3d_create_device(
 
     model->device = (RecompD3dDeviceState){
         .created = true,
+        .framebuffer_scale = {1.0f, 1.0f},
         .address = RECOMP_D3D_DEVICE_ADDRESS,
         .width = request->presentation.back_buffer_width,
         .height = request->presentation.back_buffer_height,
@@ -145,6 +146,8 @@ uint32_t recomp_d3d_reset_device(
         return RECOMP_D3D_INVALID_CALL;
     }
 
+    model->device.framebuffer_scale[0] = (float)((presentation->multi_sample_type >> 4u) & 15u);
+    model->device.framebuffer_scale[1] = (float)(presentation->multi_sample_type & 15u);
     model->device.width = presentation->back_buffer_width;
     model->device.height = presentation->back_buffer_height;
     model->device.format = presentation->back_buffer_format;

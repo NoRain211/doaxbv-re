@@ -482,7 +482,8 @@ bool recomp_d3d_reflection_material(const uint32_t stages[4][32])
             stages[stage][11] != 0u) return false;
     }
     return stages[0][21] == 0u && stages[0][28] == 0u &&
-        stages[1][21] == 2u && stages[1][28] == 0x30000u;
+        ((stages[1][21] == 2u && stages[1][28] == 0x30000u) ||
+         (stages[1][21] == 0u && stages[1][28] == 0u));
 }
 
 bool recomp_d3d_diffuse_rgb_is_zero(

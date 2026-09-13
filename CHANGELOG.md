@@ -1,5 +1,54 @@
 # Changelog
 
+## 0.3 Alpha — 2026-09-13
+
+### Fixed
+
+- Restore pool-water refraction and reflections by initializing framebuffer
+  viewport scales and preserving the guest sample grid. Daytime and dusk
+  captures show the floor through the water.
+- Add directional character lighting and shaded platform materials. Preserve
+  the reached shader working set to avoid Hopping Game cache thrashing.
+- Recover reached Hopping Game, Take a rest, Jungle-stage and Options/hotel
+  transition paths, including the incomplete dusk pool function.
+- Apply Gamma, Brightness and Contrast to the displayed picture.
+- Default to Digital Control with new and older saves, while preserving an
+  explicit subsequent Analog or Digital choice as a PC preference.
+- Correct the inventory action text used for accessory equip and lotion use.
+- Ignore keyboard input when the game window is not in the foreground.
+
+### Release and setup
+
+- Update the source and authenticated generation recipe to the tested local
+  runtime, retaining the earlier camera, save, audio and movie corrections.
+- Keep the existing ISO setup workflow, bundled prerequisite tools and licenses.
+- Install into a new folder and rebuild; saves are not migrated automatically.
+- Keep checksums internal, with no checksum text attachment or bundled game data.
+
+### Validation
+
+- The local candidate passes all ten native tests.
+- Daytime pool-water rendering was observed in two independent natural runs;
+  a later manual dusk run reached gameplay and the failure/retry screen, with
+  positive player feedback. Its planned time limit ended the run normally.
+- Fresh generation through the public builder matches all 20 tested local files
+  byte-for-byte. The public Win32 Release rebuild passes ten native tests; seven
+  setup/authentication/extraction/launcher checks and five focused lifter tests
+  pass. Generation reuses a verified game extraction; the extractor is separately
+  checked with a synthetic ISO. No fresh package gameplay run was performed.
+- Reused natural-run evidence applies to matching runtime and generated inputs;
+  it does not establish complete gameplay acceptance for the package.
+
+### Known limitations
+
+- Complete Hopping Game outcomes, dusk return/repeat coverage, other time and
+  activity variants, sustained performance and original rendering parity remain
+  unproven. Lighting, camera and image coverage are still incomplete.
+- Casino and collection routes still have known unsupported paths. Inventory
+  persistence and all item/action variants are not fully accepted.
+- Physical two-player play and comprehensive pressure/action outcomes remain
+  unproven. Rollback multiplayer is not integrated into gameplay.
+
 ## 0.0.2 Alpha — 2026-09-12
 
 ### Fixed

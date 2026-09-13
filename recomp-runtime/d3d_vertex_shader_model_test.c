@@ -145,6 +145,14 @@ int recomp_d3d_vertex_shader_model_test(void)
     passed &= expect_u32(
         "shader dirty mask", *recomp_memory_u32(TEST_DIRTY_MASK), 0x3670u);
 
+    /* Draw processing consumes the dirty mask between same-layout binds. */
+    *recomp_memory_u32(TEST_DIRTY_MASK) = 0u;
+    prepare_call(call_memory, TEST_SHADER_DECLARATION + 1u);
+    adapter();
+    passed &= expect_u32(
+        "program rebind invalidates constants",
+        *recomp_memory_u32(TEST_DIRTY_MASK), 0x1070u);
+
     recomp_d3d_vertex_shader_adapter_reset();
     passed &= expect_u32("adapter reset count", model->update_count, 0u);
     return passed;

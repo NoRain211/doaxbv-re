@@ -57,6 +57,8 @@ typedef struct RecompD3dDrawResult {
     RecompD3dDrawPlan plan;
 } RecompD3dDrawResult;
 
+bool recomp_d3d_normal_transform(const float world[16], float normal[16]);
+
 void recomp_d3d_draw_reset(RecompD3dDrawState *state);
 
 /* Translates a guest DrawIndexedVertices into a validated draw plan. Pure:

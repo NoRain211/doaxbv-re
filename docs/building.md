@@ -24,7 +24,7 @@ The repository does not include an all-in-one build executable. Place
 `extract-xiso.exe` at `tools/artifacts/extract-xiso.exe`, add it to `PATH`, or
 pass its path to `tools/build_game.py`.
 
-The **DOAXBV-0.0.2-Alpha** ZIP bundles Python, Capstone, and the tagged
+The **DOAXBV-0.3-Alpha** ZIP bundles Python, Capstone, and the tagged
 extractor. Git, CMake, and the Visual Studio 2019 C++ build tools are still
 required. Extract the whole ZIP into a new folder with a short path before setup
 (for example, a folder directly under Downloads). Use the scripts
@@ -64,7 +64,7 @@ Use `--generate-only` to stop after generation. A completed build writes
 records a build. A supervised native run provides the behavior evidence.
 
 The recipe reproduces the current proven local generated program, whose 19-file
-manifest is `7b26fb53628647ae38229075896be06f77988146e6a8ae66efed3d296984b396`.
+manifest is `0957e77721f673ea186202b3e451607900c1f4d7a2a20282e33df6cebdf0653f`.
 All 20 generated files, including unresolved stubs, are checked individually.
 The receipt records the recipe, patch, generated manifest, XBE, and runner
 identities. A matching generated program does not imply an identical executable:
@@ -74,9 +74,9 @@ An earlier experimental recipe used the same upstream pin with
 `runtime-bootstrap.patch` and fresh function discovery. Its two successful
 Exhibition runs did not establish parity with the original local build. The
 current builder preserves the proven boundaries and recoveries and includes
-the current local x87 camera-calculation correction. Gameplay with the new package
-still requires validation; the original local runner also has an unresolved
-target in a later island-menu flow.
+the x87 camera and result-sign corrections alongside the current activity
+recoveries. Natural local water, shading and activity checks apply to matching
+inputs; complete offline gameplay and rendering acceptance remain open in #16.
 
 ## Public test route
 
@@ -96,7 +96,7 @@ not build a playable game runner and do not require game files. The fixture
 tests guest memory, registers, and dispatch at the generated-function seam. It
 does not contain generated game code or prove game parity.
 
-The named 0.0.2 Alpha ZIP includes the ISO setup workflow and bundled
+The named 0.3 Alpha ZIP includes the ISO setup workflow and bundled
 Python, Capstone and extractor. GitHub's automatic source archives contain
 the same project source and recipe but require separately installed tools.
 Neither download includes generated game code or a prebuilt game runner.

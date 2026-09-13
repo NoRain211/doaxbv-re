@@ -387,6 +387,7 @@ if(RECOMP_PROGRAM_DIR)
         runtime.c
         stop_report.c
         runner.cpp
+        controller_settings.cpp
         program_adapters.c
         xapi_time_adapter.cpp
         program_manual.c
@@ -399,6 +400,7 @@ if(RECOMP_PROGRAM_DIR)
         d3d_frame_adapter.c
         d3d_vblank.cpp
         d3d_presenter_d3d11.cpp
+        d3d_vertex_program.cpp
         d3d_render_state_model.c
         d3d_render_state_adapter.c
         d3d_texture_model.c
@@ -459,6 +461,7 @@ endif()
 if(WIN32)
     add_executable(recomp_d3d_presenter_d3d11_test
         d3d_presenter_d3d11_test.cpp
+        d3d_vertex_program.cpp
         d3d_draw_model.c
         d3d_texture_model.c)
     target_link_libraries(recomp_d3d_presenter_d3d11_test PRIVATE
@@ -582,3 +585,6 @@ endforeach()
     add_test(NAME recomp-runtime-stop-report
         COMMAND "${CMAKE_COMMAND}" -P "${_stop_report_check}")
 endif()
+
+add_executable(recomp_controller_settings_test controller_settings.cpp controller_settings_test.cpp)
+add_test(NAME recomp-runtime-controller-settings COMMAND recomp_controller_settings_test)

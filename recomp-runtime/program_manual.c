@@ -1,4 +1,7 @@
 #include "program_manual.h"
+#include "controller_settings.h"
+#include "kernel_abi.h"
+#include <string.h>
 #include "cri_service_adapter.h"
 #include "crt_format_adapter.h"
 #include "d3d_creation_adapter.h"
@@ -94,6 +97,34 @@ static void recomp_view_entry_adapter(void)
 }
 #endif
 
+#ifdef RECOMP_FULL_PROGRAM
+void sub_0001B340(void);
+void sub_000E8100(void);
+
+static void restore_controller_settings(void)
+{
+    uint8_t modes[4];
+    sub_0001B340();
+    if (!recomp_controller_settings_load(recomp_disc_root_path, modes)) {
+        recomp_stop(1, "controls:read-preference");
+        return;
+    }
+    memcpy(recomp_memory(0x0041655du, sizeof modes), modes, sizeof modes);
+}
+
+static void update_controller_settings(void)
+{
+    uint8_t before[4];
+    uint8_t *modes = recomp_memory(0x0041655du, sizeof before);
+    memcpy(before, modes, sizeof before);
+    sub_000E8100();
+    if (memcmp(before, modes, sizeof before) != 0 &&
+        !recomp_controller_settings_save(recomp_disc_root_path, modes)) {
+        recomp_stop(1, "controls:write-preference");
+    }
+}
+#endif
+
 RecompFunction recomp_lookup_manual(uint32_t guest_address)
 {
     RecompFunction function = recomp_cri_service_lookup_manual(guest_address);
@@ -140,6 +171,12 @@ RecompFunction recomp_lookup_manual(uint32_t guest_address)
         function = recomp_xapi_time_lookup_manual(guest_address);
     }
 #ifdef RECOMP_FULL_PROGRAM
+    if (function == NULL && guest_address == 0x0001b340u) {
+        function = restore_controller_settings;
+    }
+    if (function == NULL && guest_address == 0x000e8100u) {
+        function = update_controller_settings;
+    }
     if (function == NULL && guest_address == 0x0006afd0u) {
         function = recomp_start_consumer_adapter;
     }

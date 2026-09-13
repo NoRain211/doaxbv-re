@@ -42,8 +42,8 @@ in a match and closeup. Lighting remains incomplete; this does not establish
 all character, outfit, court or offline-mode parity. See the
 [verified progress report](https://github.com/NoRain211/doaxbv-re/issues/16#issuecomment-5594275984).
 
-New/reset controller settings default to the game's Digital mode; saved Analog
-settings remain intact. See [controls](recomp-controls.md) for tested mappings
+New and older saves default to Digital unless an explicit PC control-mode
+preference exists; later Analog and Digital choices are remembered. See [controls](recomp-controls.md) for tested mappings
 and limitations. Stop logs distinguish normal exits, diagnostic boundaries,
 runtime errors and unhandled host crashes; an expectation-adjusted exit code
 alone is not a gameplay result. See [log interpretation](../recomp-runtime/README.md#reading-stop-and-crash-logs).
@@ -59,3 +59,12 @@ and [acceptance dashboard](https://github.com/NoRain211/doaxbv-re/issues/16#issu
 The pinned rollback dependencies and their seal repair are available as source.
 They are not linked into the game runtime; see the
 [dependency audit](research/rollback-engine-audit.md) for limitations and checks.
+
+The 0.3 Alpha source and recipe include subsequent inventory action-text,
+picture-setting, activity-transition and pool-rendering repairs. Daytime water
+shows its floor and reflections in two independent natural runs; one corrected
+manual dusk run reaches gameplay and the retry screen with positive feedback.
+The dusk run ends normally at its supervision limit, so it does not prove map
+return or the complete activity row. Character/platform shading and shader-cache
+reuse have bounded evidence. See the [water progress report](https://github.com/NoRain211/doaxbv-re/issues/16#issuecomment-5656165854).
+All offline acceptance rows and original rendering parity remain subject to #16.

@@ -1,5 +1,9 @@
 #include "kernel_abi.h"
 #include "xbox_memory_layout.h"
+#ifdef RECOMP_D3D_FRAME_ENABLED
+#include "d3d_frame_adapter.h"
+#include "stop_report.h"
+#endif
 
 #include <stddef.h>
 #include <stdint.h>
@@ -144,6 +148,16 @@ static void free_guest(uint32_t base)
     Allocation *allocation = find_allocation(base);
 
     if (allocation != NULL) {
+#ifdef RECOMP_D3D_FRAME_ENABLED
+        RecompD3dPresenter *presenter = recomp_d3d_frame_adapter_presenter();
+        if (presenter != NULL) {
+            RecompD3dPresenterError error = recomp_d3d_presenter_release_memory(
+                presenter, allocation->base, allocation->size);
+            if (error != RECOMP_D3D_PRESENTER_OK) {
+                recomp_stop(2, "d3d-release-memory:presenter:%u", (unsigned)error);
+            }
+        }
+#endif
         allocation->active = 0;
     }
     xbox_HeapFree(base);

@@ -9,19 +9,21 @@ static int finish(RecompD3dPresenter *presenter, int status, uint32_t detail)
     releaseGraphics(presenter);
     bool released = presenter->texture_count == 0u &&
         presenter->next_texture_slot == 0u && presenter->device == nullptr &&
-        presenter->context == nullptr && presenter->render_target_count == 0u &&
-        presenter->depth_target_count == 0u &&
+        presenter->context == nullptr && presenter->render_targets.size() == 0u &&
+        presenter->depth_targets.size() == 0u && presenter->target_bytes == 0u &&
         presenter->render_target_view == nullptr && presenter->depth_view == nullptr &&
-        presenter->depth_texture == nullptr;
+        presenter->depth_texture == nullptr && presenter->gamma_buffer == nullptr &&
+        presenter->gamma_vertex_shader == nullptr && presenter->gamma_pixel_shader == nullptr &&
+        presenter->present_target_view == nullptr;
     for (uint32_t i = 0u; i < kTextureSlots; ++i) {
         released = released && !presenter->textures[i].used &&
             presenter->textures[i].view == nullptr;
     }
-    for (uint32_t i = 0u; i < kRenderTargetSlots; ++i) {
+    for (uint32_t i = 0u; i < presenter->render_targets.size(); ++i) {
         released = released && presenter->render_targets[i].render_view == nullptr &&
             presenter->render_targets[i].sample_view == nullptr;
     }
-    for (uint32_t i = 0u; i < kDepthTargetSlots; ++i) {
+    for (uint32_t i = 0u; i < presenter->depth_targets.size(); ++i) {
         released = released && presenter->depth_targets[i].view == nullptr;
     }
     if (!released) {
@@ -463,6 +465,20 @@ static bool testReflection(RecompD3dPresenter *presenter,
     draw.reflection_transform[12] -= 1; // Same texel after wrapping a negative U.
     if (submitDraw(presenter, draw) != RECOMP_D3D_PRESENTER_OK ||
         !checkPixels(presenter, color, readback, "reflection generated coordinates wrap", green)) return false;
+    draw.directional.enabled = true;
+    for (unsigned i = 0; i < 4; ++i) draw.directional.normal_transforms[0][i * 5] = 1;
+    for (unsigned i = 0; i < 3; ++i) draw.directional.ambient_emissive[i] = 0.25f;
+    const uint32_t lit[] = {0x30002020,0x30002020,0x30002020,0x30002020};
+    if (submitDraw(presenter, draw) != RECOMP_D3D_PRESENTER_OK ||
+        !checkPixels(presenter, color, readback, "reflection uses evaluated lighting and preserves alpha", lit)) return false;
+    draw.reflection_mesh_uv = true;
+    const uint32_t seam[] = {0x30101020,0x30101020,0x30101020,0x30101020};
+    if (submitDraw(presenter, draw) != RECOMP_D3D_PRESENTER_OK ||
+        !checkPixels(presenter, color, readback, "mesh UV wrap seam blends neighbors", seam)) return false;
+    for (Vertex &vertex : vertices) vertex.uv[0] = 0.25f;
+    const uint32_t mesh_uv[] = {0x30200020,0x30200020,0x30200020,0x30200020};
+    if (submitDraw(presenter, draw) != RECOMP_D3D_PRESENTER_OK ||
+        !checkPixels(presenter, color, readback, "environment material uses mesh UV0", mesh_uv)) return false;
     draw.vertex_stride = 24; // Missing UV0 remains invalid.
     return submitDraw(presenter, draw) == RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
 }
@@ -1343,17 +1359,17 @@ static bool testDrawPipelineEviction(
         draw.blend_weight_count = layout.blend_weight_count;
         passed = submitClear(&presenter, clear) == RECOMP_D3D_PRESENTER_OK &&
             submitDraw(&presenter, draw) == RECOMP_D3D_PRESENTER_OK;
-        const uint32_t slot = i % kDrawPipelineSlots;
+        const uint32_t slot = i == 9u ? 0u : i;
         passed = passed && presenter.draw_pipeline_count ==
-            (i < kDrawPipelineSlots ? i + 1u : kDrawPipelineSlots) &&
+            (i < 9u ? i + 1u : 9u) &&
             presenter.draw_pipelines[slot].used &&
             presenter.draw_pipelines[slot].fvf == order[i];
         if (!passed) std::fprintf(stderr, "FAIL pipeline cache draw=%u fvf=0x%X\n", i, order[i]);
-        if (passed && i >= kDrawPipelineSlots) {
-            const uint32_t pixel = i == kDrawPipelineSlots ? 0xff00ff00u : 0xffbfbfc7u;
+        if (passed && i >= 8u) {
+            const uint32_t pixel = i == 8u ? 0xff00ff00u : 0xffbfbfc7u;
             const uint32_t expected[] = {pixel, pixel, pixel, pixel};
             passed = checkPixels(&presenter, color, readback,
-                "pipeline eviction and rebuild", expected);
+                "nine-layout working set and return", expected);
         }
     }
     releaseCom(readback);
@@ -1398,6 +1414,18 @@ static bool testWindowClose(RecompD3dPresenter *warp)
         desc.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
         if (passed) passed = SUCCEEDED(factory->CreateSwapChain(
             presenter.device, &desc, &presenter.swap_chain));
+        ID3D11Texture2D *back = nullptr;
+        if (passed) passed = SUCCEEDED(presenter.swap_chain->GetBuffer(0u, IID_PPV_ARGS(&back)));
+        if (passed) passed = SUCCEEDED(presenter.device->CreateRenderTargetView(
+            back, nullptr, &presenter.present_target_view));
+        D3D11_TEXTURE2D_DESC game_desc{};
+        if (passed) back->GetDesc(&game_desc);
+        releaseCom(back);
+        game_desc.MiscFlags = 0u;
+        if (passed) passed = SUCCEEDED(presenter.device->CreateTexture2D(&game_desc, nullptr, &back));
+        if (passed) passed = SUCCEEDED(presenter.device->CreateRenderTargetView(
+            back, nullptr, &presenter.render_target_view));
+        releaseCom(back);
         if (!passed) std::fprintf(stderr, "FAIL window setup scenario=%u\n", scenario);
         if (passed) {
             active_presenter = &presenter;
@@ -1433,6 +1461,323 @@ static bool testWindowClose(RecompD3dPresenter *warp)
     return passed;
 }
 
+static bool testTargetLifetimes(
+    RecompD3dPresenter *presenter, ID3D11Texture2D *readback)
+{
+    presenter->owner_thread = GetCurrentThreadId();
+    active_presenter = presenter;
+    RecompD3dPresenterClearCommand clear{};
+    clear.clear_color = true;
+    clear.color = 0xff123456u;
+    clear.target.offscreen = clear.target.no_depth = true;
+    clear.target.color.format_byte = RECOMP_D3D_TEXTURE_FORMAT_A8R8G8B8;
+    clear.target.color.width = clear.target.color.height = 4u;
+    clear.target.color.data = 0x02000000u;
+    bool passed = submitClear(presenter, clear) == RECOMP_D3D_PRESENTER_OK;
+    const RecompD3dTextureDesc retained = clear.target.color;
+    clear.target.custom_depth = true;
+    clear.target.no_depth = false;
+    clear.target.depth = clear.target.color;
+    clear.target.depth.depth = true;
+    clear.target.depth.format_byte = 0x2eu;
+    for (uint32_t i = 0u; passed && i < 40u; ++i) {
+        const uint32_t base = 0x01000000u + (i % 20u) * 0x1000u;
+        clear.target.color.data = base + 0x100u;
+        clear.target.depth.data = base + 0x400u;
+        passed = submitClear(presenter, clear) == RECOMP_D3D_PRESENTER_OK;
+        passed = passed && recomp_d3d_presenter_release_memory(
+            presenter, base - 0x100u, 0x100u) == RECOMP_D3D_PRESENTER_OK &&
+            presenter->render_targets.size() == 2u && presenter->depth_targets.size() == 1u;
+        passed = passed && recomp_d3d_presenter_release_memory(
+            presenter, base | 0x80000000u, 0x1000u) == RECOMP_D3D_PRESENTER_OK &&
+            presenter->render_targets.size() == 1u && presenter->depth_targets.size() == 0u;
+    }
+    // A live working set can exceed sixteen targets without being a leak.
+    for (uint32_t i = 0u; passed && i < 24u; ++i) {
+        clear.target.color.data = 0x01000000u + i * 0x1000u;
+        clear.target.depth.data = clear.target.color.data + 0x400u;
+        passed = submitClear(presenter, clear) == RECOMP_D3D_PRESENTER_OK;
+    }
+    passed = passed && presenter->render_targets.size() == 25u &&
+        presenter->depth_targets.size() == 24u && presenter->target_bytes == 49u * 64u;
+    const uint64_t saved_bytes = presenter->target_bytes;
+    presenter->target_bytes = kTargetByteLimit;
+    clear.target.color.data = 0x03000000u;
+    passed = passed && submitClear(presenter, clear) == RECOMP_D3D_PRESENTER_OUT_OF_MEMORY &&
+        presenter->render_targets.size() == 25u && presenter->depth_targets.size() == 24u;
+    presenter->target_bytes = saved_bytes;
+    passed = passed && recomp_d3d_presenter_release_memory(
+        presenter, 0x81000000u, 24u * 0x1000u) == RECOMP_D3D_PRESENTER_OK &&
+        presenter->render_targets.size() == 1u && presenter->depth_targets.empty();
+    passed = passed && recomp_d3d_presenter_release_memory(
+        presenter, 0xfffffff0u, 0x20u) == RECOMP_D3D_PRESENTER_INVALID_ARGUMENT &&
+        recomp_d3d_presenter_release_memory(presenter, retained.data, 0u) ==
+            RECOMP_D3D_PRESENTER_INVALID_ARGUMENT;
+    RenderTargetEntry *entry = findRenderTarget(presenter, retained);
+    ID3D11Resource *resource = nullptr;
+    ID3D11Texture2D *texture = nullptr;
+    if (entry) entry->render_view->GetResource(&resource);
+    passed = passed && resource && SUCCEEDED(resource->QueryInterface(
+        __uuidof(ID3D11Texture2D), reinterpret_cast<void **>(&texture)));
+    const uint32_t expected[4] = {0xff123456u, 0xff123456u, 0xff123456u, 0xff123456u};
+    if (passed) passed = checkPixels(presenter, texture, readback,
+        "live target survives forty storage releases", expected);
+    releaseCom(texture);
+    releaseCom(resource);
+    passed = passed && recomp_d3d_presenter_release_memory(
+        presenter, retained.data, 0x1000u) == RECOMP_D3D_PRESENTER_OK &&
+        presenter->render_targets.size() == 0u;
+    active_presenter = nullptr;
+    std::fprintf(passed ? stdout : stderr,
+        "%s forty lifetimes, 24 simultaneous color/depth targets, byte budget, aliases, retained pixels\n",
+        passed ? "PASS" : "FAIL");
+    return passed;
+}
+
+static bool testGamma(RecompD3dPresenter *presenter,
+    ID3D11Texture2D *color, ID3D11Texture2D *readback)
+{
+    const uint32_t original[4] = {0x804080c0u, 0xff00ff00u, 0xffffffffu, 0u};
+    uint32_t pixels[16];
+    for (unsigned i = 0u; i < 16u; ++i) pixels[i] = original[i % 4u];
+    presenter->context->UpdateSubresource(color, 0u, nullptr, pixels, 16u, 0u);
+    D3D11_TEXTURE2D_DESC desc{};
+    color->GetDesc(&desc);
+    ID3D11Texture2D *output = nullptr;
+    ID3D11RenderTargetView *view = nullptr;
+    bool passed = SUCCEEDED(presenter->device->CreateTexture2D(&desc, nullptr, &output));
+    if (passed) passed = SUCCEEDED(presenter->device->CreateRenderTargetView(output, nullptr, &view));
+    if (passed) passed = renderOutput(presenter, view) &&
+        checkPixels(presenter, output, readback, "default gamma identity", original);
+    uint8_t ramp[3][256];
+    for (unsigned i = 0u; i < 256u; ++i) {
+        ramp[0][i] = static_cast<uint8_t>(255u-i);
+        ramp[1][i] = static_cast<uint8_t>(i/2u);
+        ramp[2][i] = 17u;
+    }
+    uint32_t expected[4];
+    for (unsigned i = 0u; i < 4u; ++i) expected[i] = (original[i] & 0xff000000u) |
+        ((255u-((original[i]>>16)&255u))<<16) | ((((original[i]>>8)&255u)/2u)<<8) | 17u;
+    passed = passed && submitGamma(presenter, ramp) == RECOMP_D3D_PRESENTER_OK;
+    for (unsigned repeat = 0u; passed && repeat < 2u; ++repeat) passed =
+        renderOutput(presenter, view) &&
+        checkPixels(presenter, output, readback, "per-channel gamma", expected) &&
+        checkPixels(presenter, color, readback, "gamma preserves guest pixels", original);
+    for (auto &channel : ramp) for (unsigned i = 0u; i < 256u; ++i) channel[i] = static_cast<uint8_t>(i);
+    passed = passed && submitGamma(presenter, ramp) == RECOMP_D3D_PRESENTER_OK &&
+        renderOutput(presenter, view) &&
+        checkPixels(presenter, output, readback, "restored gamma identity", original);
+    releaseCom(view);
+    releaseCom(output);
+    return passed;
+}
+
+static bool testVertexProgram(RecompD3dPresenter *presenter,
+    ID3D11Texture2D *color, ID3D11Texture2D *readback)
+{
+    float vertices[4][8]{};
+    for (unsigned v=0; v<4; ++v) {
+        vertices[v][0] = v&1 ? 3.5f : -0.5f;
+        vertices[v][1] = v&2 ? 3.5f : -0.5f;
+        vertices[v][2] = 0.25f;
+        vertices[v][4] = 1.0f;
+    }
+    const uint16_t indices[] = {0,1,2,3};
+    RecompD3dPresenterDrawCommand draw{};
+    draw.fvf=0x112u; draw.vertex_stride=32;
+    draw.vertex_count=draw.index_count=4; draw.triangle_count=2;
+    draw.primitive_type=RECOMP_D3D_PT_TRIANGLESTRIP;
+    draw.vertex_bytes=vertices; draw.index_bytes=indices;
+    draw.has_transform=true; draw.blend.color_write_mask=15;
+    draw.program_count=3;
+    // Synthetic MOVs: position from v0, color from c109, UV from v9.
+    const unsigned attributes[] = {0,0,9}, outputs[] = {0,3,9};
+    for (unsigned i=0;i<3;++i) {
+        draw.program[i][1]=(1u<<21) | (attributes[i]<<9) | 0x1bu;
+        draw.program[i][2]=(i==1 ? 3u : 2u)<<26;
+        draw.program[i][3]=(15u<<12) | (1u<<11) | (outputs[i]<<3) | (i==2 ? 1u:0u);
+    }
+    draw.program[1][1] |= 109u<<13;
+    draw.program_constants[58][0]=2; draw.program_constants[58][1]=-2;
+    draw.program_constants[59][0]=draw.program_constants[59][1]=1.5f;
+    draw.program_constants[58][2]=1;
+    draw.program_constants[109][3]=1;
+    const RecompD3dPresenterClearCommand clear={true,true,false,0xff0000ffu,1,0};
+    for (unsigned channel=0;channel<2;++channel) {
+        draw.program_constants[109][0]=channel==0 ? 1.0f:0.0f;
+        draw.program_constants[109][1]=channel==1 ? 1.0f:0.0f;
+        const uint32_t pixel=channel==0 ? 0xffff0000u:0xff00ff00u;
+        const uint32_t expected[]={pixel,pixel,pixel,pixel};
+        if (submitClear(presenter,clear)!=RECOMP_D3D_PRESENTER_OK ||
+            submitDraw(presenter,draw)!=RECOMP_D3D_PRESENTER_OK ||
+            !checkPixels(presenter,color,readback,"program output and changed constants",expected)) return false;
+    }
+    // A doubled sample grid must cover the same host pixels after inversion.
+    for (auto &vertex : vertices) { vertex[0] = vertex[0]*2+4; vertex[1] = vertex[1]*2+4; }
+    draw.program_constants[58][0] *= 2; draw.program_constants[58][1] *= 2;
+    draw.program_constants[59][0] = draw.program_constants[59][0]*2+4; draw.program_constants[59][1] = draw.program_constants[59][1]*2+4;
+    const uint32_t scaled_green[]={0xff00ff00u,0xff00ff00u,0xff00ff00u,0xff00ff00u};
+    if (submitClear(presenter,clear)!=RECOMP_D3D_PRESENTER_OK ||
+        submitDraw(presenter,draw)!=RECOMP_D3D_PRESENTER_OK ||
+        !checkPixels(presenter,color,readback,"program sample-grid inversion",scaled_green)) return false;
+    for (auto &vertex : vertices) { vertex[0] = (vertex[0]-4)/2; vertex[1] = (vertex[1]-4)/2; }
+    draw.program_constants[58][0] /= 2; draw.program_constants[58][1] /= 2;
+    draw.program_constants[59][0] = (draw.program_constants[59][0]-4)/2; draw.program_constants[59][1] = (draw.program_constants[59][1]-4)/2;
+    // Negative UVs distinguish the scene clamp from the water-mask wrap.
+    auto water = draw;
+    for (auto &vertex : vertices) { vertex[6]=0.25f; vertex[7]=-0.25f; }
+    const uint32_t scene[]={0xffff0000u,0xffff0000u,0xff00ff00u,0xff00ff00u};
+    const uint32_t mask[]={0x00ffffffu,0x00ffffffu,0xffffffffu,0xffffffffu};
+    water.has_texture=true;
+    water.texture.format_byte=RECOMP_D3D_TEXTURE_FORMAT_A8R8G8B8;
+    water.texture.bits_per_pixel=32;
+    water.texture.width=water.texture.height=2;
+    water.texture.data=0x006f0000u;
+    water.texture_bytes=scene; water.texture_byte_count=sizeof scene;
+    water.reflection_texture=water.texture;
+    water.reflection_texture.data+=16;
+    water.reflection_bytes=mask; water.reflection_byte_count=sizeof mask;
+    water.program[2][3]&=~1u;
+    std::memcpy(water.program[3],water.program[2],16);
+    water.program[3][3]=(15u<<12)|(1u<<11)|(10u<<3)|1u;
+    water.program_count=4;
+    const uint32_t red[]={0xffff0000u,0xffff0000u,0xffff0000u,0xffff0000u};
+    for (unsigned masked=0;masked<2;++masked) {
+        water.program_alpha_mask=masked!=0;
+        if (submitClear(presenter,clear)!=RECOMP_D3D_PRESENTER_OK ||
+            submitDraw(presenter,water)!=RECOMP_D3D_PRESENTER_OK ||
+            !checkPixels(presenter,color,readback,masked ? "water mask wraps negative UV" : "water scene clamps negative UV",red)) return false;
+    }
+    // Projected scene/mask coordinates carry q=2 through rasterization.
+    for (unsigned i=2;i<4;++i) {
+        water.program[i][1]=(1u<<21)|((113u+i)<<13)|0x1bu;
+        water.program[i][2]=3u<<26;
+        water.program_constants[113u+i][0]=0.5f;
+        water.program_constants[113u+i][1]=i==2 ? 0.5f : -0.5f;
+        water.program_constants[113u+i][3]=2.0f;
+    }
+    for (unsigned masked=0;masked<2;++masked) {
+        water.program_alpha_mask=masked!=0;
+        if (submitClear(presenter,clear)!=RECOMP_D3D_PRESENTER_OK ||
+            submitDraw(presenter,water)!=RECOMP_D3D_PRESENTER_OK ||
+            !checkPixels(presenter,color,readback,masked ? "projected water mask" : "projected water scene",red)) return false;
+    }
+    // The mask's transparent base level and opaque mip tail distinguish bias.
+    uint8_t mip_mask[56]{};
+    for (unsigned block=0;block<4;++block)
+        std::memset(mip_mask+block*8+4,255,4);
+    for (unsigned block=4;block<7;++block)
+        std::memset(mip_mask+block*8,255,4);
+    water.reflection_texture.format_byte=RECOMP_D3D_TEXTURE_FORMAT_DXT1;
+    water.reflection_texture.bits_per_pixel=4;
+    water.reflection_texture.width=water.reflection_texture.height=8;
+    water.reflection_texture.mip_levels=4;
+    water.reflection_texture.data+=16;
+    water.reflection_bytes=mip_mask; water.reflection_byte_count=sizeof mip_mask;
+    water.program[3][1]=(1u<<21)|(9u<<9)|0x1bu;
+    water.program[3][2]=2u<<26;
+    for (unsigned i=0;i<4;++i) { vertices[i][6]=i&1 ? 1.0f:0.0f; vertices[i][7]=i&2 ? 1.0f:0.0f; }
+    const uint32_t transparent_red[]={0x00ff0000u,0x00ff0000u,0x00ff0000u,0x00ff0000u};
+    for (unsigned biased=0;biased<2;++biased) {
+        water.program_mask_lod_bias=biased ? -2.0f:0.0f;
+        if (submitClear(presenter,clear)!=RECOMP_D3D_PRESENTER_OK ||
+            submitDraw(presenter,water)!=RECOMP_D3D_PRESENTER_OK ||
+            !checkPixels(presenter,color,readback,"water mask mip bias",biased ? transparent_red:red)) return false;
+    }
+    const uint32_t green[]={0xff00ff00u,0xff00ff00u,0xff00ff00u,0xff00ff00u};
+    auto program = [&](unsigned id) {
+        draw.program[1][1]=(1u<<21)|((120u+id)<<13)|0x1bu;
+        draw.program_constants[120u+id][1]=1;
+        draw.program_constants[120u+id][3]=1;
+        return submitDraw(presenter,draw)==RECOMP_D3D_PRESENTER_OK &&
+            checkPixels(presenter,color,readback,"cached program pixels",green);
+    };
+    for (unsigned i=0;i<10;++i) if (!program(i)) return false;
+    const auto next=presenter->next_draw_pipeline_slot;
+    for (unsigned i=0;i<10;++i) if (!program(i)) return false;
+    if (presenter->next_draw_pipeline_slot!=next) {
+        std::fprintf(stderr,"FAIL ten-program working set recompiles\n");
+        return false;
+    }
+    for (unsigned i=10;i<=kDrawPipelineSlots;++i) if (!program(i)) return false;
+    if (presenter->draw_pipeline_count!=kDrawPipelineSlots || !program(0)) return false;
+    // Dual issue must read r2 before the simultaneous MAC overwrites it.
+    std::memcpy(draw.program[3],draw.program[2],16);
+    std::memcpy(draw.program[2],draw.program[0],16);
+    draw.program_count=4;
+    draw.program[0][1]=(1u<<21)|(109u<<13)|0x1bu;
+    draw.program[0][2]=3u<<26;
+    draw.program[0][3]=(15u<<24)|(2u<<20);
+    draw.program[1][1]=(1u<<25)|(1u<<21)|(110u<<13)|0x1bu;
+    draw.program[1][2]=(3u<<26)|(0x1bu<<2);
+    draw.program[1][3]=(2u<<30)|(1u<<28)|(15u<<24)|(2u<<20)|(15u<<12)|(1u<<11)|(3u<<3)|4u;
+    draw.program_constants[110][0]=1;
+    draw.program_constants[110][3]=1;
+    if (submitClear(presenter,clear)!=RECOMP_D3D_PRESENTER_OK ||
+        submitDraw(presenter,draw)!=RECOMP_D3D_PRESENTER_OK ||
+        !checkPixels(presenter,color,readback,"dual issue reads before writes",green)) return false;
+    draw.program[0][3] |= 2u; // Relative constants are deliberately unsupported.
+    return submitDraw(presenter,draw)==RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+}
+
+static bool testDirectionalLighting(RecompD3dPresenter *presenter,
+    ID3D11Texture2D *color, ID3D11Texture2D *readback)
+{
+    float vertices[4][8]{};
+    for (unsigned i=0;i<4;++i) {
+        vertices[i][0]=i&1 ? 1.0f:-1.0f;
+        vertices[i][1]=i&2 ? -1.0f:1.0f;
+        vertices[i][3]=1.0f;
+    }
+    const uint16_t indices[]={0,1,2,3};
+    const uint32_t texels[]={0xff804020u};
+    RecompD3dPresenterDrawCommand draw{};
+    draw.fvf=0x112; draw.vertex_stride=32; draw.vertex_count=draw.index_count=4;
+    draw.triangle_count=2; draw.primitive_type=RECOMP_D3D_PT_TRIANGLESTRIP;
+    draw.vertex_bytes=vertices; draw.index_bytes=indices; draw.blend.color_write_mask=15;
+    draw.has_transform=true;
+    draw.transform[0]=draw.transform[5]=draw.transform[10]=draw.transform[15]=1;
+    draw.has_texture=true; draw.texture.data=0x006f0200;
+    draw.texture.format_byte=RECOMP_D3D_TEXTURE_FORMAT_A8R8G8B8;
+    draw.texture.width=draw.texture.height=1; draw.texture.bits_per_pixel=32;
+    draw.texture_bytes=texels; draw.texture_byte_count=4;
+    auto &light=draw.directional;
+    light.enabled=light.normalize=true; light.count=1; light.directions[0][0]=1;
+    for (unsigned c=0;c<3;++c) {
+        light.colors[0][c]=1; light.material_diffuse[c]=0.25f; light.ambient_emissive[c]=0.25f;
+    }
+    float world[16]{}; world[0]=2; world[5]=world[10]=world[15]=1;
+    if (!recomp_d3d_normal_transform(world,light.normal_transforms[0]) ||
+        light.normal_transforms[0][0]!=0.5f) return false;
+    auto pixels = [&](const char *label, uint32_t value) {
+        const uint32_t expected[]={value,value,value,value};
+        return submitDraw(presenter,draw)==RECOMP_D3D_PRESENTER_OK &&
+            checkPixels(presenter,color,readback,label,expected);
+    };
+    if (!pixels("directional diffuse plus ambient and material",0xff402010)) return false;
+    light.directions[0][0]=-1;
+    if (!pixels("back-facing normal gets ambient only",0xff201008)) return false;
+    world[0]=-2;
+    if (!recomp_d3d_normal_transform(world,light.normal_transforms[0]) ||
+        !pixels("world normal transform",0xff402010)) return false;
+    float weighted[4][9]{};
+    for (unsigned i=0;i<4;++i) {
+        std::memcpy(weighted[i],vertices[i],12); weighted[i][3]=0.25f; weighted[i][4]=1;
+    }
+    draw.fvf=0x116; draw.vertex_stride=36; draw.vertex_bytes=weighted; draw.blend_weight_count=1;
+    std::memcpy(draw.blend_transforms[0],draw.transform,64);
+    std::memcpy(light.normal_transforms[1],light.normal_transforms[0],64);
+    world[0]=2;
+    if (!recomp_d3d_normal_transform(world,light.normal_transforms[0]) ||
+        !pixels("weighted normals use remainder matrix",0xff402010)) return false;
+    light.count=0;
+    if (!pixels("no active lights retains ambient",0xff201008)) return false;
+    light.enabled=false;
+    if (!pixels("unlit texture unchanged",0xff804020)) return false;
+    world[0]=0;
+    return !recomp_d3d_normal_transform(world,light.normal_transforms[0]);
+}
+
 int main()
 {
     ULONGLONG next_dump = 0u;
@@ -1459,6 +1804,7 @@ int main()
     uint32_t detail = 0u;
     int status = 0;
     if (!createTestTargets(&presenter, &color, &readback) ||
+        !testTargetLifetimes(&presenter, readback) ||
         !testOffscreenRendering(&presenter, color, readback, true)) {
         status = 70;
     } else {
@@ -1481,6 +1827,9 @@ int main()
     if (status == 0 && !testVertexBlending(&presenter, color, readback)) status = 80;
     if (status == 0 && !testLinearTextureUpdates(&presenter, readback)) status = 88;
     if (status == 0 && !testDrawPipelineEviction(&presenter)) status = 89;
+    if (status == 0 && !testGamma(&presenter, color, readback)) status = 94;
+    if (status == 0 && !testVertexProgram(&presenter, color, readback)) status = 95;
+    if (status == 0 && !testDirectionalLighting(&presenter, color, readback)) status = 96;
     if (status == 0 && !testWindowClose(&presenter)) status = 86;
     releaseCom(readback);
     releaseCom(color);

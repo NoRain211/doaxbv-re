@@ -62,6 +62,8 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
     case RECOMP_D3D_PRESENTER_COMMAND_PRESENT:
         ++snapshot->present_count;
         break;
+    case RECOMP_D3D_PRESENTER_COMMAND_GAMMA:
+        break;
     case RECOMP_D3D_PRESENTER_COMMAND_DRAW:
         ++snapshot->draw_count;
         break;
@@ -69,6 +71,20 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
         return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
     }
     snapshot->commands[snapshot->command_count++] = *command;
+    return RECOMP_D3D_PRESENTER_OK;
+}
+
+RecompD3dPresenterError recomp_d3d_presenter_release_memory(
+    RecompD3dPresenter *presenter, uint32_t base, uint32_t size)
+{
+    if (presenter == NULL || presenter != active_presenter) {
+        return RECOMP_D3D_PRESENTER_NOT_INITIALIZED;
+    }
+    if (base >= 0x80000000u && base < 0x84000000u) base -= 0x80000000u;
+    if (size == 0u || (uint64_t)base + size > UINT64_C(0x100000000)) {
+        return RECOMP_D3D_PRESENTER_INVALID_ARGUMENT;
+    }
+    /* This backend retains commands, not uploaded pixels. */
     return RECOMP_D3D_PRESENTER_OK;
 }
 
