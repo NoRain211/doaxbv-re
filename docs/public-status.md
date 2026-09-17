@@ -70,11 +70,13 @@ reuse have bounded evidence. See the [water progress report](https://github.com/
 All offline acceptance rows and original rendering parity remain subject to #16.
 
 The current source recipe also preserves the recovered Radio Station entry and
-input-history expiry correction. A manual check reached Radio Station. For the
-delayed rally-start crouch, two old-build controls reproduced nine episodes after
-the action button was released; two corrected matches completed fifteen rallies
-without recurrence, retained fresh serving, and returned naturally to the map.
+input-history expiry correction. A manual check of local candidate r484 reached
+Radio Station. Two controls using local candidate r501 reproduced nine delayed
+rally-start crouches after the action button was released; two corrected matches
+using local candidate r504 completed fifteen rallies without recurrence, retained
+fresh serving, and returned naturally to the map.
 These were muted scripted-controller comparisons using identical initial save
-copies. The recipe reproduces their generated program; the exact public source
+copies. See the [controller comparison report](https://github.com/NoRain211/doaxbv-re/issues/16#issuecomment-5708858572).
+The recipe reproduces r504's generated program; the exact public source
 branch has not had a fresh gameplay run. Physical-controller repeat, other action
 outcomes, court variants and full offline acceptance remain open in #16.
