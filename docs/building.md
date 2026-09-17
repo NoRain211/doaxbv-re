@@ -6,7 +6,7 @@ The current `tools/build_game.py` workflow extracts a supported user-owned ISO,
 checks its XBE, applies `tools/xboxrecomp-patches/local-parity.patch` to revision
 `32da23872a552b12b4a932c9d5a6e952bb3f24bb`, generates the game program, and
 builds a Win32 Release runner. The authenticated `tools/game-recipe/recipe.json`
-provides the original function boundaries, 42 ordered recovery inputs, manual
+provides the original function boundaries, 43 ordered recovery inputs, manual
 call targets, and expected generated-file hashes. Setup stops before compiling
 if any recipe input or generated file differs. It creates a new `private/setup-*` directory for
 each attempt. The receipt, logs, generated program, and runner stay there.
@@ -64,7 +64,7 @@ Use `--generate-only` to stop after generation. A completed build writes
 records a build. A supervised native run provides the behavior evidence.
 
 The recipe reproduces the current proven local generated program, whose 19-file
-manifest is `0957e77721f673ea186202b3e451607900c1f4d7a2a20282e33df6cebdf0653f`.
+manifest is `bfe6668ec59df7f4716c2693f7ea20367b7406bcd2971685c3f44d5c55596af3`.
 All 20 generated files, including unresolved stubs, are checked individually.
 The receipt records the recipe, patch, generated manifest, XBE, and runner
 identities. A matching generated program does not imply an identical executable:

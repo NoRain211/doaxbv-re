@@ -4,9 +4,13 @@
 builder checks this recipe hash before using it and checks every generated
 file against the current proven local program before compilation.
 
-The function shards contain addresses and analysis metadata. The 42 recovery
+The function shards contain addresses and analysis metadata. The 43 recovery
 files must retain their listed order. Neither contains machine instructions or
 game assets. Manual call targets preserve native adapter routing.
+
+The final recovery input restores the input-history owner and the reached Radio
+Station callback. Its regenerated output matches the locally tested program;
+the expiry correction keeps comparisons and their branches in the same body.
 
 The source base is upstream `32da23872a552b12b4a932c9d5a6e952bb3f24bb`.
 Apply `local-parity.patch` directly to that clean revision. Do not first apply

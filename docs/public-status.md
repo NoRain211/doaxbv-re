@@ -68,3 +68,13 @@ The dusk run ends normally at its supervision limit, so it does not prove map
 return or the complete activity row. Character/platform shading and shader-cache
 reuse have bounded evidence. See the [water progress report](https://github.com/NoRain211/doaxbv-re/issues/16#issuecomment-5656165854).
 All offline acceptance rows and original rendering parity remain subject to #16.
+
+The current source recipe also preserves the recovered Radio Station entry and
+input-history expiry correction. A manual check reached Radio Station. For the
+delayed rally-start crouch, two old-build controls reproduced nine episodes after
+the action button was released; two corrected matches completed fifteen rallies
+without recurrence, retained fresh serving, and returned naturally to the map.
+These were muted scripted-controller comparisons using identical initial save
+copies. The recipe reproduces their generated program; the exact public source
+branch has not had a fresh gameplay run. Physical-controller repeat, other action
+outcomes, court variants and full offline acceptance remain open in #16.
