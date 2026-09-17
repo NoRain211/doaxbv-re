@@ -12,6 +12,16 @@ The final recovery input restores the input-history owner and the reached Radio
 Station callback. Its regenerated output matches the locally tested program;
 the expiry correction keeps comparisons and their branches in the same body.
 
+The setup suite generates synthetic expiry logic with this recovery and checks
+that the input-history comparisons and branches share one body, and that the
+Radio callback retains its full range. It requires no game files. Run:
+
+```sh
+git submodule update --init tools/xboxrecomp
+python -m pip install capstone==5.0.9
+python -m unittest discover -s tools -p 'test_*.py'
+```
+
 The source base is upstream `32da23872a552b12b4a932c9d5a6e952bb3f24bb`.
 Apply `local-parity.patch` directly to that clean revision. Do not first apply
 `runtime-bootstrap.patch`. The patch reconstructs the preserved working local

@@ -1,15 +1,47 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Synthetic checks for variable-size authenticated generated programs."""
+"""Synthetic checks for authenticated generation and setup."""
+import json
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 
-from build_game import ROOT, program_manifest, verify_files
+from build_game import LIFTER_REVISION, RECIPE_SHA256, ROOT, program_manifest, verify_files
 from extract_iso import sha256
 
 
 class ProgramManifestTests(unittest.TestCase):
+    def test_input_history_and_radio_recovery_generation(self):
+        verify_files(ROOT, {"tools/game-recipe/recipe.json": RECIPE_SHA256})
+        recipe = json.loads((ROOT / "tools/game-recipe/recipe.json").read_text(encoding="utf-8"))
+        verify_files(ROOT, recipe["files"])
+        recovery = "tools/game-recipe/recoveries/recover-input-history-radio.json"
+        self.assertEqual(recipe["recoveries"].count(recovery), 1)
+        self.assertEqual(recipe["recoveries"][-1], recovery)
+        self.assertEqual(recipe["lifter_revision"], LIFTER_REVISION)
+        lifter_source = ROOT / "tools/xboxrecomp"
+        self.assertTrue((lifter_source / "tools/recomp/translator.py").is_file(),
+                        "Run git submodule update --init tools/xboxrecomp first")
+        private = ROOT / "private"
+        private.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="recovery-test-", dir=private) as folder:
+            work = Path(folder)
+            lifter = work / "lifter"
+
+            def run(args, cwd=ROOT):
+                result = subprocess.run(args, cwd=cwd, capture_output=True, text=True,
+                                        timeout=60)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+            # Use the builder's pinned revision and patch without modifying the submodule.
+            run(["git", "clone", "--quiet", "--shared", "--no-checkout",
+                 str(lifter_source), str(lifter)])
+            run(["git", "checkout", "--quiet", "--detach", LIFTER_REVISION], lifter)
+            run(["git", "apply", str(ROOT / recipe["patch"])], lifter)
+            run([sys.executable, str(ROOT / "tools/xboxrecomp-patches/check_input_history.py"),
+                 str(lifter), str(ROOT / recovery), str(work)])
+
     def test_parity_rejects_changed_or_missing_file(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
