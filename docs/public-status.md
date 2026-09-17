@@ -79,9 +79,11 @@ These were muted scripted-controller comparisons using identical initial save
 copies. See the [controller comparison report](https://github.com/NoRain211/doaxbv-re/issues/16#issuecomment-5708858572).
 The 0.4 candidate retains the input-history and Radio repairs, and adds bounded
 activity recoveries alongside the tested local glare correction and FPS logging.
-Its first local package test still stopped during Take a Rest at a different
-split predicate. Both predicate returns are now recovered and covered by a
-synthetic regression. Corrected-candidate gameplay and reported audio crackle
-remain unverified.
+Local package tests found two split Rest predicates. Both now retain their
+true/false returns and have synthetic generation coverage. The reported Tina
+midday branch also fails in an isolated test of the preserved r504 executable;
+the earlier successful Rest run covered a different predicate. Matching build
+inputs did not establish coverage of all Rest variants. Corrected-candidate
+gameplay, the reported shop-exit crash and audio crackle remain unresolved.
 Physical-controller repeat, other action
 outcomes, court variants and full offline acceptance remain open in #16.

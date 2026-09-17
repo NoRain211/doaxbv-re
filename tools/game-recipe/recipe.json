@@ -159,9 +159,9 @@
     "tools/xboxrecomp-patches/local-parity.patch": "2b6d58e94264282c0c31499e3bf80b3daa26d664cbf895c9447de1f44edd8d70",
     "tools/game-recipe/recoveries/recover-input-history-radio.json": "8164a3c3d1b22d0bfdd1fc9594f503e607e2c34389ea421b197398db4d36c2e8",
     "tools/game-recipe/recoveries/recover-rest-callback.json": "73c69b062d695abd4e699695c7ef82d66ac266fc6f02844760b1f203d5c43fd3",
-    "tools/game-recipe/recoveries/recover-rest-predicate.json": "d63ba3be75713ff0e519c123f63e9d68e8f02990b35aa534b748270a0fae619b"
+    "tools/game-recipe/recoveries/recover-rest-predicate.json": "994a602780c604088cc27e9d51be17547d772fa1e76f526021986a9ea75318c8"
   },
-  "program_manifest_sha256": "f19c9e3141243f8f2b385bc83945e779b5803829d0a52f4f82f9aea9a55ed75d",
+  "program_manifest_sha256": "607dcab6311e4d6dcc62a064ff49be1755963f6438fc33c480f2786b085a1aac",
   "ebp_overrides": 10991,
   "manual_call_targets": "tools/game-recipe/manual-call-targets.json",
   "generated_files": {
@@ -172,18 +172,18 @@
     "recomp_0004.c": "af6e0b2a80c4795386a4f59cb890b12f8b4beccc87278349411037bcb1bb8e8a",
     "recomp_0005.c": "509a78133ae88fa8400f3970458ad6e4ccd0ebf66b11ef75ccd9846790ab5829",
     "recomp_0006.c": "1093552d4a84077e6949c688b0142af8856156677cef5f6279b781a350a3ce38",
-    "recomp_0007.c": "979c835c3d4ba7cb5ec4db3a8fe9f322a518ddd3978cb748d0efd831f2b287a4",
-    "recomp_0008.c": "64985041b58855bbfa5fb2a8fb8957c4d3f20fb3d2e572342cb6fd95226bd8e8",
-    "recomp_0009.c": "2f7c7c444f1f2f824a4a38791a5f9f8272bd5260f524cd2d24621023df342cae",
-    "recomp_0010.c": "22ef444ac5b1de564267a4d21bf06186baeff94044279c4428e75b2a7f6373c9",
-    "recomp_0011.c": "ae37e2d92fe4829db640641a6b63b8a7cb832c52597559b1081179a1d1db77ec",
-    "recomp_0012.c": "291dfc5b3d1d6a4505358e0ae5fd37f4b7ed4137a563de11fe7e55d894af34bc",
-    "recomp_0013.c": "47bd7916acd9329279a8d22c4c191877f3dc9c8dda33d144a094d2f8e20b44dd",
-    "recomp_0014.c": "7556a174e8043fba558d3bcc8034f854f7845e2c29b5629c5e0e1769d33a871a",
-    "recomp_0015.c": "e2f02189c1532d156060b8539beb3417b27c3a5b4326060230069d9bada7ffa1",
-    "recomp_0016.c": "cbd13ee212e7d2e095df8cd37fd667057e66c74b07749283e18e8af779ce3fb8",
-    "recomp_dispatch.c": "aaa09de0d620332540c3010544ecc1877b85c73249d49969bd27927876e9b62f",
-    "recomp_funcs.h": "b251b5b38e060198948b733d8bf78ce1dfdf4073c0b4607cf5e6a8e2a5751d47",
+    "recomp_0007.c": "ae8d704bfa863e2e889e52af3c1ff42627c092730a19c38c3f18ab873bf31fc0",
+    "recomp_0008.c": "26c9cab142108207886969da5c8ae8504dcdb1504d55eadea9780cb5c89dceba",
+    "recomp_0009.c": "1cc20598059beda0a2e722cd5cf7c3475894f3139471c671de504996ab83ae53",
+    "recomp_0010.c": "b8d881b783a834e49cb3ff4669c71659b25ed7826213a07d68ce30dec4c2a008",
+    "recomp_0011.c": "5a317f6b1721ff73674600e974f86cdcd4bc55a5a37f022ea447cf9bf7475355",
+    "recomp_0012.c": "70a303d39b98396f04b5351eda1353fe9fb456066b0c097d5a61d6e3ab3b58de",
+    "recomp_0013.c": "d3cc5f952239d11a1240eec4c8affff547bedaf17cc1e12cae75daf3b10b795d",
+    "recomp_0014.c": "c3a0bdaf05f55f191dec2f83b8f48190041c14efabf00b73139b31f39d613332",
+    "recomp_0015.c": "e0d62e58cde1c2f781f2703a6dad02acebde97158bb27c47dd638fb632f2a6bf",
+    "recomp_0016.c": "da6f112b6e200f00575444619ad1c1c6a8504e58481aabbf760dd1c3518cb5ad",
+    "recomp_dispatch.c": "908c1e1950a1e3bd2e2f19750203cab051604ccdcc6ea8c4b523eab2fcd54f96",
+    "recomp_funcs.h": "41476b6c89a447c42cba34a2239bc49d01f37a33d7d0ad8308dc83583a4c0885",
     "recomp_stubs_unresolved.c": "071f6eb220e3fb89467d096ba8f6ccff0fdd0ef7aa6115852a8ec84364a0422a"
   }
 }

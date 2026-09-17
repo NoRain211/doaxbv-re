@@ -13,13 +13,13 @@ Station callback. These bodies match the locally tested program;
 the expiry correction keeps comparisons and their branches in the same body.
 
 The Rest recoveries supply a missing callback and its two dependencies, and join
-the reached predicate's true/false returns into one owner. Other generated bodies
-remain unchanged. The corrected Take a Rest variant still needs local testing.
+each of two reached predicates' true/false returns into one owner. Other generated
+bodies remain unchanged. The corrected Take a Rest variants still need local testing.
 
 The setup suite generates synthetic expiry logic with this recovery and checks
 that the input-history comparisons and branches share one body, and that the
 Radio callback retains its full range. It also exercises both local returns of
-the Rest predicate. It requires no game files. Run:
+both Rest predicates. It requires no game files. Run:
 
 ```sh
 git submodule update --init tools/xboxrecomp

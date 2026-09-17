@@ -13,9 +13,10 @@
 - Recover a missing activity callback and its two dependencies associated with
   a reported 0.3 Take a Rest stop. The exact activity variant is uncertain;
   the local release candidate still needs a gameplay check.
-- Restore both returns of another Rest predicate reached by the local package
-  test. The first candidate stopped at its missing true-return branch. A
-  synthetic generation regression now checks that both returns share one body.
+- Restore both returns of two Rest predicates reached by local package tests,
+  including the reported Tina midday stop. The latter also fails in the preserved
+  local runner; earlier Rest acceptance covered a different variant. A synthetic
+  generation regression checks that each predicate retains both returns.
 
 ### Release and setup
 
@@ -34,9 +35,11 @@
   The x64 Release build passes ten native tests and eight setup, authentication,
   extraction and launcher tests. Generation reused a verified disc extraction;
   extraction was separately tested with a synthetic ISO.
-- User testing of the exact local candidate is pending. Nothing is published.
+- Earlier candidates failed Rest and shop-exit checks. User testing of the
+  corrected candidate is pending. Nothing is published.
 - Broader Take a Rest variants, complete offline flows, hair rendering, movie
-  performance, audio crackle and area-transition slowdown remain open. The recipe still has
+  performance, audio crackle, the shop-exit crash and area-transition slowdown
+  remain open. The recipe still has
   unsupported paths; this is not complete gameplay acceptance.
 
 ## 0.3 Alpha — 2026-09-13

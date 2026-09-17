@@ -65,8 +65,8 @@ Use `--generate-only` to stop after generation. A completed build writes
 records a build. A supervised native run provides the behavior evidence.
 
 The recipe retains the tested local program and adds the bounded activity
-callback recovery. Its 19-file manifest is
-`f19c9e3141243f8f2b385bc83945e779b5803829d0a52f4f82f9aea9a55ed75d`.
+callback and Rest predicate recoveries. Its 19-file manifest is
+`607dcab6311e4d6dcc62a064ff49be1755963f6438fc33c480f2786b085a1aac`.
 All 20 generated files, including unresolved stubs, are checked individually.
 The receipt records the recipe, patch, generated manifest, XBE, and runner
 identities. A matching generated program does not imply an identical executable:
@@ -77,7 +77,9 @@ An earlier experimental recipe used the same upstream pin with
 Exhibition runs did not establish parity with the original local build. The
 current builder preserves the proven boundaries and recoveries and includes
 the x87 camera and result-sign corrections alongside the current activity
-recoveries. The new Rest callback family awaits local gameplay testing. Natural local water, shading and activity checks apply to matching
+recoveries. The corrected Rest variants await local gameplay testing. A Rest
+variant that passed locally did not establish coverage of other predicates.
+Natural local water, shading and activity checks apply to matching
 inputs; complete offline gameplay and rendering acceptance remain open in #16.
 
 ## Public test route
