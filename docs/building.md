@@ -24,7 +24,7 @@ The repository does not include an all-in-one build executable. Place
 `extract-xiso.exe` at `tools/artifacts/extract-xiso.exe`, add it to `PATH`, or
 pass its path to `tools/build_game.py`.
 
-The **DOAXBV-0.4-Alpha** ZIP bundles Python, Capstone, and the tagged
+The **DOAXBV-0.35-Alpha** ZIP bundles Python, Capstone, and the tagged
 extractor. Git, CMake, and the Visual Studio 2022 C++ build tools are still
 required. Extract the whole ZIP into a new folder with a short path before setup
 (for example, a folder directly under Downloads). Use the scripts
@@ -77,8 +77,9 @@ An earlier experimental recipe used the same upstream pin with
 Exhibition runs did not establish parity with the original local build. The
 current builder preserves the proven boundaries and recoveries and includes
 the x87 camera and result-sign corrections alongside the current activity
-recoveries. The corrected Rest variants await local gameplay testing. A Rest
-variant that passed locally did not establish coverage of other predicates.
+recoveries. Local testing of the release runtime reports Take a Rest and Hopping
+Game working alongside four volleyball stages. A passing Rest variant does not
+establish coverage of other predicates.
 Natural local water, shading and activity checks apply to matching
 inputs; complete offline gameplay and rendering acceptance remain open in #16.
 
@@ -100,7 +101,7 @@ not build a playable game runner and do not require game files. The fixture
 tests guest memory, registers, and dispatch at the generated-function seam. It
 does not contain generated game code or prove game parity.
 
-The named 0.4 Alpha ZIP includes the ISO setup workflow and bundled
+The named 0.35 Alpha ZIP includes the ISO setup workflow and bundled
 Python, Capstone and extractor. GitHub's automatic source archives contain
 the same project source and recipe but require separately installed tools.
 Neither download includes generated game code or a prebuilt game runner.

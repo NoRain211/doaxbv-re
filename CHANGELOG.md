@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.4 Alpha — unreleased
+## 0.35 Alpha — 2026-09-17
 
 ### Fixed
 
@@ -11,8 +11,8 @@
   delayed crouch seen in the comparison runs, while retaining fresh serving.
 - Preserve the recovered Radio Station callback; a local manual run opened it.
 - Recover a missing activity callback and its two dependencies associated with
-  a reported 0.3 Take a Rest stop. The exact activity variant is uncertain;
-  the local release candidate still needs a gameplay check.
+  a reported 0.3 Take a Rest stop. The original variant is uncertain;
+  subsequent local testing reports Take a Rest working.
 - Restore both returns of two Rest predicates reached by local package tests,
   including the reported Tina midday stop. The latter also fails in the preserved
   local runner; earlier Rest acceptance covered a different variant. A synthetic
@@ -38,15 +38,19 @@
   The x64 Release build passes ten native tests and eight setup, authentication,
   extraction and launcher tests. Generation reused a verified disc extraction;
   extraction was separately tested with a synthetic ISO.
-- In the R4 local test, the user reports Rest, Hopping Game and midday Jungle
-  completed; dusk Jungle crashed. The diagnostic repeat confirmed allocation
-  exhaustion. Gameplay testing of the allocator repair is pending. Nothing is published.
+- The tested R6 runtime and generation are retained unchanged for this release.
+  The player reports Jungle, Beach, Niki Beach, Private Beach, Take a Rest and
+  Hopping Game working. That session ran for approximately 27 minutes and closed
+  normally, with final performance samples at 60 FPS. This is one session,
+  not full acceptance of every activity, court or time variant.
 - A constrained-memory sound-buffer test completes 3,072 create/free cycles
   after repair; the prior build failed after 161. This is isolated function
   validation, not natural gameplay acceptance.
+- Occasional 1–4 second volleyball slowdowns were reported in the same build;
+  their cause and any connection to allocation remain unverified.
 - Broader Take a Rest variants, complete offline flows, hair rendering, movie
-  performance, audio crackle, the shop-exit crash and area-transition slowdown
-  remain open. The recipe still has
+  performance, audio crackle, the previously reported shop-exit crash and
+  area-transition slowdown remain open. The recipe still has
   unsupported paths; this is not complete gameplay acceptance.
 
 ## 0.3 Alpha — 2026-09-13

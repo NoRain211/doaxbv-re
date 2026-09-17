@@ -10,13 +10,15 @@ the starting point, with game logic gradually replaced by hand-written code.
 
 ## Try the Alpha
 
-**0.4 Alpha candidate:** corrected dusk glare and stale rally-start inputs,
-recovered Radio Station entry, and an FPS counter with performance logging.
-This candidate is awaiting local gameplay testing and has not been published.
+**0.35 Alpha:** fixes guest-memory exhaustion during extended play, missing
+Take a Rest branches, dusk glare and stale rally-start inputs. It also includes
+recovered Radio Station entry and an FPS counter with performance logging.
+Local testing reports Jungle, Beach, Niki Beach, Private Beach, Take a Rest
+and Hopping Game working. Occasional volleyball stalls remain under investigation.
 Rebuild in a new folder; preserve your previous installation and saves.
 
 Published downloads are on the
-[release page](https://github.com/NoRain211/doaxbv-re/releases).
+[release page](https://github.com/NoRain211/doaxbv-re/releases/tag/v0.35).
 Use the named Alpha ZIP for bundled prerequisites. GitHub's automatic source
 archives contain source only; see the source build guide for their prerequisites.
 

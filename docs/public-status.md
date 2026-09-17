@@ -77,7 +77,7 @@ using local candidate r504 completed fifteen rallies without recurrence, retaine
 fresh serving, and returned naturally to the map.
 These were muted scripted-controller comparisons using identical initial save
 copies. See the [controller comparison report](https://github.com/NoRain211/doaxbv-re/issues/16#issuecomment-5708858572).
-The 0.4 candidate retains the input-history and Radio repairs, and adds bounded
+The 0.35 Alpha retains the input-history and Radio repairs, and adds bounded
 activity recoveries alongside the tested local glare correction and FPS logging.
 Local package tests found two split Rest predicates. Both now retain their
 true/false returns and have synthetic generation coverage. The reported Tina
@@ -87,7 +87,11 @@ inputs did not establish coverage of all Rest variants. In the R4 local test,
 the user reports Rest, Hopping Game and midday Jungle completed; dusk Jungle
 failed. A diagnostic repeat connected the crash to guest allocation exhaustion
 before sound-buffer creation. Freed allocation reuse is repaired and covered by
-regression tests; corrected-candidate gameplay still needs validation. The
-reported shop-exit crash and audio crackle remain unresolved.
-Physical-controller repeat, other action
-outcomes, court variants and full offline acceptance remain open in #16.
+regression tests. In the corrected R6 runtime, retained unchanged for 0.35, the
+player reports Jungle, Beach, Niki Beach, Private Beach, Take a Rest and Hopping
+Game working. The approximately 27-minute session closed normally, with final
+performance samples at 60 FPS. The player also reports occasional 1–4 second
+volleyball slowdowns; their cause and any allocation connection are unverified.
+The earlier shop-exit crash and audio crackle have no new confirmation.
+Other action outcomes, repeated court/time variants and full offline acceptance
+remain open in #16.
