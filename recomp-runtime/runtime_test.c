@@ -33,6 +33,7 @@ int recomp_symbolic_link_model_test(void);
 int recomp_ohci_model_test(void);
 int recomp_apu_model_test(void);
 int recomp_kernel_memory_test(void);
+int recomp_kernel_allocation_test(void);
 int recomp_kernel_file_save_test(void);
 int recomp_kernel_thread_test(void);
 int recomp_kernel_video_test(void);
@@ -888,6 +889,7 @@ int main(int argc, char **argv)
     passed &= recomp_kernel_rtl_test();
     passed &= recomp_kernel_crypto_test();
     passed &= run_usb0_ohci_initialization();
+    passed &= recomp_kernel_allocation_test();
 
     if (!passed) {
         return EXIT_FAILURE;

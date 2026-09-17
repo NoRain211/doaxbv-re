@@ -31,6 +31,7 @@ typedef enum AllocationKind {
 typedef struct Allocation {
     uint32_t base;
     uint32_t size;
+    uint32_t capacity;
     uint32_t protect;
     AllocationKind kind;
     int active;
@@ -88,7 +89,7 @@ static Allocation *track_allocation(
     AllocationKind kind)
 {
     for (size_t i = 0; i < MAX_ALLOCATIONS; ++i) {
-        if (!allocations[i].active) {
+        if (allocations[i].base == 0u && !allocations[i].active) {
             allocations[i] = (Allocation){
                 .base = base,
                 .size = size,
@@ -102,23 +103,85 @@ static Allocation *track_allocation(
     return NULL;
 }
 
-static uint32_t allocate_guest(
+static Allocation *reuse_allocation(
+    uint32_t capacity, uint32_t alignment, uint32_t lowest, uint32_t highest,
+    AllocationKind kind)
+{
+    Allocation *best = NULL;
+    for (size_t i = 0; i < MAX_ALLOCATIONS; ++i) {
+        Allocation *candidate = &allocations[i];
+        uint32_t physical = candidate->base & 0x7fffffffu;
+        if (!candidate->active && candidate->capacity >= capacity &&
+            (candidate->kind == ALLOCATION_CONTIGUOUS) ==
+                (kind == ALLOCATION_CONTIGUOUS) &&
+            (physical & (alignment - 1u)) == 0u && physical >= lowest &&
+            (uint64_t)physical + capacity <= (uint64_t)highest + 1u &&
+            (best == NULL || candidate->capacity < best->capacity)) {
+            best = candidate;
+        }
+    }
+    if (best != NULL && best->capacity > capacity) {
+        /* If metadata is full, retain the remainder until this block is freed. */
+        for (size_t i = 0; i < MAX_ALLOCATIONS; ++i) {
+            if (allocations[i].base == 0u && !allocations[i].active) {
+                allocations[i] = (Allocation){
+                    .base = best->base + capacity,
+                    .capacity = best->capacity - capacity,
+                    .kind = best->kind,
+                };
+                best->capacity = capacity;
+                break;
+            }
+        }
+    }
+    return best;
+}
+
+static uint32_t allocate_range(
     uint32_t size,
     uint32_t alignment,
     uint32_t protect,
-    AllocationKind kind)
+    AllocationKind kind,
+    uint32_t lowest,
+    uint32_t highest)
 {
     uint32_t actual_size = effective_size(size);
-    uint32_t base = xbox_HeapAlloc(actual_size, alignment);
+    uint32_t granularity = kind == ALLOCATION_CONTIGUOUS ? 0x1000u : 4u;
+    uint64_t rounded = ((uint64_t)actual_size + granularity - 1u) &
+        ~(uint64_t)(granularity - 1u);
+    if (alignment < granularity) alignment = granularity;
+    if ((alignment & (alignment - 1u)) != 0u || rounded > UINT32_MAX ||
+        lowest > highest) {
+        return 0u;
+    }
+    uint32_t capacity = (uint32_t)rounded;
+    Allocation *allocation = reuse_allocation(capacity, alignment, lowest, highest, kind);
+    if (allocation == NULL) {
+        /* Reserve bookkeeping before consuming the monotonic backing arena. */
+        allocation = track_allocation(0u, 0u, protect, kind);
+        if (allocation == NULL) return 0u;
+        uint32_t base = kind == ALLOCATION_CONTIGUOUS
+            ? xbox_ContiguousAlloc(capacity, lowest, highest, alignment)
+            : xbox_HeapAlloc(capacity, alignment);
+        if (base == 0u) {
+            *allocation = (Allocation){0};
+            return 0u;
+        }
+        allocation->base = base;
+        allocation->capacity = capacity;
+    }
+    allocation->size = actual_size;
+    allocation->protect = protect;
+    allocation->kind = kind;
+    allocation->active = 1;
+    recomp_guest_memset(allocation->base, 0, actual_size);
+    return allocation->base;
+}
 
-    if (base == 0u) {
-        return 0u;
-    }
-    if (track_allocation(base, actual_size, protect, kind) == NULL) {
-        return 0u;
-    }
-    recomp_guest_memset(base, 0, actual_size);
-    return base;
+static uint32_t allocate_guest(
+    uint32_t size, uint32_t alignment, uint32_t protect, AllocationKind kind)
+{
+    return allocate_range(size, alignment, protect, kind, 0u, UINT32_MAX);
 }
 
 static uint32_t allocate_contiguous_guest(
@@ -128,19 +191,28 @@ static uint32_t allocate_contiguous_guest(
     uint32_t alignment,
     uint32_t protect)
 {
-    uint32_t actual_size = effective_size(size);
-    uint32_t base = xbox_ContiguousAlloc(
-        actual_size, lowest_address, highest_address, alignment);
+    return allocate_range(size, alignment, protect, ALLOCATION_CONTIGUOUS,
+        lowest_address, highest_address);
+}
 
-    if (base == 0u) {
-        return 0u;
+static void coalesce_free_allocation(Allocation *allocation)
+{
+    for (size_t i = 0; i < MAX_ALLOCATIONS; ++i) {
+        Allocation *other = &allocations[i];
+        if (other == allocation || other->active || other->capacity == 0u ||
+            (other->kind == ALLOCATION_CONTIGUOUS) !=
+                (allocation->kind == ALLOCATION_CONTIGUOUS)) {
+            continue;
+        }
+        if ((uint64_t)other->base + other->capacity == allocation->base) {
+            allocation->base = other->base;
+        } else if ((uint64_t)allocation->base + allocation->capacity != other->base) {
+            continue;
+        }
+        allocation->capacity += other->capacity;
+        *other = (Allocation){0};
+        i = (size_t)-1; /* The larger range may now meet an earlier free block. */
     }
-    if (track_allocation(
-            base, actual_size, protect, ALLOCATION_CONTIGUOUS) == NULL) {
-        return 0u;
-    }
-    recomp_guest_memset(base, 0, actual_size);
-    return base;
 }
 
 static void free_guest(uint32_t base)
@@ -159,6 +231,12 @@ static void free_guest(uint32_t base)
         }
 #endif
         allocation->active = 0;
+        if (allocation->capacity != 0u) {
+            coalesce_free_allocation(allocation);
+        } else {
+            /* Fixed-address virtual mappings do not own backing arena memory. */
+            *allocation = (Allocation){0};
+        }
     }
     xbox_HeapFree(base);
 }

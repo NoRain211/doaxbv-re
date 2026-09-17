@@ -17,6 +17,9 @@
   including the reported Tina midday stop. The latter also fails in the preserved
   local runner; earlier Rest acceptance covered a different variant. A synthetic
   generation regression checks that each predicate retains both returns.
+- Reuse freed guest allocations instead of exhausting the arena during extended
+  play. The reproduced dusk Jungle crash followed an out-of-memory sound-buffer
+  failure. Allocation tests cover reuse, split/coalesce, bounds and live data.
 
 ### Release and setup
 
@@ -35,8 +38,12 @@
   The x64 Release build passes ten native tests and eight setup, authentication,
   extraction and launcher tests. Generation reused a verified disc extraction;
   extraction was separately tested with a synthetic ISO.
-- Earlier candidates failed Rest and shop-exit checks. User testing of the
-  corrected candidate is pending. Nothing is published.
+- In the R4 local test, the user reports Rest, Hopping Game and midday Jungle
+  completed; dusk Jungle crashed. The diagnostic repeat confirmed allocation
+  exhaustion. Gameplay testing of the allocator repair is pending. Nothing is published.
+- A constrained-memory sound-buffer test completes 3,072 create/free cycles
+  after repair; the prior build failed after 161. This is isolated function
+  validation, not natural gameplay acceptance.
 - Broader Take a Rest variants, complete offline flows, hair rendering, movie
   performance, audio crackle, the shop-exit crash and area-transition slowdown
   remain open. The recipe still has

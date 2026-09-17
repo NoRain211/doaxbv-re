@@ -83,7 +83,11 @@ Local package tests found two split Rest predicates. Both now retain their
 true/false returns and have synthetic generation coverage. The reported Tina
 midday branch also fails in an isolated test of the preserved r504 executable;
 the earlier successful Rest run covered a different predicate. Matching build
-inputs did not establish coverage of all Rest variants. Corrected-candidate
-gameplay, the reported shop-exit crash and audio crackle remain unresolved.
+inputs did not establish coverage of all Rest variants. In the R4 local test,
+the user reports Rest, Hopping Game and midday Jungle completed; dusk Jungle
+failed. A diagnostic repeat connected the crash to guest allocation exhaustion
+before sound-buffer creation. Freed allocation reuse is repaired and covered by
+regression tests; corrected-candidate gameplay still needs validation. The
+reported shop-exit crash and audio crackle remain unresolved.
 Physical-controller repeat, other action
 outcomes, court variants and full offline acceptance remain open in #16.

@@ -1,4 +1,5 @@
 #include "kernel_abi.h"
+#include "xbox_memory_layout.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -134,5 +135,93 @@ int recomp_kernel_memory_test(void)
             *references, bridges[i].final_count);
         passed &= expect_resident(memory, before);
     }
+    return passed;
+}
+
+void recomp_test_heap_reset(uint32_t cursor, int fail_after);
+
+static uint32_t memory_call(uint32_t ordinal, const uint32_t *args, size_t count)
+{
+    *recomp_memory_u32(TEST_ENTRY_ESP) = 0u;
+    for (size_t i = 0; i < count; ++i) {
+        *recomp_memory_u32(TEST_ENTRY_ESP + 4u + (uint32_t)i * 4u) = args[i];
+    }
+    recomp_runtime.registers.esp = TEST_ENTRY_ESP;
+    recomp_kernel_memory(ordinal)();
+    return recomp_runtime.registers.eax;
+}
+
+int recomp_kernel_allocation_test(void)
+{
+    enum { HEAP = 0x27000000u };
+    static uint8_t heap[0x20000u], stack[TEST_MEMORY_SIZE];
+    const RecompMemoryRegion regions[] = {
+        {.address = HEAP, .size = sizeof heap, .data = heap},
+        {.address = TEST_MEMORY_BASE, .size = sizeof stack, .data = stack},
+    };
+    int passed = 1;
+    recomp_runtime_init(regions, 2u, NULL, 0u, NULL, 0u);
+    recomp_test_heap_reset(HEAP + 0x1000u, -1);
+    uint32_t block = recomp_kernel_allocate_pool(0x4000u);
+    uint32_t live = recomp_kernel_allocate_pool(16u);
+    memset(recomp_memory_u32(block), 0xa5, 0x4000u);
+    *recomp_memory_u32(live) = 0x12345678u;
+    recomp_kernel_free_pool(block);
+
+    /* Freed memory must remain usable when the backing arena is exhausted. */
+    recomp_test_heap_reset(HEAP + 0x10000u, 0);
+    uint32_t small = recomp_kernel_allocate_pool(0x1000u);
+    passed &= expect_u32("reuse with exhausted arena", small, block);
+    if (small == 0u) return 0;
+    uint32_t tail = recomp_kernel_allocate_pool(0x3000u);
+    passed &= expect_u32("split free remainder", tail, block + 0x1000u);
+    if (tail == 0u) return 0;
+    for (uint32_t i = 0; i < 0x4000u; ++i) {
+        if (*recomp_memory_i8(block + i) != 0) {
+            passed &= expect_u32("reused memory zeroed", 1u, 0u);
+            break;
+        }
+    }
+    recomp_kernel_free_pool(small);
+    recomp_kernel_free_pool(tail);
+    uint32_t merged = recomp_kernel_allocate_pool(0x4000u);
+    passed &= expect_u32("adjacent frees coalesced", merged, block);
+    recomp_kernel_free_pool(merged);
+    for (unsigned i = 0; i < 4096u; ++i) {
+        uint32_t recycled = recomp_kernel_allocate_pool(0x2000u);
+        if (recycled != block) {
+            passed &= expect_u32("repeated pool reuse", recycled, block);
+            break;
+        }
+        recomp_kernel_free_pool(recycled);
+    }
+    passed &= expect_u32("live allocation preserved", *recomp_memory_u32(live), 0x12345678u);
+    passed &= expect_u32("reuse did not grow arena", xbox_HeapCheckpoint(), HEAP + 0x10000u);
+
+    /* Contiguous reuse must preserve physical bounds and page alignment. */
+    recomp_test_heap_reset(HEAP + 0x10000u, -1);
+    uint32_t request[] = {0x1800u, 0u, UINT32_MAX, 0x1000u, 4u};
+    uint32_t contiguous = memory_call(166u, request, 5u);
+    passed &= expect_u32("contiguous page alignment", contiguous & 0xfffu, 0u);
+    if (contiguous == 0u) return 0;
+    memory_call(171u, &contiguous, 1u);
+    recomp_test_heap_reset(HEAP + 0x18000u, 0);
+    request[0] = 0x800u;
+    request[1] = contiguous;
+    request[2] = contiguous + 0xfffu;
+    uint32_t reused = memory_call(166u, request, 5u);
+    passed &= expect_u32("bounded contiguous reuse", reused, contiguous);
+    request[1] = contiguous + 0x1000u;
+    request[2] = contiguous + 0x1fffu;
+    passed &= expect_u32("contiguous remainder", memory_call(166u, request, 5u), contiguous + 0x1000u);
+    request[1] = contiguous;
+    request[2] = contiguous + 0xfffu;
+    passed &= expect_u32("live contiguous unavailable", memory_call(166u, request, 5u), 0u);
+    memory_call(171u, &reused, 1u);
+    request[3] = 0x1800u;
+    passed &= expect_u32("invalid alignment", memory_call(166u, request, 5u), 0u);
+    request[3] = 0x1000u;
+    request[2] = contiguous + 0x7ffu;
+    passed &= expect_u32("rounded extent upper bound", memory_call(166u, request, 5u), 0u);
     return passed;
 }
