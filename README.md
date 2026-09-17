@@ -10,17 +10,18 @@ the starting point, with game logic gradually replaced by hand-written code.
 
 ## Try the Alpha
 
-**0.3 Alpha:** improved pool water, character/platform shading, inventory actions,
-picture settings and activity transitions. Rebuild from this ZIP in a new folder;
-preserve your previous installation and saves.
+**0.4 Alpha candidate:** corrected dusk glare and stale rally-start inputs,
+recovered Radio Station entry, and an FPS counter with performance logging.
+This candidate is awaiting local gameplay testing and has not been published.
+Rebuild in a new folder; preserve your previous installation and saves.
 
-Download **DOAXBV-0.3-Alpha.zip** from the
-[Alpha release page](https://github.com/NoRain211/doaxbv-re/releases/tag/v0.3).
+Published downloads are on the
+[release page](https://github.com/NoRain211/doaxbv-re/releases).
 Use the named Alpha ZIP for bundled prerequisites. GitHub's automatic source
 archives contain source only; see the source build guide for their prerequisites.
 
 The Alpha requires Windows 10/11 x64, a supported USA game ISO, Git with
-internet access, CMake 3.20 or newer, and Visual Studio 2019 Build Tools with
+internet access, CMake 3.20 or newer, and Visual Studio 2022 Build Tools with
 the C++ desktop workload and a Windows SDK.
 
 1. Extract the whole ZIP into a new folder with a short path.
@@ -30,7 +31,7 @@ the C++ desktop workload and a Windows SDK.
 Setup extracts your ISO and builds the runner locally. The package includes
 build tools and source, but no prebuilt game runner or game files. Follow the
 release page and the ZIP's `README.txt` for prerequisites and troubleshooting.
-The tested game runner is Win32; the Windows x64 requirement describes the host.
+Setup builds an x64 Release runner, matching the current local development build.
 
 See [CHANGELOG.md](CHANGELOG.md) for changes in each release.
 

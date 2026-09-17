@@ -22,6 +22,30 @@ namespace {
 constexpr wchar_t kWindowClassName[] = L"DOAXBVRecompPresenterWindow";
 constexpr wchar_t kWindowTitle[] = L"DOAXBV Recomp";
 
+struct FrameRateCounter {
+    ULONGLONG start_ms = 0;
+    uint32_t frames = 0;
+    bool started = false;
+};
+
+bool sampleFrameRate(FrameRateCounter &counter, ULONGLONG now, double &fps, double &ms)
+{
+    if (!counter.started) {
+        counter.started = true;
+        counter.start_ms = now;
+        return false;
+    }
+    ++counter.frames;
+    const ULONGLONG elapsed = now - counter.start_ms;
+    if (elapsed < 1000u) return false;
+    fps = counter.frames * 1000.0 / elapsed;
+    ms = static_cast<double>(elapsed) / counter.frames;
+    counter.start_ms = now;
+    counter.frames = 0;
+    return true;
+}
+
+
 /* Untransformed positions with a host-side world-view-projection composite.
 
    Vertex components other than position vary by FVF: this title draws both
@@ -373,6 +397,8 @@ struct RecompD3dPresenter {
     const char *driver_name = "unknown";
     HRESULT create_result = E_FAIL;
     uint32_t present_count = 0;
+    bool performance_counter = false;
+    FrameRateCounter frame_rate;
     bool first_present_reported = false;
     unsigned frame_dump_count = 0u;
     ULONGLONG next_frame_dump_ms = 0u;
@@ -1426,6 +1452,10 @@ D3D11_BLEND hostBlendFactor(RecompD3dBlendFactor factor, bool alpha_channel)
     switch (factor) {
     case RECOMP_D3D_BLEND_ZERO:
         return D3D11_BLEND_ZERO;
+    case RECOMP_D3D_BLEND_CONSTANT_COLOR:
+        return D3D11_BLEND_BLEND_FACTOR;
+    case RECOMP_D3D_BLEND_INV_CONSTANT_COLOR:
+        return D3D11_BLEND_INV_BLEND_FACTOR;
     case RECOMP_D3D_BLEND_SRC_COLOR:
         /* The alpha blend equation may only name alpha operands. */
         return alpha_channel ? D3D11_BLEND_SRC_ALPHA : D3D11_BLEND_SRC_COLOR;
@@ -2108,7 +2138,12 @@ RecompD3dPresenterError submitDraw(
     }
     presenter->context->OMSetDepthStencilState(depth_state, draw.depth.stencil_ref);
     {
-        const float blend_factor[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+        const uint32_t color = draw.blend.constant_color;
+        const float blend_factor[4] = {
+            ((color >> 16u) & 255u) / 255.0f,
+            ((color >> 8u) & 255u) / 255.0f,
+            (color & 255u) / 255.0f,
+            ((color >> 24u) & 255u) / 255.0f};
         ID3D11BlendState *blend_state = lookupBlendState(presenter, draw.blend);
         if (blend_state == nullptr) {
             return RECOMP_D3D_PRESENTER_HOST_FAILURE;
@@ -2528,6 +2563,18 @@ RecompD3dPresenterError submitPresent(
         return RECOMP_D3D_PRESENTER_HOST_FAILURE;
     }
     ++presenter->present_count;
+    if (presenter->performance_counter) {
+        double fps, frame_ms;
+        const ULONGLONG now = GetTickCount64();
+        if (sampleFrameRate(presenter->frame_rate, now, fps, frame_ms)) {
+            char title[96];
+            std::snprintf(title, sizeof title, "DOAXBV Recomp | %.1f FPS | %.1f ms/frame", fps, frame_ms);
+            SetWindowTextA(presenter->window, title);
+            std::fprintf(stderr, "recomp performance: tick_ms=%llu present=%u fps=%.2f frame_ms=%.3f\n",
+                static_cast<unsigned long long>(now), presenter->present_count, fps, frame_ms);
+        }
+    }
+
 
     /* Screen-scraping the presenter window proved unreliable as a gate: the
        captured rectangle is whatever is topmost at that screen position, so a
@@ -2586,6 +2633,8 @@ RecompD3dPresenterError recomp_d3d_presenter_create(
         return RECOMP_D3D_PRESENTER_OUT_OF_MEMORY;
     }
     created->config = *config;
+    const char *performance = std::getenv("RECOMP_PERF_COUNTER");
+    created->performance_counter = performance != nullptr && std::strcmp(performance, "1") == 0;
     created->owner_thread = GetCurrentThreadId();
     if (!createWindow(created)) {
         releasePresenter(created);

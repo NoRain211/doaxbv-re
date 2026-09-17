@@ -4,13 +4,17 @@
 builder checks this recipe hash before using it and checks every generated
 file against the current proven local program before compilation.
 
-The function shards contain addresses and analysis metadata. The 43 recovery
+The function shards contain addresses and analysis metadata. The 44 recovery
 files must retain their listed order. Neither contains machine instructions or
 game assets. Manual call targets preserve native adapter routing.
 
 The final recovery input restores the input-history owner and the reached Radio
-Station callback. Its regenerated output matches the locally tested program;
+Station callback. These bodies match the locally tested program;
 the expiry correction keeps comparisons and their branches in the same body.
+
+The preceding Rest recovery supplies a missing callback and its two dependencies,
+replacing one interior fragment with its complete owner. Other generated bodies
+remain unchanged. The suspected Take a Rest variant still needs local testing.
 
 The setup suite generates synthetic expiry logic with this recovery and checks
 that the input-history comparisons and branches share one body, and that the

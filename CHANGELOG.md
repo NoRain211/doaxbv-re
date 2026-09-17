@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.4 Alpha — unreleased
+
+### Fixed
+
+- Correct constant-color blend factors that caused the huge white glare at the
+  dusk pool. The corrected local view ran at approximately 60 FPS.
+- Keep input-history expiry comparisons and branches in one recovered body.
+  Two corrected local volleyball matches completed fifteen rallies without the
+  delayed crouch seen in the comparison runs, while retaining fresh serving.
+- Preserve the recovered Radio Station callback; a local manual run opened it.
+- Recover a missing activity callback and its two dependencies associated with
+  a reported 0.3 Take a Rest stop. The exact activity variant is uncertain;
+  the local release candidate still needs a gameplay check.
+
+### Release and setup
+
+- Include the tested local runtime fixes alongside the current recovery recipe.
+- Build with Visual Studio 2022 in x64 Release, matching the working local
+  runner. Retain the per-file optimizer workaround without disabling Release
+  optimization globally.
+- Show FPS and frame time in the window title and log performance once per
+  second. Continuous image capture is disabled by default.
+- Install into a new folder and rebuild. Preserve the previous saves; setup
+  does not migrate them automatically.
+
+### Validation and remaining limits
+
+- Fresh generation through the packaged builder matches all 20 reviewed files.
+  The x64 Release build passes ten native tests and eight setup, authentication,
+  extraction and launcher tests. Generation reused a verified disc extraction;
+  extraction was separately tested with a synthetic ISO.
+- User testing of the exact local candidate is pending. Nothing is published.
+- Broader Take a Rest variants, complete offline flows, hair rendering, movie
+  performance and area-transition slowdown remain open. The recipe still has
+  unsupported paths; this is not complete gameplay acceptance.
+
 ## 0.3 Alpha — 2026-09-13
 
 ### Fixed

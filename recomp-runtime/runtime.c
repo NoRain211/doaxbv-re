@@ -9,6 +9,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
+
 RecompRuntime recomp_runtime;
 uint32_t recomp_last_dispatch_address;
 /* Generated code pushes a literal return slot, so the guest stack cannot be
@@ -108,6 +113,18 @@ static void fail_memory_access(uint32_t guest_address, size_t width)
         recomp_runtime.registers.esp,
         recomp_last_dispatch_address);
     report_dispatch_stack();
+#ifdef _WIN32
+    if (getenv("RECOMP_FAULT_TRACE") != NULL) {
+        void *frames[32];
+        USHORT count = CaptureStackBackTrace(0u, 32u, frames, NULL);
+        fprintf(stderr, "[DEBUG-r501-fault] module=%p frames=%u\n",
+            (void *)GetModuleHandleW(NULL), (unsigned)count);
+        for (USHORT i = 0u; i < count; ++i) {
+            fprintf(stderr, "[DEBUG-r501-fault] frame=%u pc=%p\n",
+                (unsigned)i, frames[i]);
+        }
+    }
+#endif
     recomp_stop(2, "memory:0x%08" PRIx32, guest_address);
 }
 

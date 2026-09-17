@@ -1155,6 +1155,11 @@ static void capture_draw(
         blend.blend_enable, (unsigned)blend.src_factor, (unsigned)blend.dst_factor, (unsigned)blend.op,
         draw != NULL ? (unsigned)draw->material_alpha_mode : RECOMP_D3D_MATERIAL_ALPHA_NONE,
         draw != NULL && draw->modulate_texture_factor ? "true" : "false");
+    fprintf(draw_capture.file, ",\"blend_constant\":%u,\"blend_shadow\":[", blend.constant_color);
+    capture_word_json(0x001f2c80u, 0u);
+    fputc(',', draw_capture.file); capture_word_json(0x001f2c84u, 0u);
+    fputc(',', draw_capture.file); capture_word_json(0x001f2cb4u, 0u);
+    fputc(']', draw_capture.file);
     fputs(",\"blend_mode\":", draw_capture.file);
     capture_word_json(D3D_VERTEX_BLEND_SHADOW, 0u);
     fputs(",\"stream0\":[", draw_capture.file);

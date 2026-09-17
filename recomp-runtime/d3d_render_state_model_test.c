@@ -347,6 +347,13 @@ static int blend_state_test(void)
     passed &= expect_u32(
         "blend dst", state.dst_factor, RECOMP_D3D_BLEND_INV_SRC_ALPHA);
     passed &= expect_u32("blend op", state.op, RECOMP_D3D_BLEND_OP_ADD);
+    recomp_d3d_set_simple_render_state(&model, 0x00040344u, 0x8001u);
+    recomp_d3d_set_simple_render_state(&model, 0x00040348u, 0x8002u);
+    recomp_d3d_set_simple_render_state(&model, 0x0004034cu, 0x40802010u);
+    recomp_d3d_blend_state(&model, &state);
+    passed &= expect_u32("constant blend source", state.src_factor, RECOMP_D3D_BLEND_CONSTANT_COLOR);
+    passed &= expect_u32("inverse constant destination", state.dst_factor, RECOMP_D3D_BLEND_INV_CONSTANT_COLOR);
+    passed &= expect_u32("ARGB blend constant", state.constant_color, 0x40802010u);
 
     {
         static const struct {
@@ -383,7 +390,10 @@ static int blend_state_test(void)
             !recomp_d3d_blend_factor_from_nv(0x0001u, &factor) ||
             factor != RECOMP_D3D_BLEND_ONE ||
             recomp_d3d_blend_factor_from_nv(0x0002u, &factor) ||
-            recomp_d3d_blend_factor_from_nv(0x8001u, &factor)) {
+            !recomp_d3d_blend_factor_from_nv(0x8001u, &factor) ||
+            factor != RECOMP_D3D_BLEND_CONSTANT_COLOR ||
+            !recomp_d3d_blend_factor_from_nv(0x8002u, &factor) ||
+            factor != RECOMP_D3D_BLEND_INV_CONSTANT_COLOR) {
             fprintf(stderr, "D3D blend state: factor decode wrong\n");
             passed = 0;
         }

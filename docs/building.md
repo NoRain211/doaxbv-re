@@ -5,8 +5,8 @@
 The current `tools/build_game.py` workflow extracts a supported user-owned ISO,
 checks its XBE, applies `tools/xboxrecomp-patches/local-parity.patch` to revision
 `32da23872a552b12b4a932c9d5a6e952bb3f24bb`, generates the game program, and
-builds a Win32 Release runner. The authenticated `tools/game-recipe/recipe.json`
-provides the original function boundaries, 43 ordered recovery inputs, manual
+builds an x64 Release runner. The authenticated `tools/game-recipe/recipe.json`
+provides the original function boundaries, 44 ordered recovery inputs, manual
 call targets, and expected generated-file hashes. Setup stops before compiling
 if any recipe input or generated file differs. It creates a new `private/setup-*` directory for
 each attempt. The receipt, logs, generated program, and runner stay there.
@@ -17,21 +17,22 @@ Install these tools before you start:
 - Capstone 5.0.9 distribution for that Python installation
 - Git with network access
 - CMake 3.20 or newer
-- Visual Studio 2019 or Build Tools with the C++ desktop workload and a Windows SDK
+- Visual Studio 2022 or Build Tools with the C++ desktop workload and a Windows SDK
 - XboxDev `extract-xiso`
 
 The repository does not include an all-in-one build executable. Place
 `extract-xiso.exe` at `tools/artifacts/extract-xiso.exe`, add it to `PATH`, or
 pass its path to `tools/build_game.py`.
 
-The **DOAXBV-0.3-Alpha** ZIP bundles Python, Capstone, and the tagged
-extractor. Git, CMake, and the Visual Studio 2019 C++ build tools are still
+The **DOAXBV-0.4-Alpha** ZIP bundles Python, Capstone, and the tagged
+extractor. Git, CMake, and the Visual Studio 2022 C++ build tools are still
 required. Extract the whole ZIP into a new folder with a short path before setup
 (for example, a folder directly under Downloads). Use the scripts
 from that folder.
 The bundled Capstone distribution is 5.0.9; its Python binding reports 5.0.7.
 If the extractor reports a missing `VCRUNTIME140.dll`, install the included
-`Prerequisites/vc_redist.x86.exe` and retry.
+`Prerequisites/vc_redist.x86.exe` and retry. The extractor remains 32-bit;
+the game runner is x64.
 
 To use the Windows wrapper, drop one supported ISO on `BuildGame.cmd` or run:
 
@@ -63,8 +64,9 @@ Use `--generate-only` to stop after generation. A completed build writes
 `private/setup-*/build-receipt.json` with status `built-unverified`. This status
 records a build. A supervised native run provides the behavior evidence.
 
-The recipe reproduces the current proven local generated program, whose 19-file
-manifest is `bfe6668ec59df7f4716c2693f7ea20367b7406bcd2971685c3f44d5c55596af3`.
+The recipe retains the tested local program and adds the bounded activity
+callback recovery. Its 19-file manifest is
+`e85b9a1368b83217b939ba0881998ff5b86505406d1e639dda1ccb56d31852cf`.
 All 20 generated files, including unresolved stubs, are checked individually.
 The receipt records the recipe, patch, generated manifest, XBE, and runner
 identities. A matching generated program does not imply an identical executable:
@@ -75,7 +77,7 @@ An earlier experimental recipe used the same upstream pin with
 Exhibition runs did not establish parity with the original local build. The
 current builder preserves the proven boundaries and recoveries and includes
 the x87 camera and result-sign corrections alongside the current activity
-recoveries. Natural local water, shading and activity checks apply to matching
+recoveries. The new Rest callback family awaits local gameplay testing. Natural local water, shading and activity checks apply to matching
 inputs; complete offline gameplay and rendering acceptance remain open in #16.
 
 ## Public test route
@@ -96,7 +98,7 @@ not build a playable game runner and do not require game files. The fixture
 tests guest memory, registers, and dispatch at the generated-function seam. It
 does not contain generated game code or prove game parity.
 
-The named 0.3 Alpha ZIP includes the ISO setup workflow and bundled
+The named 0.4 Alpha ZIP includes the ISO setup workflow and bundled
 Python, Capstone and extractor. GitHub's automatic source archives contain
 the same project source and recipe but require separately installed tools.
 Neither download includes generated game code or a prebuilt game runner.
@@ -147,7 +149,9 @@ successful receipt and refuses to choose when multiple receipts match.
 It checks the receipt status, runner file and runner SHA-256,
 exactly one XBE, and the recorded XBE SHA-256 before launch. It does not
 revalidate every extracted file. It writes the run log under `private/`, uses
-VSync, and sets the default audio gain to 0.2. Recipe, lifter patch, generated
+VSync, and sets the default audio gain to 0.2. FPS and frame time appear in the
+window title; one-second performance samples are included in the log. Set
+`RECOMP_PERF_COUNTER=0` to disable this counter. No continuous capture is enabled. Recipe, lifter patch, generated
 manifest, and generation-parity identities are included in each run log when
 the build receipt provides them.
 
@@ -161,7 +165,7 @@ Use this route only when you already have a complete generated program and its
 receipt. The current ISO workflow performs these steps for you.
 
 ```powershell
-cmake -S recomp-runtime -B build/recomp-program -G "Visual Studio 16 2019" -A Win32 `
+cmake -S recomp-runtime -B build/recomp-program -G "Visual Studio 17 2022" -A x64 `
   -DRECOMP_PROGRAM_DIR="<generated-program-directory>" `
   -DRECOMP_PROGRAM_MANIFEST_SHA256="<generated-manifest-sha256>" `
   -DRECOMP_PROGRAM_EBP_EXPECTED="<receipt-ebp-count>"

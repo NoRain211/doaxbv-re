@@ -804,6 +804,64 @@ static bool testShadowRendering(
         checkPixels(presenter, color, readback, "stencil masks, reference, texture factor", factor);
 }
 
+static bool testConstantBlend(
+    RecompD3dPresenter *presenter,
+    ID3D11Texture2D *color,
+    ID3D11Texture2D *readback)
+{
+    struct Vertex { float x, y, z, rhw; uint32_t diffuse; float u, v; };
+    const Vertex vertices[] = {
+        {-0.5f, -0.5f, 0.25f, 1.0f, 0xffffffffu, 0.0f, 0.0f},
+        { 3.5f, -0.5f, 0.25f, 1.0f, 0xffffffffu, 1.0f, 0.0f},
+        {-0.5f,  3.5f, 0.25f, 1.0f, 0xffffffffu, 0.0f, 1.0f},
+        { 3.5f,  3.5f, 0.25f, 1.0f, 0xffffffffu, 1.0f, 1.0f},
+    };
+    const uint16_t indices[] = {0u, 1u, 2u, 3u};
+    RecompD3dPresenterDrawCommand draw{};
+    draw.primitive_type = RECOMP_D3D_PT_TRIANGLESTRIP;
+    draw.index_count = draw.vertex_count = 4u;
+    draw.triangle_count = 2u;
+    draw.vertex_stride = sizeof(Vertex);
+    draw.fvf = 0x144u;
+    draw.vertex_bytes = vertices;
+    draw.index_bytes = indices;
+    draw.use_texture_factor = true;
+    draw.texture_factor = 0xffffffffu;
+    draw.blend.blend_enable = true;
+    draw.blend.color_write_mask = 15u;
+    draw.blend.op = RECOMP_D3D_BLEND_OP_ADD;
+    const struct {
+        const char *label;
+        RecompD3dBlendFactor src, dst;
+        uint32_t constant, background, pixel;
+    } cases[] = {
+        {"constant RGBA additive fade", RECOMP_D3D_BLEND_CONSTANT_COLOR,
+            RECOMP_D3D_BLEND_ONE, 0x40802010u, 0x10203040u, 0x50a05050u},
+        {"zero fade reuses blend state", RECOMP_D3D_BLEND_CONSTANT_COLOR,
+            RECOMP_D3D_BLEND_ONE, 0u, 0x10203040u, 0x10203040u},
+        {"changed fade reuses blend state", RECOMP_D3D_BLEND_CONSTANT_COLOR,
+            RECOMP_D3D_BLEND_ONE, 0x20100804u, 0x10203040u, 0x30303844u},
+        {"inverse constant source", RECOMP_D3D_BLEND_INV_CONSTANT_COLOR,
+            RECOMP_D3D_BLEND_ZERO, 0x40802010u, 0u, 0xbf7fdfefu},
+        {"constant destination", RECOMP_D3D_BLEND_ZERO,
+            RECOMP_D3D_BLEND_CONSTANT_COLOR, 0x40802010u, 0xffffffffu, 0x40802010u},
+        {"inverse constant destination", RECOMP_D3D_BLEND_ZERO,
+            RECOMP_D3D_BLEND_INV_CONSTANT_COLOR, 0x40802010u, 0xffffffffu, 0xbf7fdfefu},
+    };
+    for (const auto &test : cases) {
+        draw.blend.src_factor = test.src;
+        draw.blend.dst_factor = test.dst;
+        draw.blend.constant_color = test.constant;
+        const RecompD3dPresenterClearCommand clear = {
+            true, false, false, test.background, 1.0f, 0u};
+        const uint32_t expected[] = {test.pixel, test.pixel, test.pixel, test.pixel};
+        if (submitClear(presenter, clear) != RECOMP_D3D_PRESENTER_OK ||
+            submitDraw(presenter, draw) != RECOMP_D3D_PRESENTER_OK ||
+            !checkPixels(presenter, color, readback, test.label, expected)) return false;
+    }
+    return true;
+}
+
 static bool testMaterialAlphaRendering(
     RecompD3dPresenter *presenter,
     ID3D11Texture2D *color,
@@ -1780,6 +1838,18 @@ static bool testDirectionalLighting(RecompD3dPresenter *presenter,
 
 int main()
 {
+    FrameRateCounter counter;
+    double fps = 0, frame_ms = 0;
+    if (sampleFrameRate(counter, 0u, fps, frame_ms)) return 1;
+    for (unsigned i = 1; i <= 60; ++i) {
+        if (sampleFrameRate(counter, i * 1000u / 60u, fps, frame_ms) != (i == 60u)) return 1;
+    }
+    if (std::fabs(fps - 60.0) > 0.001 || std::fabs(frame_ms - 1000.0 / 60.0) > 0.001 ||
+        !sampleFrameRate(counter, 2000u, fps, frame_ms) || fps != 1.0 || frame_ms != 1000.0) {
+        std::fprintf(stderr, "FAIL frame rate interval/stall measurement\n");
+        return 1;
+    }
+
     ULONGLONG next_dump = 0u;
     if (!frameDumpDue(100u, 10000u, next_dump) || next_dump != 10100u ||
         frameDumpDue(10099u, 10000u, next_dump) ||
@@ -1830,6 +1900,7 @@ int main()
     if (status == 0 && !testGamma(&presenter, color, readback)) status = 94;
     if (status == 0 && !testVertexProgram(&presenter, color, readback)) status = 95;
     if (status == 0 && !testDirectionalLighting(&presenter, color, readback)) status = 96;
+    if (status == 0 && !testConstantBlend(&presenter, color, readback)) status = 97;
     if (status == 0 && !testWindowClose(&presenter)) status = 86;
     releaseCom(readback);
     releaseCom(color);

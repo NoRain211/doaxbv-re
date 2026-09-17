@@ -6,6 +6,8 @@
 #include <xinput.h>
 
 #include <string.h>
+#include <stdio.h>
+#include <stdlib.h>
 
 enum {
     XBOX_DPAD_UP = 0x0001u,
@@ -21,6 +23,42 @@ static bool pressed(int key)
     return (GetAsyncKeyState(key) & 0x8000) != 0;
 }
 
+static void trace_sample(
+    const RecompInputGamepad *pad, const XINPUT_STATE *host,
+    DWORD host_status, DWORD foreground_process)
+{
+    static bool initialized, enabled, seen;
+    static unsigned lines;
+    static RecompInputGamepad previous;
+    static WORD previous_host_buttons;
+    static DWORD previous_status, previous_foreground;
+    if (!initialized) {
+        initialized = true;
+        enabled = getenv("RECOMP_INPUT_TRACE") != NULL;
+    }
+    if (!enabled || lines >= 4096u) return;
+    if (seen && previous.buttons == pad->buttons &&
+        memcmp(previous.analog_buttons, pad->analog_buttons, 8u) == 0 &&
+        previous_host_buttons == host->Gamepad.wButtons &&
+        previous_status == host_status && previous_foreground == foreground_process) return;
+    fprintf(stderr,
+        "[DEBUG-r501-input] tick_ms=%llu status=%lu focused=%u host=%04x"
+        " digital=%04x analog=%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x"
+        " axes=%d,%d,%d,%d\n",
+        (unsigned long long)GetTickCount64(), (unsigned long)host_status,
+        foreground_process == GetCurrentProcessId(), (unsigned)host->Gamepad.wButtons,
+        (unsigned)pad->buttons, pad->analog_buttons[0], pad->analog_buttons[1],
+        pad->analog_buttons[2], pad->analog_buttons[3], pad->analog_buttons[4],
+        pad->analog_buttons[5], pad->analog_buttons[6], pad->analog_buttons[7],
+        pad->thumb_lx, pad->thumb_ly, pad->thumb_rx, pad->thumb_ry);
+    previous = *pad;
+    previous_host_buttons = host->Gamepad.wButtons;
+    previous_status = host_status;
+    previous_foreground = foreground_process;
+    seen = true;
+    ++lines;
+}
+
 bool recomp_input_host_sample(RecompInputGamepad *gamepad)
 {
     XINPUT_STATE state = {0};
@@ -29,7 +67,8 @@ bool recomp_input_host_sample(RecompInputGamepad *gamepad)
         return false;
     }
     memset(gamepad, 0, sizeof *gamepad);
-    if (XInputGetState(0u, &state) == ERROR_SUCCESS) {
+    DWORD host_status = XInputGetState(0u, &state);
+    if (host_status == ERROR_SUCCESS) {
         WORD digital = XINPUT_GAMEPAD_DPAD_UP |
             XINPUT_GAMEPAD_DPAD_DOWN |
             XINPUT_GAMEPAD_DPAD_LEFT |
@@ -65,7 +104,10 @@ bool recomp_input_host_sample(RecompInputGamepad *gamepad)
     }
     DWORD foreground_process = 0;
     GetWindowThreadProcessId(GetForegroundWindow(), &foreground_process);
-    if (foreground_process != GetCurrentProcessId()) return true;
+    if (foreground_process != GetCurrentProcessId()) {
+        trace_sample(gamepad, &state, host_status, foreground_process);
+        return true;
+    }
 
     if (pressed(VK_UP)) gamepad->buttons |= XBOX_DPAD_UP;
     if (pressed(VK_DOWN)) gamepad->buttons |= XBOX_DPAD_DOWN;
@@ -82,5 +124,6 @@ bool recomp_input_host_sample(RecompInputGamepad *gamepad)
     if (pressed('W')) gamepad->analog_buttons[RECOMP_INPUT_ANALOG_BLACK] = 0xffu;
     if (pressed('E')) gamepad->analog_buttons[RECOMP_INPUT_ANALOG_LTRIG] = 0xffu;
     if (pressed('R')) gamepad->analog_buttons[RECOMP_INPUT_ANALOG_RTRIG] = 0xffu;
+    trace_sample(gamepad, &state, host_status, foreground_process);
     return true;
 }

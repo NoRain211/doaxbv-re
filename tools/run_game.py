@@ -72,6 +72,7 @@ def launch(root, receipt_path=None):
 def run(runner, image, root, receipt_path=None):
     log_path = root / "private" / ("run-" + datetime.now().strftime("%Y%m%d-%H%M%S-%f") + ".log")
     env = dict(os.environ, RECOMP_AUDIO_GAIN="0.2")
+    env.setdefault("RECOMP_PERF_COUNTER", "1")
     print(f"Starting runner. Log: {log_path}", flush=True)
     with log_path.open("x", encoding="utf-8") as log:
         log.write(f"Build receipt: {receipt_path or 'legacy runner; no build receipt selected'}\n"

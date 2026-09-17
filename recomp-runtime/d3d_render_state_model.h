@@ -152,6 +152,8 @@ typedef enum RecompD3dBlendFactor {
     RECOMP_D3D_BLEND_DST_COLOR,
     RECOMP_D3D_BLEND_INV_DST_COLOR,
     RECOMP_D3D_BLEND_SRC_ALPHA_SATURATE,
+    RECOMP_D3D_BLEND_CONSTANT_COLOR,
+    RECOMP_D3D_BLEND_INV_CONSTANT_COLOR,
 } RecompD3dBlendFactor;
 
 typedef enum RecompD3dBlendOp {
@@ -169,6 +171,8 @@ typedef struct RecompD3dBlendState {
     RecompD3dBlendFactor src_factor;
     RecompD3dBlendFactor dst_factor;
     RecompD3dBlendOp op;
+    /* ARGB constant supplied separately from the cached blend equation. */
+    uint32_t constant_color;
 } RecompD3dBlendState;
 
 /* Translates one NV2A blend factor or equation enum. Both return false on an

@@ -15,7 +15,7 @@ from extract_iso import extract, run_logged, sha256
 
 ROOT = Path(__file__).resolve().parents[1]
 LIFTER_REVISION = "32da23872a552b12b4a932c9d5a6e952bb3f24bb"
-RECIPE_SHA256 = "6846f0a667763c41f19cfd03a31c1263c09eb0f4e6f570608a6b6bd3c9f80382"
+RECIPE_SHA256 = "e755cfdfe39775f0708e25ab585f55f5662303e2755a5cf81e013f05b9b742e2"
 SUPPORTED_XBE_SHA256 = "053d44e885fa33c1d15d909a533f39dfbd976e97eeaf67e4fdef8438ea7e5c54"
 
 
@@ -57,10 +57,10 @@ def build(args):
         raise ValueError("Install Capstone for this Python: python -m pip install capstone==5.0.9") from error
     vswhere = Path(os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)")) / "Microsoft Visual Studio/Installer/vswhere.exe"
     if not args.generate_only and (not vswhere.is_file() or not subprocess.check_output(
-            [str(vswhere), "-products", "*", "-version", "[16.0,17.0)",
+            [str(vswhere), "-products", "*", "-version", "[17.0,18.0)",
              "-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
              "-property", "installationPath"], text=True).strip()):
-        raise ValueError("Install Visual Studio 2019 Build Tools with Desktop development with C++ and a Windows SDK before running setup.")
+        raise ValueError("Install Visual Studio 2022 Build Tools with Desktop development with C++ and a Windows SDK before running setup.")
     work = ROOT / "private" / ("setup-" + uuid.uuid4().hex[:12])
     work.mkdir(parents=True)
     receipt = {"status": "in-progress", "work": str(work),
@@ -134,12 +134,14 @@ def build(args):
             receipt["status"] = "generated-unverified"
             return work
         output = work / "build"
+        receipt.update(cmake_generator="Visual Studio 17 2022", platform="x64",
+                       configuration="Release", build_parallelism=2)
         command(["cmake", "-S", ROOT / "recomp-runtime", "-B", output,
-                 "-G", "Visual Studio 16 2019", "-A", "Win32",
+                 "-G", "Visual Studio 17 2022", "-A", "x64",
                  f"-DRECOMP_PROGRAM_DIR={generated}", f"-DRECOMP_PROGRAM_MANIFEST_SHA256={manifest}",
                  f"-DRECOMP_PROGRAM_EBP_EXPECTED={ebp}"], ROOT, work / "configure.log")
         command(["cmake", "--build", output, "--config", "Release", "--parallel", "2",
-                 "--target", "recomp_program_runner"], ROOT, work / "build.log")
+                 "--target", "recomp_program_runner", "--", "/nodeReuse:false"], ROOT, work / "build.log")
         runner = output / "Release/recomp_program_runner.exe"
         receipt.update(status="built-unverified", runner=str(runner), runner_sha256=sha256(runner))
         print(f"Built diagnostic runner: {runner}. Gameplay has not been validated.", flush=True)

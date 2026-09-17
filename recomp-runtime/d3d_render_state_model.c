@@ -10,6 +10,7 @@ enum {
     D3D_METHOD_ALPHA_REF = D3D_SIMPLE_COMMAND_BASE | 0x0340u,
     D3D_METHOD_BLEND_SRC = D3D_SIMPLE_COMMAND_BASE | 0x0344u,
     D3D_METHOD_BLEND_DST = D3D_SIMPLE_COMMAND_BASE | 0x0348u,
+    D3D_METHOD_BLEND_COLOR = D3D_SIMPLE_COMMAND_BASE | 0x034cu,
     D3D_METHOD_BLEND_EQUATION = D3D_SIMPLE_COMMAND_BASE | 0x0350u,
     D3D_METHOD_DEPTH_FUNC = D3D_SIMPLE_COMMAND_BASE | 0x0354u,
     D3D_METHOD_COLOR_MASK = D3D_SIMPLE_COMMAND_BASE | 0x0358u,
@@ -367,6 +368,12 @@ bool recomp_d3d_blend_factor_from_nv(
     case 0x0308u:
         *factor = RECOMP_D3D_BLEND_SRC_ALPHA_SATURATE;
         return true;
+    case 0x8001u:
+        *factor = RECOMP_D3D_BLEND_CONSTANT_COLOR;
+        return true;
+    case 0x8002u:
+        *factor = RECOMP_D3D_BLEND_INV_CONSTANT_COLOR;
+        return true;
     default:
         return false;
     }
@@ -414,6 +421,7 @@ void recomp_d3d_blend_state(
     state->src_factor = RECOMP_D3D_BLEND_ONE;
     state->dst_factor = RECOMP_D3D_BLEND_ZERO;
     state->op = RECOMP_D3D_BLEND_OP_ADD;
+    state->constant_color = 0u;
 
     if (model == NULL) {
         return;
@@ -435,6 +443,9 @@ void recomp_d3d_blend_state(
     }
     if (simple_or_absent(model, D3D_METHOD_BLEND_DST, &value)) {
         recomp_d3d_blend_factor_from_nv(value, &state->dst_factor);
+    }
+    if (simple_or_absent(model, D3D_METHOD_BLEND_COLOR, &value)) {
+        state->constant_color = value;
     }
     if (simple_or_absent(model, D3D_METHOD_BLEND_EQUATION, &value)) {
         recomp_d3d_blend_op_from_nv(value, &state->op);
