@@ -15,7 +15,7 @@ from extract_iso import extract, run_logged, sha256
 
 ROOT = Path(__file__).resolve().parents[1]
 LIFTER_REVISION = "32da23872a552b12b4a932c9d5a6e952bb3f24bb"
-RECIPE_SHA256 = "e755cfdfe39775f0708e25ab585f55f5662303e2755a5cf81e013f05b9b742e2"
+RECIPE_SHA256 = "82e19dc0752103e78ee68fccb9a0a802b61845983528f54d4dc26cc6d8dcbe62"
 SUPPORTED_XBE_SHA256 = "053d44e885fa33c1d15d909a533f39dfbd976e97eeaf67e4fdef8438ea7e5c54"
 
 

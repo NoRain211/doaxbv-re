@@ -77,9 +77,11 @@ using local candidate r504 completed fifteen rallies without recurrence, retaine
 fresh serving, and returned naturally to the map.
 These were muted scripted-controller comparisons using identical initial save
 copies. See the [controller comparison report](https://github.com/NoRain211/doaxbv-re/issues/16#issuecomment-5708858572).
-The 0.4 candidate retains r504's generated bodies except for one fragment now
-included in a recovered activity owner. It adds a missing callback and its two
-dependencies for a reported 0.3 stop, along with the tested local glare correction
-and FPS counter/logging. The exact candidate has not had a fresh gameplay run.
+The 0.4 candidate retains the input-history and Radio repairs, and adds bounded
+activity recoveries alongside the tested local glare correction and FPS logging.
+Its first local package test still stopped during Take a Rest at a different
+split predicate. Both predicate returns are now recovered and covered by a
+synthetic regression. Corrected-candidate gameplay and reported audio crackle
+remain unverified.
 Physical-controller repeat, other action
 outcomes, court variants and full offline acceptance remain open in #16.

@@ -13,6 +13,9 @@
 - Recover a missing activity callback and its two dependencies associated with
   a reported 0.3 Take a Rest stop. The exact activity variant is uncertain;
   the local release candidate still needs a gameplay check.
+- Restore both returns of another Rest predicate reached by the local package
+  test. The first candidate stopped at its missing true-return branch. A
+  synthetic generation regression now checks that both returns share one body.
 
 ### Release and setup
 
@@ -33,7 +36,7 @@
   extraction was separately tested with a synthetic ISO.
 - User testing of the exact local candidate is pending. Nothing is published.
 - Broader Take a Rest variants, complete offline flows, hair rendering, movie
-  performance and area-transition slowdown remain open. The recipe still has
+  performance, audio crackle and area-transition slowdown remain open. The recipe still has
   unsupported paths; this is not complete gameplay acceptance.
 
 ## 0.3 Alpha — 2026-09-13

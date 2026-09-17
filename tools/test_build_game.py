@@ -12,7 +12,7 @@ from extract_iso import sha256
 
 
 class ProgramManifestTests(unittest.TestCase):
-    def test_input_history_and_radio_recovery_generation(self):
+    def test_recipe_recovery_generation(self):
         verify_files(ROOT, {"tools/game-recipe/recipe.json": RECIPE_SHA256})
         recipe = json.loads((ROOT / "tools/game-recipe/recipe.json").read_text(encoding="utf-8"))
         verify_files(ROOT, recipe["files"])
@@ -41,6 +41,10 @@ class ProgramManifestTests(unittest.TestCase):
             run(["git", "apply", str(ROOT / recipe["patch"])], lifter)
             run([sys.executable, str(ROOT / "tools/xboxrecomp-patches/check_input_history.py"),
                  str(lifter), str(ROOT / recovery), str(work)])
+            rest = "tools/game-recipe/recoveries/recover-rest-predicate.json"
+            self.assertEqual(recipe["recoveries"].count(rest), 1)
+            run([sys.executable, str(ROOT / "tools/xboxrecomp-patches/check_rest_predicate.py"),
+                 str(lifter), str(ROOT / rest), str(work)])
 
     def test_parity_rejects_changed_or_missing_file(self):
         with tempfile.TemporaryDirectory() as folder:
