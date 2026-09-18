@@ -788,9 +788,6 @@ static uint8_t *recomp_memory_slow(uint32_t guest_address, size_t width)
     return NULL;
 }
 
-#if defined(_MSC_VER)
-__forceinline
-#endif
 uint8_t *recomp_memory(uint32_t guest_address, size_t width)
 {
     uint8_t *memory;
