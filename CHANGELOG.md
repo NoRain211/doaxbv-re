@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.3.51 Alpha — 2026-09-17
+
+### Fixed
+
+- Restore a guaranteed external MSVC definition of `recomp_memory` by removing
+  `__forceinline` from the public runtime entry point. This fixes the final-link
+  `LNK2001` failure reported as `recomp_memory` on VS2022/x64 and as
+  `_recomp_memory` on the earlier VS2019/Win32 build.
+
+### Release and setup
+
+- This is a narrowly scoped hotfix based directly on the published R6 / 0.35
+  release. Runtime and generated-game behavior are otherwise unchanged.
+- Use Visual Studio 2022 Build Tools, x64 Release, as documented for 0.35.
+
 ## 0.35 Alpha — 2026-09-17
 
 ### Fixed
