@@ -78,7 +78,8 @@ bool recomp_d3d_vertex_program_source(
         const auto reg=(c>>20)&15u;
         if ((!mac && ((c>>24)&15u)) || (!ilu && ((c>>16)&15u))) return false;
         if (reg>12 && (((c>>24)&15u) || ((c>>16)&15u))) return false;
-        if (!write(s,"r"+std::to_string(reg),(c>>24)&15u,"m") ||
+        // Paired ILU owns r1; suppress the MAC temporary write regardless of masks.
+        if (!write(s,"r"+std::to_string(reg),ilu && reg==1u ? 0u : (c>>24)&15u,"m") ||
             !write(s,"r"+std::to_string(mac ? 1u : reg),(c>>16)&15u,"l")) return false;
         const auto om=(c>>12)&15u, out=(c>>3)&255u;
         if (om) {

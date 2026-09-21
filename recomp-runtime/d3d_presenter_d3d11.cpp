@@ -1968,10 +1968,11 @@ RecompD3dPresenterError submitDraw(
         draw.has_texture ? lookupTexture(presenter, draw) : nullptr;
     /* A second cache lookup can evict the first entry. Keep its view alive
        until the context takes its own reference. */
-    if ((draw.has_alpha_mask || draw.has_reflection) && texture_view != nullptr) texture_view->AddRef();
+    const bool has_second_texture = draw.has_alpha_mask || draw.has_reflection || draw.program_alpha_mask;
+    if (has_second_texture && texture_view != nullptr) texture_view->AddRef();
     const auto release_view = [](ID3D11ShaderResourceView *view) { if (view) view->Release(); };
     std::unique_ptr<ID3D11ShaderResourceView, decltype(release_view)> retained(
-        draw.has_alpha_mask || draw.has_reflection ? texture_view : nullptr, release_view);
+        has_second_texture ? texture_view : nullptr, release_view);
     ID3D11ShaderResourceView *mask_view = nullptr;
     if (draw.has_alpha_mask) {
         if (layout.texcoord_count != 2u) return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
