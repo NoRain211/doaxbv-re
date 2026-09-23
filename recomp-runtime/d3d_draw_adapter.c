@@ -1453,15 +1453,11 @@ static void recomp_d3d_draw_indexed_vertices_adapter(void)
         decline = "plan";
         goto finished;
     }
-    const bool fvf342_stride32 =
-        result.plan.fvf == 0x342u && result.plan.vertex_stride == 32u;
-    const bool fvf342_reflection = fvf342_stride32 &&
-        *recomp_memory_u32(0x001f2988u + 0x80u + 0x70u) == 0x30000u;
     /* This material samples UV0 and generates its other coordinates. Its
        unused declared texture coordinates can extend beyond the stream. */
     bool reflective =
         (result.plan.fvf == 0x112u || result.plan.fvf == 0x312u ||
-         fvf342_reflection) &&
+         (result.plan.fvf == 0x342u && result.plan.vertex_stride == 32u)) &&
         reflection_material_selected(device);
     if (result.plan.fvf == 0x312u && reflective) {
         result.plan.fvf = 0x112u;

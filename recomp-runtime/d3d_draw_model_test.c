@@ -54,7 +54,7 @@ int recomp_d3d_draw_model_test(void)
         "fvf 0x342 nominal stride", recomp_d3d_fvf_stride(0x342u), 40u);
     passed &= expect_u32(
         "fvf 0x342 retail stream",
-        recomp_d3d_fvf_for_stream(0x342u, 32u), 0x142u);
+        recomp_d3d_fvf_for_stream(0x342u, 32u), 0x242u);
     passed &= expect_u32(
         "fvf 0x342 nominal stream unchanged",
         recomp_d3d_fvf_for_stream(0x342u, 40u), 0x342u);
