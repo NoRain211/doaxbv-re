@@ -1530,7 +1530,9 @@ static bool testWidescreenClientWidth()
     presenter.config.width = 720u;
     presenter.config.height = 480u;
     presenter.widescreen = true;
-    return presentClientWidth(&presenter) == 854u;
+    if (presentClientWidth(&presenter) != 854u) return false;
+    presenter.widescreen = false;
+    return presentClientWidth(&presenter) == 640u;
 }
 
 static bool testTargetLifetimes(
