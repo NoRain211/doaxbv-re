@@ -351,6 +351,7 @@ struct RecompD3dPresenter {
     bool owns_window_class = false;
     HWND window = nullptr;
     bool close_requested = false;
+    bool widescreen = false;
     ID3D11Device *device = nullptr;
     ID3D11DeviceContext *context = nullptr;
     IDXGISwapChain *swap_chain = nullptr;
@@ -409,6 +410,17 @@ namespace {
 RecompD3dPresenter *active_presenter;
 
 static bool immediate_present;
+
+/* kernel_config.c reports the Xbox widescreen video flag unless
+   RECOMP_D3D_WIDESCREEN=0, so the game renders anamorphic 16:9 (or 4:3) into
+   the guest backbuffer; the window presents that buffer at the same aspect. */
+uint32_t presentClientWidth(const RecompD3dPresenter *presenter)
+{
+    const uint64_t height = presenter->config.height;
+    return static_cast<uint32_t>(presenter->widescreen
+        ? (height * 16u + 8u) / 9u
+        : (height * 4u + 1u) / 3u);
+}
 
 LRESULT CALLBACK presenterWindowProc(
     HWND window,
@@ -532,10 +544,11 @@ void releasePresenter(RecompD3dPresenter *presenter)
 bool createWindow(RecompD3dPresenter *presenter)
 {
     WNDCLASSEXW window_class{};
+    const uint32_t client_width = presentClientWidth(presenter);
     RECT window_rect = {
         0,
         0,
-        static_cast<LONG>(presenter->config.width),
+        static_cast<LONG>(client_width),
         static_cast<LONG>(presenter->config.height),
     };
     constexpr DWORD style = WS_OVERLAPPEDWINDOW;
@@ -579,7 +592,7 @@ bool createWindow(RecompD3dPresenter *presenter)
     RECT client_rect{};
     return GetClientRect(presenter->window, &client_rect) &&
         client_rect.right - client_rect.left ==
-            static_cast<LONG>(presenter->config.width) &&
+            static_cast<LONG>(client_width) &&
         client_rect.bottom - client_rect.top ==
             static_cast<LONG>(presenter->config.height);
 }
@@ -2634,6 +2647,8 @@ RecompD3dPresenterError recomp_d3d_presenter_create(
         return RECOMP_D3D_PRESENTER_OUT_OF_MEMORY;
     }
     created->config = *config;
+    const char *widescreen = std::getenv("RECOMP_D3D_WIDESCREEN");
+    created->widescreen = widescreen == nullptr || std::strcmp(widescreen, "0") != 0;
     const char *performance = std::getenv("RECOMP_PERF_COUNTER");
     created->performance_counter = performance != nullptr && std::strcmp(performance, "1") == 0;
     created->owner_thread = GetCurrentThreadId();

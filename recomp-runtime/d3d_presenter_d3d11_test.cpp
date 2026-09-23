@@ -1454,12 +1454,17 @@ static bool testWindowClose(RecompD3dPresenter *warp)
         presenter.config = warp->config;
         presenter.config.width = 320u;
         presenter.config.height = 240u;
+        presenter.widescreen = scenario == 1u;
         presenter.owner_thread = GetCurrentThreadId();
         presenter.device = warp->device;
         presenter.device->AddRef();
         presenter.context = warp->context;
         presenter.context->AddRef();
         passed = createWindow(&presenter);
+        RECT client{};
+        if (passed) passed = GetClientRect(presenter.window, &client) &&
+            client.right - client.left == static_cast<LONG>(presentClientWidth(&presenter)) &&
+            client.bottom - client.top == static_cast<LONG>(presenter.config.height);
         DXGI_SWAP_CHAIN_DESC desc{};
         desc.BufferDesc.Width = presenter.config.width;
         desc.BufferDesc.Height = presenter.config.height;
@@ -1517,6 +1522,17 @@ static bool testWindowClose(RecompD3dPresenter *warp)
     releaseCom(factory);
     if (passed) std::printf("PASS window close before/after present, unexpected loss/quit\n");
     return passed;
+}
+
+static bool testWidescreenClientWidth()
+{
+    RecompD3dPresenter presenter{};
+    presenter.config.width = 720u;
+    presenter.config.height = 480u;
+    presenter.widescreen = true;
+    if (presentClientWidth(&presenter) != 854u) return false;
+    presenter.widescreen = false;
+    return presentClientWidth(&presenter) == 640u;
 }
 
 static bool testTargetLifetimes(
@@ -1882,6 +1898,10 @@ static bool testDirectionalLighting(RecompD3dPresenter *presenter,
 
 int main()
 {
+    if (!testWidescreenClientWidth()) {
+        std::fprintf(stderr, "FAIL widescreen client width\n");
+        return 1;
+    }
     FrameRateCounter counter;
     double fps = 0, frame_ms = 0;
     if (sampleFrameRate(counter, 0u, fps, frame_ms)) return 1;
