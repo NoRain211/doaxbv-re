@@ -187,3 +187,5 @@ It creates storage beside the XBE under `.recomp-storage`. See
 [`docs/recomp-save-contract.md`](recomp-save-contract.md) for save behavior.
 Pass `--vsync` for paced presentation. Set `RECOMP_AUDIO_GAIN` from 0 to 1 for
 sound. Audio is muted by default when you start the runner directly.
+Set `RECOMP_D3D_WIDESCREEN=1` to show the game at 16:9. The game already draws
+a widescreen image, and this option sizes the window to match (854x480).
