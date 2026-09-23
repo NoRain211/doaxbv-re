@@ -1700,6 +1700,33 @@ static bool testVertexProgram(RecompD3dPresenter *presenter,
     water.program[3][3]=(15u<<12)|(1u<<11)|(10u<<3)|1u;
     water.program_count=4;
     const uint32_t red[]={0xffff0000u,0xffff0000u,0xffff0000u,0xffff0000u};
+    // A mask cache miss must not destroy the scene view before it is bound.
+    {
+        RecompD3dPresenter cached{};
+        if (FAILED(D3D11CreateDevice(nullptr,D3D_DRIVER_TYPE_WARP,nullptr,
+            D3D11_CREATE_DEVICE_BGRA_SUPPORT,nullptr,0u,D3D11_SDK_VERSION,
+            &cached.device,nullptr,&cached.context))) return false;
+        ID3D11Texture2D *cached_color=nullptr, *cached_readback=nullptr;
+        bool passed=createTestTargets(&cached,&cached_color,&cached_readback);
+        auto cached_water = water;
+        cached_water.texture.data = 0x00700000u;
+        cached_water.program_alpha_mask = true;
+        for (unsigned i=0;i<kTextureSlots && passed;++i) {
+            auto upload = cached_water;
+            upload.texture.data += i*16;
+            passed=lookupTexture(&cached,upload)!=nullptr;
+        }
+        passed=passed &&
+            cached.textures[cached.next_texture_slot].data==cached_water.texture.data &&
+            !containsData(cached,cached_water.reflection_texture.data) &&
+            submitClear(&cached,clear)==RECOMP_D3D_PRESENTER_OK &&
+            submitDraw(&cached,cached_water)==RECOMP_D3D_PRESENTER_OK &&
+            checkPixels(&cached,cached_color,cached_readback,"masked program evicts scene texture",red);
+        releaseCom(cached_readback);
+        releaseCom(cached_color);
+        releaseGraphics(&cached);
+        if (!passed) return false;
+    }
     for (unsigned masked=0;masked<2;++masked) {
         water.program_alpha_mask=masked!=0;
         if (submitClear(presenter,clear)!=RECOMP_D3D_PRESENTER_OK ||
@@ -1774,6 +1801,23 @@ static bool testVertexProgram(RecompD3dPresenter *presenter,
     if (submitClear(presenter,clear)!=RECOMP_D3D_PRESENTER_OK ||
         submitDraw(presenter,draw)!=RECOMP_D3D_PRESENTER_OK ||
         !checkPixels(presenter,color,readback,"dual issue reads before writes",green)) return false;
+    // Paired MAC writes to r1.x are suppressed, even when ILU only writes r1.y.
+    std::memcpy(draw.program[4],draw.program[3],16);
+    draw.program_count=5;
+    draw.program[0][3]=(15u<<24)|(1u<<20); // Initialize r1 with unpaired MAC.
+    draw.program[1][3]=(3u<<28)|(8u<<24)|(1u<<20)|(4u<<16);
+    draw.program[3][1]=(1u<<21)|0x1bu;
+    draw.program[3][2]=(1u<<28)|(1u<<26);
+    draw.program[3][3]=(15u<<12)|(1u<<11)|(3u<<3); // Color from r1.
+    const uint32_t black[]={0xff000000u,0xff000000u,0xff000000u,0xff000000u};
+    if (submitClear(presenter,clear)!=RECOMP_D3D_PRESENTER_OK ||
+        submitDraw(presenter,draw)!=RECOMP_D3D_PRESENTER_OK ||
+        !checkPixels(presenter,color,readback,"paired MAC leaves r1.x unchanged",black)) return false;
+    draw.program[1][3]|=(15u<<12)|(1u<<11)|(3u<<3);
+    draw.program[3][3]=0; // Keep the paired MAC output write as the final color.
+    if (submitClear(presenter,clear)!=RECOMP_D3D_PRESENTER_OK ||
+        submitDraw(presenter,draw)!=RECOMP_D3D_PRESENTER_OK ||
+        !checkPixels(presenter,color,readback,"paired MAC still writes output",red)) return false;
     draw.program[0][3] |= 2u; // Relative constants are deliberately unsupported.
     return submitDraw(presenter,draw)==RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
 }
