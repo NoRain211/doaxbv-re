@@ -50,6 +50,23 @@ int recomp_d3d_draw_model_test(void)
     passed &= expect_u32(
         "fvf diffuse", recomp_d3d_fvf_stride(0x042u), 16u);
     passed &= expect_u32("fvf xyzrhw stride", recomp_d3d_fvf_stride(0x004u), 16u);
+    passed &= expect_u32(
+        "fvf 0x342 nominal stride", recomp_d3d_fvf_stride(0x342u), 40u);
+    passed &= expect_u32(
+        "fvf 0x342 retail stream",
+        recomp_d3d_fvf_for_stream(0x342u, 32u), 0x242u);
+    passed &= expect_u32(
+        "fvf 0x342 nominal stream unchanged",
+        recomp_d3d_fvf_for_stream(0x342u, 40u), 0x342u);
+    passed &= expect_u32(
+        "fvf 0x312 retail stream",
+        recomp_d3d_fvf_for_stream(0x312u, 40u), 0x212u);
+    passed &= expect_u32(
+        "fvf 0x312 nominal stream unchanged",
+        recomp_d3d_fvf_for_stream(0x312u, 48u), 0x312u);
+    passed &= expect_u32(
+        "fvf unrelated stream unchanged",
+        recomp_d3d_fvf_for_stream(0x112u, 32u), 0x112u);
 
     /* Two unweighted FVFs this title draws with. 0x142 carries a diffuse color
        where 0x112 carries a normal, so their texcoords sit at different

@@ -91,6 +91,17 @@ uint32_t recomp_d3d_fvf_stride(uint32_t fvf)
     return size + texture_count * 8u;
 }
 
+uint32_t recomp_d3d_fvf_for_stream(uint32_t fvf, uint32_t vertex_stride)
+{
+    if (fvf == 0x342u && vertex_stride == 32u) {
+        return 0x242u;
+    }
+    if (fvf == 0x312u && vertex_stride == 40u) {
+        return 0x212u;
+    }
+    return fvf;
+}
+
 bool recomp_d3d_fvf_layout(uint32_t fvf, RecompD3dVertexLayout *layout)
 {
     RecompD3dVertexLayout decoded;

@@ -1454,12 +1454,16 @@ static void recomp_d3d_draw_indexed_vertices_adapter(void)
         goto finished;
     }
     /* This material samples UV0 and generates its other coordinates. Its
-       unused TEX2 declaration can extend beyond the actual stream stride. */
-    bool reflective = (result.plan.fvf == 0x112u || result.plan.fvf == 0x312u) &&
+       unused declared texture coordinates can extend beyond the stream. */
+    bool reflective =
+        (result.plan.fvf == 0x112u || result.plan.fvf == 0x312u ||
+         (result.plan.fvf == 0x342u && result.plan.vertex_stride == 32u)) &&
         reflection_material_selected(device);
     if (result.plan.fvf == 0x312u && reflective) {
         result.plan.fvf = 0x112u;
     }
+    result.plan.fvf = recomp_d3d_fvf_for_stream(
+        result.plan.fvf, result.plan.vertex_stride);
     if (recomp_d3d_fvf_stride(result.plan.fvf) == 0u ||
         recomp_d3d_fvf_stride(result.plan.fvf) > result.plan.vertex_stride) {
         decline = "fvf";
