@@ -442,6 +442,12 @@ static void attach_texture(uint32_t stage, RecompD3dPresenterDrawCommand *draw)
     }
     draw->texture = *desc;
     draw->has_texture = true;
+    /* D3D__TextureState[stage] starts with ADDRESSU, ADDRESSV. */
+    bytes = guest_span(0x001f2988u + stage * 0x80u, 8u);
+    if (bytes != NULL) {
+        memcpy(&draw->address_u, bytes, sizeof draw->address_u);
+        memcpy(&draw->address_v, bytes + 4u, sizeof draw->address_v);
+    }
     if (!swizzled_byte_count(desc, &byte_count)) {
         /* A render target may have host-owned pixels without a CPU upload. */
         ++draw_unsupported_formats[desc->format_byte & 0xffu];
@@ -807,6 +813,9 @@ static bool attach_draw_state(uint32_t device, RecompD3dPresenterDrawCommand *dr
 
     recomp_d3d_depth_state(recomp_d3d_render_state_adapter_model(), &draw->depth);
     recomp_d3d_blend_state(recomp_d3d_render_state_adapter_model(), &draw->blend);
+    const uint32_t cull = recomp_d3d_render_state_adapter_model()->cull_mode;
+    draw->cull_mode = cull == 0x900u ? RECOMP_D3D_CULL_CLOCKWISE :
+        cull == 0x901u ? RECOMP_D3D_CULL_COUNTER_CLOCKWISE : RECOMP_D3D_CULL_NONE;
     draw->texture_factor = recomp_d3d_render_state_adapter_model()->texture_factor;
     draw->use_texture_factor = has_selector && recomp_d3d_texture_factor_selected(
         selector[0], selector[1], selector[2], selector[3]);

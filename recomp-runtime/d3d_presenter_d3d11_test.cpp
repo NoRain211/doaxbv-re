@@ -19,6 +19,7 @@ static int finish(RecompD3dPresenter *presenter, int status, uint32_t detail)
         released = released && !presenter->textures[i].used &&
             presenter->textures[i].view == nullptr;
     }
+    for (auto state : presenter->draw_rasterizer_states) released = released && state == nullptr;
     for (uint32_t i = 0u; i < presenter->render_targets.size(); ++i) {
         released = released && presenter->render_targets[i].render_view == nullptr &&
             presenter->render_targets[i].sample_view == nullptr;
@@ -859,6 +860,49 @@ static bool testConstantBlend(
             submitDraw(presenter, draw) != RECOMP_D3D_PRESENTER_OK ||
             !checkPixels(presenter, color, readback, test.label, expected)) return false;
     }
+    return true;
+}
+
+static bool testCullRendering(
+    RecompD3dPresenter *presenter, ID3D11Texture2D *color, ID3D11Texture2D *readback)
+{
+    struct Vertex { float x, y, z; uint32_t color; };
+    const Vertex vertices[] = {
+        {-1, 1, 0.5f, 0xffffffffu}, {1, 1, 0.5f, 0xffffffffu},
+        {-1,-1, 0.5f, 0xffffffffu}, {1,-1, 0.5f, 0xffffffffu},
+    };
+    const uint16_t clockwise[] = {0,1,2,3}, counter_clockwise[] = {1,0,3,2};
+    RecompD3dPresenterDrawCommand draw{};
+    draw.primitive_type = RECOMP_D3D_PT_TRIANGLESTRIP;
+    draw.index_count = draw.vertex_count = 4;
+    draw.triangle_count = 2;
+    draw.vertex_stride = sizeof(Vertex);
+    draw.fvf = 0x42;
+    draw.has_transform = true;
+    draw.transform[0] = draw.transform[5] = draw.transform[10] = draw.transform[15] = 1;
+    draw.vertex_bytes = vertices;
+    draw.blend.color_write_mask = 15;
+    draw.use_texture_factor = true;
+    const RecompD3dPresenterClearCommand clear = {true,false,false,0xff000000,1,0};
+    for (auto mode : {RECOMP_D3D_CULL_NONE, RECOMP_D3D_CULL_CLOCKWISE,
+                      RECOMP_D3D_CULL_COUNTER_CLOCKWISE, RECOMP_D3D_CULL_NONE}) {
+        for (bool reverse : {false,true}) {
+            if (submitClear(presenter,clear) != RECOMP_D3D_PRESENTER_OK) return false;
+            draw.cull_mode = mode;
+            for (unsigned i=0; i<2; ++i) {
+                const bool cw = (i==0) != reverse;
+                draw.index_bytes = cw ? clockwise : counter_clockwise;
+                draw.texture_factor = cw ? 0xffff0000 : 0xff00ff00;
+                if (submitDraw(presenter,draw) != RECOMP_D3D_PRESENTER_OK) return false;
+            }
+            const uint32_t expected_color = mode == RECOMP_D3D_CULL_CLOCKWISE ? 0xff00ff00 :
+                mode == RECOMP_D3D_CULL_COUNTER_CLOCKWISE ? 0xffff0000 :
+                reverse ? 0xffff0000 : 0xff00ff00;
+            const uint32_t expected[] = {expected_color,expected_color,expected_color,expected_color};
+            if (!checkPixels(presenter,color,readback,"opposite card faces honor cull mode",expected)) return false;
+        }
+    }
+    std::printf("PASS cull mode drops the guest's back faces\n");
     return true;
 }
 
@@ -1896,6 +1940,52 @@ static bool testDirectionalLighting(RecompD3dPresenter *presenter,
     return !recomp_d3d_normal_transform(world,light.normal_transforms[0]);
 }
 
+static bool testSupersampledBackBuffer(RecompD3dPresenter *presenter)
+{
+    /* The casino transition fills from the supersampled 2x-wide guest back
+       buffer; it must resolve to the host snapshot, not an untextured draw. */
+    RecompD3dPresenterDrawCommand backbuffer{};
+    backbuffer.has_texture = backbuffer.texture_is_backbuffer = true;
+    backbuffer.texture.format_byte = 0x12u;
+    backbuffer.texture.linear = true;
+    backbuffer.texture.bits_per_pixel = 32u;
+    backbuffer.texture.width = presenter->config.width * 2u;
+    backbuffer.texture.height = presenter->config.height;
+    ID3D11ShaderResourceView *view = lookupTexture(presenter, backbuffer);
+    if (view == nullptr || view != presenter->back_buffer_sample) {
+        std::fprintf(stderr, "FAIL supersampled back buffer snapshot\n");
+        return false;
+    }
+    backbuffer.texture.width = presenter->config.width + 1u;
+    if (lookupTexture(presenter, backbuffer) != nullptr) {
+        std::fprintf(stderr, "FAIL mismatched back buffer accepted\n");
+        return false;
+    }
+    std::printf("PASS supersampled back buffer resolves to the host snapshot\n");
+    return true;
+}
+
+static bool testAddressSamplers(RecompD3dPresenter *presenter)
+{
+    /* Guest D3DTADDRESS: 3 CLAMP, 5 CLAMPTOEDGE, 2 MIRROR, 4 BORDER, 0 unset. */
+    const uint32_t cases[][4] = {
+        {3u, 3u, D3D11_TEXTURE_ADDRESS_CLAMP, D3D11_TEXTURE_ADDRESS_CLAMP},
+        {5u, 2u, D3D11_TEXTURE_ADDRESS_CLAMP, D3D11_TEXTURE_ADDRESS_MIRROR},
+        {0u, 4u, D3D11_TEXTURE_ADDRESS_WRAP, D3D11_TEXTURE_ADDRESS_BORDER},
+    };
+    for (const auto &c : cases) {
+        ID3D11SamplerState *sampler = lookupDrawSampler(presenter, c[0], c[1]);
+        D3D11_SAMPLER_DESC desc{};
+        if (sampler != nullptr) sampler->GetDesc(&desc);
+        if (sampler == nullptr || desc.AddressU != c[2] || desc.AddressV != c[3]) {
+            std::fprintf(stderr, "FAIL guest address mode %u/%u\n", c[0], c[1]);
+            return false;
+        }
+    }
+    std::printf("PASS guest texture address modes select host samplers\n");
+    return true;
+}
+
 int main()
 {
     if (!testWidescreenClientWidth()) {
@@ -1965,6 +2055,9 @@ int main()
     if (status == 0 && !testVertexProgram(&presenter, color, readback)) status = 95;
     if (status == 0 && !testDirectionalLighting(&presenter, color, readback)) status = 96;
     if (status == 0 && !testConstantBlend(&presenter, color, readback)) status = 97;
+    if (status == 0 && !testCullRendering(&presenter, color, readback)) status = 98;
+    if (status == 0 && !testSupersampledBackBuffer(&presenter)) status = 84;
+    if (status == 0 && !testAddressSamplers(&presenter)) status = 83;
     if (status == 0 && !testWindowClose(&presenter)) status = 86;
     releaseCom(readback);
     releaseCom(color);

@@ -74,10 +74,17 @@ typedef struct RecompD3dDirectionalLighting {
     float colors[8][4];
 } RecompD3dDirectionalLighting;
 
+typedef enum RecompD3dCullMode {
+    RECOMP_D3D_CULL_NONE,
+    RECOMP_D3D_CULL_CLOCKWISE,
+    RECOMP_D3D_CULL_COUNTER_CLOCKWISE,
+} RecompD3dCullMode;
+
 /* One indexed draw. Buffer contents stay in guest memory: the adapter passes
    host pointers and byte counts it has already bounds-checked, so the
    presenter never decodes guest addresses itself. */
 typedef struct RecompD3dPresenterDrawCommand {
+    RecompD3dCullMode cull_mode;
     uint32_t primitive_type;
     uint32_t index_count;
     uint32_t triangle_count;
@@ -119,6 +126,8 @@ typedef struct RecompD3dPresenterDrawCommand {
        of guest pixel memory, valid only for the duration of the submit. */
     RecompD3dTextureDesc texture;
     bool has_texture;
+    /* Guest D3DTADDRESS U/V for the texture's stage; 0 (unknown) wraps. */
+    uint32_t address_u, address_v;
     /* Storage aliases the current guest backbuffer, whose pixels are host-owned. */
     bool texture_is_backbuffer;
     const void *texture_bytes;

@@ -368,7 +368,7 @@ struct RecompD3dPresenter {
     ID3D11Buffer *draw_vertex_buffer = nullptr;
     ID3D11Buffer *draw_index_buffer = nullptr;
     ID3D11Buffer *draw_constant_buffer = nullptr;
-    ID3D11RasterizerState *draw_rasterizer_state = nullptr;
+    ID3D11RasterizerState *draw_rasterizer_states[3] = {};
     UINT draw_vertex_capacity = 0u;
     UINT draw_index_capacity = 0u;
     /* One pipeline per FVF. A failure is recorded against its own FVF so a
@@ -389,6 +389,7 @@ struct RecompD3dPresenter {
     std::vector<DepthTargetEntry> depth_targets;
     uint64_t target_bytes = 0u;
     ID3D11SamplerState *draw_sampler = nullptr;
+    ID3D11SamplerState *address_samplers[4][4]{};
     ID3D11SamplerState *filter_sampler = nullptr;
     ID3D11SamplerState *program_mask_sampler = nullptr;
     bool draw_shared_ready = false;
@@ -464,7 +465,7 @@ void releaseGraphics(RecompD3dPresenter *presenter)
     releaseCom(presenter->gamma_vertex_shader);
     releaseCom(presenter->gamma_pixel_shader);
     releaseCom(presenter->gamma_buffer);
-    releaseCom(presenter->draw_rasterizer_state);
+    for (auto &state : presenter->draw_rasterizer_states) releaseCom(state);
     releaseCom(presenter->draw_constant_buffer);
     releaseCom(presenter->draw_index_buffer);
     releaseCom(presenter->draw_vertex_buffer);
@@ -513,6 +514,9 @@ void releaseGraphics(RecompD3dPresenter *presenter)
     presenter->depth_targets.clear();
     presenter->target_bytes = 0u;
     releaseCom(presenter->draw_sampler);
+    for (auto &row : presenter->address_samplers) {
+        for (auto &sampler : row) releaseCom(sampler);
+    }
     releaseCom(presenter->filter_sampler);
     releaseCom(presenter->program_mask_sampler);
     presenter->draw_vertex_capacity = 0u;
@@ -1208,16 +1212,16 @@ bool ensureSharedDrawState(RecompD3dPresenter *presenter)
         return false;
     }
 
-    /* The guest culls with its own winding and this seam does not yet track
-       render state, so cull nothing rather than silently dropping faces. */
-    D3D11_RASTERIZER_DESC rasterizer_desc{};
-    rasterizer_desc.FillMode = D3D11_FILL_SOLID;
-    rasterizer_desc.CullMode = D3D11_CULL_NONE;
-    rasterizer_desc.DepthClipEnable = TRUE;
-    result = presenter->device->CreateRasterizerState(
-        &rasterizer_desc, &presenter->draw_rasterizer_state);
-    if (FAILED(result)) {
-        return false;
+    for (unsigned mode = 0; mode < 3; ++mode) {
+        D3D11_RASTERIZER_DESC rasterizer_desc{};
+        rasterizer_desc.FillMode = D3D11_FILL_SOLID;
+        rasterizer_desc.CullMode = mode == RECOMP_D3D_CULL_NONE
+            ? D3D11_CULL_NONE : D3D11_CULL_BACK;
+        rasterizer_desc.FrontCounterClockwise = mode == RECOMP_D3D_CULL_CLOCKWISE;
+        rasterizer_desc.DepthClipEnable = TRUE;
+        result = presenter->device->CreateRasterizerState(
+            &rasterizer_desc, &presenter->draw_rasterizer_states[mode]);
+        if (FAILED(result)) return false;
     }
 
     /* The guest's own sampler state is a separate seam; linear filtering with
@@ -1621,15 +1625,19 @@ ID3D11ShaderResourceView *lookupBackBufferTexture(
     RecompD3dPresenter *presenter,
     const RecompD3dTextureDesc &desc)
 {
+    /* 3D scenes use a horizontally supersampled guest back buffer (1440x480
+       for 720x480 output). The host keeps one resolved buffer, and linear
+       UVs are normalised by the guest size, so whole multiples map onto it. */
     if (desc.format_byte != 0x12u || !desc.linear || desc.depth ||
-        desc.width != presenter->config.width ||
-        desc.height != presenter->config.height ||
+        desc.width == 0u || desc.height == 0u ||
+        desc.width % presenter->config.width != 0u ||
+        desc.height % presenter->config.height != 0u ||
         presenter->render_target_view == nullptr) return nullptr;
 
     if (presenter->back_buffer_copy == nullptr) {
         D3D11_TEXTURE2D_DESC texture_desc{};
-        texture_desc.Width = desc.width;
-        texture_desc.Height = desc.height;
+        texture_desc.Width = presenter->config.width;
+        texture_desc.Height = presenter->config.height;
         texture_desc.MipLevels = texture_desc.ArraySize = 1u;
         texture_desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
         texture_desc.SampleDesc.Count = 1u;
@@ -1656,6 +1664,30 @@ ID3D11ShaderResourceView *lookupBackBufferTexture(
     presenter->context->CopyResource(presenter->back_buffer_copy, source);
     releaseCom(source);
     return presenter->back_buffer_sample;
+}
+
+/* Xbox D3DTADDRESS WRAP..BORDER (1..4) share D3D11's values and CLAMPTOEDGE
+   clamps. The casino Zack sprite draws V 0..2 with CLAMP; wrap shows it twice. */
+ID3D11SamplerState *lookupDrawSampler(
+    RecompD3dPresenter *presenter, uint32_t address_u, uint32_t address_v)
+{
+    const auto host = [](uint32_t mode) {
+        return mode == 5u ? D3D11_TEXTURE_ADDRESS_CLAMP : mode >= 1u && mode <= 4u
+            ? static_cast<D3D11_TEXTURE_ADDRESS_MODE>(mode) : D3D11_TEXTURE_ADDRESS_WRAP;
+    };
+    if (presenter->draw_sampler == nullptr) return nullptr;
+    const D3D11_TEXTURE_ADDRESS_MODE u = host(address_u), v = host(address_v);
+    ID3D11SamplerState *&sampler = presenter->address_samplers[u - 1][v - 1];
+    if (sampler == nullptr) {
+        D3D11_SAMPLER_DESC desc{};
+        presenter->draw_sampler->GetDesc(&desc);
+        desc.AddressU = u;
+        desc.AddressV = v;
+        if (FAILED(presenter->device->CreateSamplerState(&desc, &sampler))) {
+            return presenter->draw_sampler;
+        }
+    }
+    return sampler;
 }
 
 ID3D11ShaderResourceView *lookupTexture(
@@ -1885,7 +1917,8 @@ RecompD3dPresenterError submitDraw(
 {
     if (draw.vertex_bytes == nullptr || draw.index_bytes == nullptr ||
         draw.vertex_stride == 0u || draw.vertex_count == 0u ||
-        draw.index_count == 0u) {
+        draw.index_count == 0u ||
+        static_cast<unsigned>(draw.cull_mode) > RECOMP_D3D_CULL_COUNTER_CLOCKWISE) {
         return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
     }
 
@@ -2142,10 +2175,11 @@ RecompD3dPresenterError submitDraw(
     presenter->context->PSSetShaderResources(0u, 2u, views);
     ID3D11SamplerState *samplers[] = {
         draw.four_tap_filter || draw.has_alpha_mask || draw.program_count
-            ? presenter->filter_sampler : presenter->draw_sampler,
+            ? presenter->filter_sampler
+            : lookupDrawSampler(presenter, draw.address_u, draw.address_v),
         draw.program_alpha_mask ? presenter->program_mask_sampler : presenter->filter_sampler};
     presenter->context->PSSetSamplers(0u, 2u, samplers);
-    presenter->context->RSSetState(presenter->draw_rasterizer_state);
+    presenter->context->RSSetState(presenter->draw_rasterizer_states[draw.cull_mode]);
     ID3D11DepthStencilState *depth_state = lookupDepthState(presenter, draw.depth);
     if (depth_state == nullptr) {
         return RECOMP_D3D_PRESENTER_HOST_FAILURE;
