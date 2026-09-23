@@ -1,0 +1,9 @@
+[
+  {
+    "start": "0x00034F60",
+    "end": "0x00034FE0",
+    "coalesce_starts": [
+      "0x00034FD1"
+    ]
+  }
+]

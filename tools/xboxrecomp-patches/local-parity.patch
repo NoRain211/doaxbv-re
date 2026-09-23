@@ -402,7 +402,7 @@ index 86c4364..dd988c7 100644
                             extra_leaders=None):
          """
 diff --git a/tools/recomp/lifter.py b/tools/recomp/lifter.py
-index 57d7e83..09ae562 100644
+index 57d7e83..120f502 100644
 --- a/tools/recomp/lifter.py
 +++ b/tools/recomp/lifter.py
 @@ -7,7 +7,7 @@ patterns like cmp+jcc) into C statements using the recomp_types.h macros.
@@ -557,7 +557,7 @@ index 57d7e83..09ae562 100644
 +# the CRT rounding helpers actually use. AND/OR/XOR are here because they
 +# clear CF, which is just as load-bearing for a consumer as setting it.
 +_CARRY_PRODUCERS = frozenset({
-+    "neg", "add", "sub", "adc", "sbb", "and", "or", "xor",
++    "neg", "add", "sub", "adc", "sbb", "and", "or", "xor", "cmp", "test",
 +})
 +
 +
@@ -598,10 +598,10 @@ index 57d7e83..09ae562 100644
 +    if m == "add":
 +        return [f"_cf = ((uint32_t)(({dst} + {src}) & 0x{mask:X}u)"
 +                f" < (uint32_t)({dst} & 0x{mask:X}u)); /* add carry */"]
-+    if m == "sub":
++    if m in ("sub", "cmp"):
 +        return [f"_cf = ((uint32_t)({dst} & 0x{mask:X}u)"
-+                f" < (uint32_t)({src} & 0x{mask:X}u)); /* sub borrow */"]
-+    if m in ("and", "or"):
++                f" < (uint32_t)({src} & 0x{mask:X}u)); /* {m} borrow */"]
++    if m in ("and", "or", "test"):
 +        return [f"_cf = 0; /* {m} clears carry */"]
 +    return []
 +
@@ -685,7 +685,7 @@ index 57d7e83..09ae562 100644
 +})
 +
 +
-+def _deferred_consumer_clobbers(insns, idx, setter, flags_preserve=None):
++def _deferred_consumer_clobbers(insns, idx, operands, flags_preserve=None):
 +    """True when a deferred condition consumes these flags after a clobber.
 +
 +    Scans forward from the flag setter over EFLAGS-preserving instructions.
@@ -699,7 +699,7 @@ index 57d7e83..09ae562 100644
 +    """
 +    if flags_preserve is None:
 +        flags_preserve = _EFLAGS_PRESERVE
-+    watched = _flag_operand_regs(setter.operands)
++    watched = _flag_operand_regs(operands)
 +    if not watched:
 +        return False
 +    dirty = set()
@@ -1075,7 +1075,7 @@ index 57d7e83..09ae562 100644
  
      def _lift_shld(self, insn, ops):
          """SHLD: double-precision shift left."""
-@@ -1141,6 +1540,38 @@ class Lifter:
+@@ -1141,20 +1540,56 @@ class Lifter:
          func = "ROL32" if m == "rol" else "ROR32"
          return [_fmt_operand_write(ops[0], f"{func}({dst}, {cnt})")]
  
@@ -1113,8 +1113,28 @@ index 57d7e83..09ae562 100644
 +
      # ── Compare / Test (standalone) ──
  
-     def _lift_cmp(self, insn, ops):
-@@ -1186,9 +1617,22 @@ class Lifter:
+-    def _lift_cmp(self, insn, ops):
++    def _lift_cmp(self, insn, ops, preserve_carry=False):
+         if len(ops) < 2:
+             return ["/* cmp: bad operands */"]
+         lhs = _fmt_operand_read(ops[0])
+         rhs = _fmt_operand_read(ops[1])
++        if preserve_carry:
++            return _emit_carry_capture("cmp", ops, lhs, rhs)
+         return [f"(void)0; /* cmp {lhs}, {rhs} - flags set for next jcc */"]
+ 
+-    def _lift_test(self, insn, ops):
++    def _lift_test(self, insn, ops, preserve_carry=False):
+         if len(ops) < 2:
+             return ["/* test: bad operands */"]
+         lhs = _fmt_operand_read(ops[0])
+         rhs = _fmt_operand_read(ops[1])
++        if preserve_carry:
++            return _emit_carry_capture("test", ops, lhs, rhs)
+         return [f"(void)0; /* test {lhs}, {rhs} - flags set for next jcc */"]
+ 
+     # ── Control flow ──
+@@ -1186,9 +1621,22 @@ class Lifter:
          # x86 'call' pushes return address then jumps.
          # With global esp, we push a dummy return address (0) then call.
          # The callee's 'ret' will pop it back off.
@@ -1139,7 +1159,7 @@ index 57d7e83..09ae562 100644
              # After __SEH_prolog/__SEH_epilog, read back the frame pointer.
              if insn.call_target in (self.SEH_PROLOG, self.SEH_EPILOG):
                  lines.append("ebp = g_seh_ebp; /* read back frame from SEH helper */")
-@@ -1196,7 +1640,12 @@ class Lifter:
+@@ -1196,7 +1644,12 @@ class Lifter:
          elif len(ops) >= 1:
              target = _fmt_operand_read(ops[0])
              # Mark indirect calls for post-processing by _fixup_icall_esp_save
@@ -1153,7 +1173,7 @@ index 57d7e83..09ae562 100644
          return ["/* call: no target */"]
  
      def _lift_ret(self, insn, ops):
-@@ -1218,8 +1667,9 @@ class Lifter:
+@@ -1218,8 +1671,9 @@ class Lifter:
  
      def _read_jump_table(self, table_va, max_entries=256):
          """Read 32-bit jump table entries from the XBE at a given VA.
@@ -1165,7 +1185,7 @@ index 57d7e83..09ae562 100644
          if not self.xbe_data:
              return []
          offset = va_to_file_offset(table_va)
-@@ -1232,6 +1682,8 @@ class Lifter:
+@@ -1232,6 +1686,8 @@ class Lifter:
                  break
              val = struct.unpack_from('<I', self.xbe_data, o)[0]
              if not is_code_address(val):
@@ -1174,7 +1194,7 @@ index 57d7e83..09ae562 100644
                  break
              targets.append(val)
          return targets
-@@ -1248,7 +1700,9 @@ class Lifter:
+@@ -1248,7 +1704,9 @@ class Lifter:
          if not op.mem_disp or not (op.mem_index or op.mem_base):
              return []
          table_va = op.mem_disp
@@ -1185,7 +1205,7 @@ index 57d7e83..09ae562 100644
          if not targets:
              return []
          # Check that ALL targets are within the current function
-@@ -1261,6 +1715,15 @@ class Lifter:
+@@ -1261,6 +1719,15 @@ class Lifter:
              if self._is_external_target(insn.jump_target):
                  # Tail call - no return address push (reuses current frame's)
                  # Bridge ebp so the target function can inherit our frame pointer.
@@ -1201,7 +1221,7 @@ index 57d7e83..09ae562 100644
                  name = self._call_target_name(insn.jump_target)
                  return [f"g_seh_ebp = ebp; {name}(); return; /* tail jmp 0x{insn.jump_target:08X} */"]
              return [f"goto loc_{insn.jump_target:08X};"]
-@@ -1290,7 +1753,7 @@ class Lifter:
+@@ -1290,7 +1757,7 @@ class Lifter:
              if target:
                  if self._is_external_target(target):
                      name = self._call_target_name(target)
@@ -1210,7 +1230,7 @@ index 57d7e83..09ae562 100644
                  return [f"if ({cond}) goto loc_{target:08X}; /* {jcc} */"]
              return [f"/* {jcc} - no target */"]
  
-@@ -1299,7 +1762,7 @@ class Lifter:
+@@ -1299,7 +1766,7 @@ class Lifter:
          if target:
              if self._is_external_target(target):
                  name = self._call_target_name(target)
@@ -1219,7 +1239,7 @@ index 57d7e83..09ae562 100644
              return [f"if (_flags /* {jcc}: {desc} */) goto loc_{target:08X};"]
          return [f"/* {jcc}: {desc} - no target */"]
  
-@@ -1341,9 +1804,29 @@ class Lifter:
+@@ -1341,9 +1808,29 @@ class Lifter:
                  "{ uint32_t _i; for (_i = 0; _i < ecx; _i++) MEM16(edi + _i*2) = LO16(eax); }",
                  "edi += ecx * 2; ecx = 0; /* rep stosw */"
              ]
@@ -1251,7 +1271,7 @@ index 57d7e83..09ae562 100644
              return [f"/* {m} - string scan, ecx iterations */"]
          return [f"/* {m} */"]
  
-@@ -1378,10 +1861,50 @@ class Lifter:
+@@ -1378,10 +1865,50 @@ class Lifter:
          if nops < 1:
              return [f"/* {m}: no operands */"]
  
@@ -1305,7 +1325,7 @@ index 57d7e83..09ae562 100644
              elif op.type == "mem":
                  if op.mem_size == 8:
                      return f"MEMD({_fmt_mem(op)})"
-@@ -1391,7 +1914,9 @@ class Lifter:
+@@ -1391,7 +1918,9 @@ class Lifter:
              return f"/* sse_read? */"
  
          def _sse_write(op, val):
@@ -1316,7 +1336,7 @@ index 57d7e83..09ae562 100644
                  return f"{op.reg} = {val};"
              elif op.type == "mem":
                  if op.mem_size == 8:
-@@ -1399,20 +1924,101 @@ class Lifter:
+@@ -1399,20 +1928,101 @@ class Lifter:
                  return f"MEMF({_fmt_mem(op)}) = {val};"
              return f"/* sse_write? */;"
  
@@ -1424,7 +1444,7 @@ index 57d7e83..09ae562 100644
              return [f"/* movd {insn.op_str} */"]
  
          # ── Arithmetic ──
-@@ -1441,11 +2047,15 @@ class Lifter:
+@@ -1441,11 +2051,15 @@ class Lifter:
                  return [_sse_write(ops[0], f"({a} > {b} ? {a} : {b})") + f" /* {m} */"]
  
          # ── Packed arithmetic ──
@@ -1444,7 +1464,7 @@ index 57d7e83..09ae562 100644
  
          # ── Conversions ──
          if m == "cvtsi2ss":
-@@ -1475,19 +2085,31 @@ class Lifter:
+@@ -1475,19 +2089,31 @@ class Lifter:
                  return [f"/* {m} {_sse_read(ops[0])}, {_sse_read(ops[1])} - sets EFLAGS */"]
  
          # ── Bitwise ──
@@ -1485,7 +1505,7 @@ index 57d7e83..09ae562 100644
  
          # ── Reciprocal / rsqrt ──
          if m == "rsqrtss":
-@@ -1521,13 +2143,22 @@ class Lifter:
+@@ -1521,13 +2147,22 @@ class Lifter:
  
          # ── Packed comparison ──
          if m in ("cmpneqps", "cmpeqps", "cmpltps", "cmpleps"):
@@ -1511,7 +1531,7 @@ index 57d7e83..09ae562 100644
  
          # ── MMX / integer SIMD ──
          if m in ("pand", "pandn", "por", "pxor", "pcmpgtd"):
-@@ -1535,7 +2166,24 @@ class Lifter:
+@@ -1535,7 +2170,24 @@ class Lifter:
                  return [f"/* {m} {insn.op_str} (MMX/SIMD integer) */"]
  
          # ── Shuffle/unpack ──
@@ -1537,7 +1557,7 @@ index 57d7e83..09ae562 100644
              return [f"/* {m} {insn.op_str} */"]
  
          return [f"/* SSE: {m} {insn.op_str} */"]
-@@ -1555,16 +2203,28 @@ class Lifter:
+@@ -1555,16 +2207,28 @@ class Lifter:
                      elif ops[0].mem_size == 8:
                          return [f"fp_push(MEMD({_fmt_mem(ops[0])})); /* fld double */"]
                      return [f"fp_push(MEMF({_fmt_mem(ops[0])})); /* fld */"]
@@ -1570,7 +1590,7 @@ index 57d7e83..09ae562 100644
  
          if m == "fild":
              if len(ops) >= 1 and ops[0].type == "mem":
-@@ -1574,51 +2234,216 @@ class Lifter:
+@@ -1574,51 +2238,216 @@ class Lifter:
  
          if m in ("fist", "fistp"):
              if len(ops) >= 1 and ops[0].type == "mem":
@@ -1799,7 +1819,7 @@ index 57d7e83..09ae562 100644
          if m == "fldz":
              return [f"fp_push(0.0); /* fldz */"]
          if m == "fld1":
-@@ -1627,7 +2452,7 @@ class Lifter:
+@@ -1627,7 +2456,7 @@ class Lifter:
          return [f"/* FPU: {m} {insn.op_str} */"]
  
  
@@ -1808,7 +1828,7 @@ index 57d7e83..09ae562 100644
      """
      Lift a basic block to C statements.
      Tracks flags to generate proper conditions for jcc/setcc/cmovcc.
-@@ -1637,6 +2462,8 @@ def lift_basic_block(lifter, bb, flag_state=None):
+@@ -1637,6 +2466,8 @@ def lift_basic_block(lifter, bb, flag_state=None):
          bb: BasicBlock with instructions
          flag_state: tuple of (flag_setter_mnemonic, flag_operands) from
                      a preceding block, or None
@@ -1817,7 +1837,7 @@ index 57d7e83..09ae562 100644
  
      Returns:
          (stmts, flag_state) where stmts is a list of C statement strings
-@@ -1644,6 +2471,8 @@ def lift_basic_block(lifter, bb, flag_state=None):
+@@ -1644,6 +2475,8 @@ def lift_basic_block(lifter, bb, flag_state=None):
      """
      stmts = []
      insns = bb.instructions
@@ -1826,7 +1846,7 @@ index 57d7e83..09ae562 100644
      i = 0
  
      # Track the last instruction that set flags
-@@ -1653,6 +2482,46 @@ def lift_basic_block(lifter, bb, flag_state=None):
+@@ -1653,6 +2486,51 @@ def lift_basic_block(lifter, bb, flag_state=None):
          last_flag_setter = None
          last_flag_ops = []
  
@@ -1870,18 +1890,25 @@ index 57d7e83..09ae562 100644
 +                % (name, reg))
 +        return lines_out
 +
++    # A fallthrough block can replace operands before reusing incoming flags.
++    if (last_flag_setter and insns and
++            _deferred_consumer_clobbers(insns, -1, last_flag_ops, flags_preserve)):
++        stmts.extend(_emit_flag_snapshot(last_flag_ops, insns[0].address))
++
      while i < len(insns):
          curr = insns[i]
  
-@@ -1666,6 +2535,7 @@ def lift_basic_block(lifter, bb, flag_state=None):
+@@ -1666,6 +2544,9 @@ def lift_basic_block(lifter, bb, flag_state=None):
              flag_insn = insns[i]
              last_flag_setter = flag_insn.mnemonic
              last_flag_ops = list(flag_insn.operands)
++            clobbered = set()
++            snapshot_names = {}
 +            flag_setter_in_block = True
              i += consumed
              continue
  
-@@ -1679,7 +2549,8 @@ def lift_basic_block(lifter, bb, flag_state=None):
+@@ -1679,7 +2560,8 @@ def lift_basic_block(lifter, bb, flag_state=None):
          # Check if this instruction uses flags (jcc, setcc, cmovcc)
          if curr.is_cond_jump and last_flag_setter:
              result = _make_condition(
@@ -1891,7 +1918,7 @@ index 57d7e83..09ae562 100644
              if result:
                  cond_expr, desc = result
                  target = curr.jump_target
-@@ -1694,7 +2565,8 @@ def lift_basic_block(lifter, bb, flag_state=None):
+@@ -1694,7 +2576,8 @@ def lift_basic_block(lifter, bb, flag_state=None):
                                "sets", "setns")
                  and last_flag_setter and len(curr.operands) >= 1):
              cond = _make_setcc_value(
@@ -1901,7 +1928,7 @@ index 57d7e83..09ae562 100644
              if cond:
                  stmts.append(
                      _fmt_operand_write(curr.operands[0],
-@@ -1708,7 +2580,8 @@ def lift_basic_block(lifter, bb, flag_state=None):
+@@ -1708,7 +2591,8 @@ def lift_basic_block(lifter, bb, flag_state=None):
                                "cmovle", "cmovg", "cmovs", "cmovns")
                  and last_flag_setter and len(curr.operands) >= 2):
              cond = _make_cmovcc_cond(
@@ -1911,7 +1938,7 @@ index 57d7e83..09ae562 100644
              if cond:
                  src = _fmt_operand_read(curr.operands[1])
                  stmts.append(
-@@ -1718,34 +2591,90 @@ def lift_basic_block(lifter, bb, flag_state=None):
+@@ -1718,34 +2602,96 @@ def lift_basic_block(lifter, bb, flag_state=None):
                  i += 1
                  continue
  
@@ -1956,6 +1983,12 @@ index 57d7e83..09ae562 100644
 +            elif curr.mnemonic == "adc":
 +                results = lifter._lift_adc(
 +                    curr, curr.operands, preserve_carry=True)
++            elif curr.mnemonic == "cmp":
++                results = lifter._lift_cmp(
++                    curr, curr.operands, preserve_carry=True)
++            elif curr.mnemonic == "test":
++                results = lifter._lift_test(
++                    curr, curr.operands, preserve_carry=True)
 +            else:
 +                results = lifter._lift_alu_binop(
 +                    curr, curr.operands, curr.mnemonic, preserve_carry=True)
@@ -1970,7 +2003,7 @@ index 57d7e83..09ae562 100644
 +            flag_setter_in_block = True
 +            clobbered = set()
 +            snapshot_names = {}
-+            if _deferred_consumer_clobbers(insns, i, curr, flags_preserve):
++            if _deferred_consumer_clobbers(insns, i, curr.operands, flags_preserve):
 +                stmts.extend(_emit_flag_snapshot(last_flag_ops, curr.address))
          elif curr.mnemonic in _FLAGS_UNDEFINED:
              # Flags are undefined after these - clear tracking
@@ -2006,7 +2039,7 @@ index 57d7e83..09ae562 100644
          elif curr.mnemonic.startswith("f") or curr.mnemonic.startswith("cmov"):
              pass  # FPU and already-handled CMOVcc
          elif curr.mnemonic.startswith("j"):
-@@ -1757,12 +2686,14 @@ def lift_basic_block(lifter, bb, flag_state=None):
+@@ -1757,12 +2703,14 @@ def lift_basic_block(lifter, bb, flag_state=None):
              # repe cmpsb/repne scasb = comparison, sets flags
              rest = curr.op_str.strip() if hasattr(curr, 'op_str') else ""
              raw_m = curr.mnemonic
@@ -2023,6 +2056,105 @@ index 57d7e83..09ae562 100644
              else:
                  pass  # rep movs/stos = data movement, flags preserved
          else:
+@@ -1772,5 +2720,5 @@ def lift_basic_block(lifter, bb, flag_state=None):
+ 
+         i += 1
+ 
+-    out_flag_state = (last_flag_setter, last_flag_ops) if last_flag_setter else None
++    out_flag_state = (last_flag_setter, _resolve_flag_ops(last_flag_ops)) if last_flag_setter else None
+     return stmts, out_flag_state
+diff --git a/tools/recomp/test_lifter_casino_flags.py b/tools/recomp/test_lifter_casino_flags.py
+new file mode 100644
+index 0000000..7ce7f65
+--- /dev/null
++++ b/tools/recomp/test_lifter_casino_flags.py
+@@ -0,0 +1,86 @@
++"""Execute lifted comparison flags across MOV and fallthrough boundaries."""
++import shutil
++import subprocess
++import tempfile
++import unittest
++from pathlib import Path
++
++from .disasm import Disassembler
++from .lifter import Lifter, lift_basic_block
++from .test_lifter_test_sign import _lift
++
++
++class CasinoFlagsTest(unittest.TestCase):
++    def execute(self, source):
++        compiler = shutil.which("gcc") or shutil.which("clang")
++        self.assertIsNotNone(compiler, "C compiler required")
++        with tempfile.TemporaryDirectory() as directory:
++            path = Path(directory) / "check.c"
++            exe = path.with_suffix(".exe")
++            path.write_text("""
++                #include <stdint.h>
++                #include <assert.h>
++                #define LO8(x) ((uint8_t)(x))
++                #define LO16(x) ((uint16_t)(x))
++                #define SET_LO8(x,v) ((x)=((x)&0xffffff00u)|(uint8_t)(v))
++                #define SET_LO16(x,v) ((x)=((x)&0xffff0000u)|(uint16_t)(v))
++                #define TEST_S(a,b) ((int32_t)((a)&(b))<0)
++                #define CMP_G(a,b) ((int32_t)(a)>(int32_t)(b))
++            """ + source)
++            subprocess.run([compiler, "-std=c11", str(path), "-o", str(exe)],
++                           check=True, capture_output=True, text=True, timeout=30)
++            result = subprocess.run([str(exe)], capture_output=True, text=True, timeout=10)
++            self.assertEqual(result.returncode, 0, result.stderr)
++
++    def test_compare_carry_survives_mov_and_consumes_original_operands(self):
++        functions = []
++        checks = []
++        # CMP/TEST at each width, with a flag-preserving MOV overwriting RHS.
++        for index, (bits, cmp_op, test_op) in enumerate((
++                (8, "38c8", "84c8"), (16, "6639c8", "6685c8"),
++                (32, "39c8", "85c8"))):
++            mask = (1 << bits) - 1
++            for name, opcode in (("cmp", cmp_op), ("test", test_op)):
++                fn = f"check_{name}_{index}"
++                lifted = _lift(bytes.fromhex(opcode + "b90000000018d2fec2"))
++                functions.append(f"""
++                    static uint32_t {fn}(uint32_t eax, uint32_t ecx) {{
++                        uint32_t edx=0; int _cf=1;
++                        {lifted}
++                        return LO8(edx);
++                    }}
++                """)
++                expected = f"((values[i]&{mask}u)>=(values[j]&{mask}u))" if name == "cmp" else "1"
++                checks.append(f"""
++                    for(unsigned i=0;i<6;i++) for(unsigned j=0;j<6;j++)
++                        assert({fn}(values[i],values[j]) == {expected});
++                """)
++        self.execute("\n".join(functions) + """
++            int main(void) {
++                uint32_t values[]={0,1,255,65535,0x80000000u,0xffffffffu};
++        """ + "\n".join(checks) + "}")
++
++    def test_test_flags_survive_fallthrough_register_replacement(self):
++        # TEST EAX,EAX; JS done; MOV EAX,99999999; JG done; MOV EAX,0; done:
++        raw = bytes.fromhex("85c0780eb8ffe0f5057f07b800000000eb0090")
++        disasm = Disassembler()
++        insns = disasm.disassemble_function(raw, 0, len(raw))
++        lifter = Lifter()
++        lifter.func_end = len(raw) + 1
++        lines, state = [], None
++        for block in disasm.build_basic_blocks(insns, 0, len(raw)):
++            stmts, state = lift_basic_block(lifter, block, state)
++            lines += [f"loc_{block.start:08X}: ;"] + stmts
++        self.execute("uint32_t check(uint32_t eax) {\n" + "\n".join(lines) + """
++                return eax;
++            }
++            int main(void) {
++                assert(check(0)==0);
++                assert(check(1)==99999999);
++                assert(check(0xffffffffu)==0xffffffffu);
++            }
++        """)
++
++
++if __name__ == "__main__":
++    unittest.main()
 diff --git a/tools/recomp/test_lifter_fpu_destination.py b/tools/recomp/test_lifter_fpu_destination.py
 new file mode 100644
 index 0000000..e07741a
@@ -2260,8 +2392,33 @@ index 0000000..3d9aa84
 +
 +if __name__ == "__main__":
 +    unittest.main()
+diff --git a/tools/recomp/test_translator_padding.py b/tools/recomp/test_translator_padding.py
+new file mode 100644
+index 0000000..d579dab
+--- /dev/null
++++ b/tools/recomp/test_translator_padding.py
+@@ -0,0 +1,19 @@
++"""Regression checks for alignment padding recognized by CFG recovery."""
++import unittest
++
++from .disasm import Disassembler
++from .translator import FunctionTranslator
++
++
++class TranslatorPaddingTest(unittest.TestCase):
++    def test_register_self_move_is_padding(self):
++        insn = Disassembler().disassemble_function(bytes.fromhex("8bff"), 0, 2)[0]
++        self.assertTrue(FunctionTranslator._is_multi_byte_nop(insn))
++
++    def test_register_move_with_different_source_is_not_padding(self):
++        insn = Disassembler().disassemble_function(bytes.fromhex("8bfe"), 0, 2)[0]
++        self.assertFalse(FunctionTranslator._is_multi_byte_nop(insn))
++
++
++if __name__ == "__main__":
++    unittest.main()
 diff --git a/tools/recomp/translator.py b/tools/recomp/translator.py
-index a5890d7..5756ed8 100644
+index a5890d7..3ef9ca7 100644
 --- a/tools/recomp/translator.py
 +++ b/tools/recomp/translator.py
 @@ -11,8 +11,11 @@ For each function:
@@ -2286,7 +2443,7 @@ index a5890d7..5756ed8 100644
          """
          xbe_data: bytes - raw XBE file contents
          func_db: dict - addr → function info from functions.json
-@@ -111,9 +115,701 @@ class FunctionTranslator:
+@@ -111,9 +115,705 @@ class FunctionTranslator:
          self.classification_db = classification_db or {}
          self.abi_db = abi_db or {}
          self.disasm = Disassembler()
@@ -2764,14 +2921,18 @@ index a5890d7..5756ed8 100644
 +        """Return whether one instruction is wide alignment padding.
 +
 +        An assembler aligns the next branch target with a single wide
-+        instruction that has no effect: either an explicit multi-byte ``nop``
-+        or the classic ``lea reg, [reg]`` form, which reloads a register with
-+        its own address. Both appear in this XBE.
++        instruction that has no effect: an explicit multi-byte ``nop``, the
++        classic ``lea reg, [reg]`` form, or a register self-move. These forms
++        all appear in this XBE.
 +        """
 +        if instruction.size < 2:
 +            return False
 +        if instruction.mnemonic == "nop":
 +            return True
++        if instruction.mnemonic == "mov" and len(instruction.operands) == 2:
++            destination, source = instruction.operands
++            return (destination.type == "reg" and source.type == "reg"
++                    and destination.reg == source.reg)
 +        if instruction.mnemonic != "lea" or len(instruction.operands) != 2:
 +            return False
 +        destination, source = instruction.operands
@@ -2991,7 +3152,7 @@ index a5890d7..5756ed8 100644
  
      def _read_func_bytes(self, start_va, end_va):
          """Read raw bytes for a function from the XBE."""
-@@ -148,7 +844,8 @@ class FunctionTranslator:
+@@ -148,7 +848,8 @@ class FunctionTranslator:
          Returns a string of C source code, or None on failure.
          """
          start = func_addr
@@ -3001,7 +3162,7 @@ index a5890d7..5756ed8 100644
          if not end:
              end = start + func_info.get("size", 0)
          if end <= start:
-@@ -165,12 +862,44 @@ class FunctionTranslator:
+@@ -165,12 +866,44 @@ class FunctionTranslator:
          # Set function bounds for the lifter
          self.lifter.func_start = start
          self.lifter.func_end = end
@@ -3047,7 +3208,7 @@ index a5890d7..5756ed8 100644
          # Collect switch table targets as extra block leaders
          switch_leaders = set()
          for insn in instructions:
-@@ -216,24 +945,48 @@ class FunctionTranslator:
+@@ -216,24 +949,48 @@ class FunctionTranslator:
          if any(insn.mnemonic == "leave" for insn in instructions):
              used_regs.add("ebp")
  
@@ -3101,7 +3262,7 @@ index a5890d7..5756ed8 100644
          # Build call targets list
          call_targets = set()
          for insn in instructions:
-@@ -293,34 +1046,30 @@ class FunctionTranslator:
+@@ -293,34 +1050,30 @@ class FunctionTranslator:
          if has_carry:
              lines.append(f"    int _cf = 0; /* carry flag */")
  
@@ -3151,7 +3312,7 @@ index a5890d7..5756ed8 100644
  
          # For fpo_leaf functions that use ebp: initialize from g_seh_ebp.
          # In x86, these functions inherit EBP from their caller (typically
-@@ -351,6 +1100,32 @@ class FunctionTranslator:
+@@ -351,6 +1104,32 @@ class FunctionTranslator:
                      label_addrs.add(t)
  
          flag_state = None
@@ -3184,7 +3345,7 @@ index a5890d7..5756ed8 100644
          for bb in blocks:
              # Emit label if this block is a branch target
              if bb.start in label_addrs or bb.start == start:
-@@ -365,12 +1140,20 @@ class FunctionTranslator:
+@@ -365,12 +1144,20 @@ class FunctionTranslator:
              # This handles patterns like: test eax,eax / ja X / jb Y
              # where jb uses the same flags as ja from the preceding block.
              stmts, flag_state = lift_basic_block(
@@ -3206,7 +3367,7 @@ index a5890d7..5756ed8 100644
          # Insert _icall_esp save points before RECOMP_ICALL_SAFE arg pushes.
          # The pattern is: optional PUSH32 args, then PUSH32(esp, 0); RECOMP_ICALL_SAFE(...).
          # We insert "uint32_t _icall_esp = g_esp;" before the first arg push.
-@@ -418,8 +1201,8 @@ class FunctionTranslator:
+@@ -418,8 +1205,8 @@ class FunctionTranslator:
          if has_fpu:
              lines.append(f"    #undef fp_push")
              lines.append(f"    #undef fp_pop")
@@ -3216,7 +3377,7 @@ index a5890d7..5756ed8 100644
              lines.append(f"    #undef fp_st1")
  
          lines.append(f"}}")
-@@ -467,10 +1250,15 @@ class BatchTranslator:
+@@ -467,10 +1254,15 @@ class BatchTranslator:
  
      def __init__(self, xbe_path, func_json_path, labels_json_path=None,
                   identified_json_path=None, abi_json_path=None,
@@ -3233,7 +3394,7 @@ index a5890d7..5756ed8 100644
  
          # Load XBE
          with open(xbe_path, "rb") as f:
-@@ -486,6 +1274,20 @@ class BatchTranslator:
+@@ -486,6 +1278,20 @@ class BatchTranslator:
              func["_addr"] = addr
              if "end" in func:
                  func["end"] = int(func["end"], 16)
@@ -3254,7 +3415,7 @@ index a5890d7..5756ed8 100644
              self.func_db[addr] = func
  
          # Load labels
-@@ -529,7 +1331,145 @@ class BatchTranslator:
+@@ -529,7 +1335,145 @@ class BatchTranslator:
          self.translator = FunctionTranslator(
              self.xbe_data, self.func_db, self.label_db,
              self.classification_db, self.abi_db,
@@ -3400,7 +3561,7 @@ index a5890d7..5756ed8 100644
  
      def get_functions_by_category(self, categories=None, exclude_categories=None):
          """
-@@ -538,6 +1478,8 @@ class BatchTranslator:
+@@ -538,6 +1482,8 @@ class BatchTranslator:
          """
          result = []
          for addr, func_info in sorted(self.func_db.items()):
@@ -3409,7 +3570,7 @@ index a5890d7..5756ed8 100644
              cls_info = self.classification_db.get(addr, {})
              cat = cls_info.get("category", "unknown")
  
-@@ -560,7 +1502,11 @@ class BatchTranslator:
+@@ -560,7 +1506,11 @@ class BatchTranslator:
          func_info = self.func_db.get(addr)
          if not func_info:
              return None
@@ -3422,7 +3583,7 @@ index a5890d7..5756ed8 100644
  
      def translate_batch(self, func_list, output_file=None, max_funcs=None,
                          verbose=False):
-@@ -576,6 +1522,9 @@ class BatchTranslator:
+@@ -576,6 +1526,9 @@ class BatchTranslator:
          """
          os.makedirs(self.output_dir, exist_ok=True)
  
@@ -3432,7 +3593,7 @@ index a5890d7..5756ed8 100644
          if max_funcs:
              func_list = func_list[:max_funcs]
  
-@@ -630,6 +1579,8 @@ class BatchTranslator:
+@@ -630,6 +1583,8 @@ class BatchTranslator:
                  c_chunks.append("")
                  stats["failed"] += 1
  
@@ -3441,7 +3602,7 @@ index a5890d7..5756ed8 100644
          # Write output
          if output_file is None:
              output_file = os.path.join(self.output_dir, "recompiled.c")
-@@ -689,6 +1640,9 @@ class BatchTranslator:
+@@ -689,6 +1644,9 @@ class BatchTranslator:
  
          os.makedirs(output_dir, exist_ok=True)
  
@@ -3451,7 +3612,7 @@ index a5890d7..5756ed8 100644
          # Translate all functions first, collecting results
          translations = []
          stats = {
-@@ -716,6 +1670,8 @@ class BatchTranslator:
+@@ -716,6 +1674,8 @@ class BatchTranslator:
                  translations.append((addr, name, stub))
                  stats["failed"] += 1
  
