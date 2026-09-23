@@ -215,16 +215,25 @@ void buildDrawShaderSource(
               "    output.texcoord2 = input.texcoord2;\n"
               "    output.texcoord3 = input.texcoord3;\n"
             : layout.texcoord_count == 2u ? "    output.texcoord1 = input.texcoord1;\n" : "",
-        has_normal && has_texcoord && !layout.pretransformed
-            ? "    if (reflection_flags.x > 1.5f) {\n"
-              "        output.reflection_coord = input.texcoord;\n"
-              "    } else if (reflection_flags.x > 0.5f) {\n"
-              "        float3 eye = mul(float4(input.position, 1), reflection_world_view).xyz;\n"
-              "        float3 n = mul(float4(input.normal, 0), reflection_normal).xyz;\n"
-              "        if (reflection_flags.y > 0.5f) n = normalize(n);\n"
-              "        float3 r = reflect(normalize(eye), n);\n"
-              "        output.reflection_coord = mul(float4(r, 1), reflection_transform).xy;\n"
-              "    }\n" : "",
+        has_texcoord && !layout.pretransformed
+            ? (has_normal
+                ? "    if (reflection_flags.x > 1.5f) {\n"
+                  "        output.reflection_coord = input.texcoord;\n"
+                  "    } else if (reflection_flags.x > 0.5f) {\n"
+                  "        float3 eye = mul(float4(input.position, 1), reflection_world_view).xyz;\n"
+                  "        float3 n = mul(float4(input.normal, 0), reflection_normal).xyz;\n"
+                  "        if (reflection_flags.y > 0.5f) n = normalize(n);\n"
+                  "        float3 r = reflect(normalize(eye), n);\n"
+                  "        output.reflection_coord = mul(float4(r, 1), reflection_transform).xy;\n"
+                  "    }\n"
+                : "    if (reflection_flags.x > 1.5f) {\n"
+                  "        output.reflection_coord = input.texcoord;\n"
+                  "    } else if (reflection_flags.x > 0.5f) {\n"
+                  "        float3 eye = mul(float4(input.position, 1), reflection_world_view).xyz;\n"
+                  "        float3 r = normalize(eye);\n"
+                  "        output.reflection_coord = mul(float4(r, 1), reflection_transform).xy;\n"
+                  "    }\n")
+            : "",
         four_coords
             ? "    if (texture_flags.z > 0.5f) {\n"
               "        float4 t0 = guest_texture.Sample(guest_sampler, input.texcoord * texture_flags.xy);\n"
@@ -2033,7 +2042,7 @@ RecompD3dPresenterError submitDraw(
     }
     if (draw.has_reflection || draw.program_alpha_mask) {
         if (draw.has_alpha_mask || draw.four_tap_filter || layout.pretransformed ||
-            layout.normal_offset == RECOMP_D3D_FVF_ABSENT ||
+            (draw.program_alpha_mask && layout.normal_offset == RECOMP_D3D_FVF_ABSENT) ||
             layout.texcoord_count == 0u) return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
         RecompD3dPresenterDrawCommand reflection{};
         reflection.texture = draw.reflection_texture;

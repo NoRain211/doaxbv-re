@@ -480,6 +480,19 @@ static bool testReflection(RecompD3dPresenter *presenter,
     const uint32_t mesh_uv[] = {0x30200020,0x30200020,0x30200020,0x30200020};
     if (submitDraw(presenter, draw) != RECOMP_D3D_PRESENTER_OK ||
         !checkPixels(presenter, color, readback, "environment material uses mesh UV0", mesh_uv)) return false;
+    struct DiffuseVertex { float position[3]; uint32_t diffuse; float uv[2]; };
+    DiffuseVertex diffuse_vertices[4]{};
+    for (uint32_t i = 0; i < 4; ++i) {
+        diffuse_vertices[i] = {{i & 1u ? 1.0f : -1.0f, i & 2u ? -1.0f : 1.0f, 0},
+            0xffffffffu, {0.25f, 0}};
+    }
+    auto no_normal = draw;
+    no_normal.fvf = 0x142u;
+    no_normal.vertex_stride = sizeof(DiffuseVertex);
+    no_normal.vertex_bytes = diffuse_vertices;
+    no_normal.reflection_mesh_uv = false;
+    no_normal.directional.enabled = false;
+    if (submitDraw(presenter, no_normal) != RECOMP_D3D_PRESENTER_OK) return false;
     draw.vertex_stride = 24; // Missing UV0 remains invalid.
     return submitDraw(presenter, draw) == RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
 }

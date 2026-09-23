@@ -84,6 +84,11 @@ uint32_t recomp_d3d_draw_vertex_bytes(uint32_t stride, uint32_t max_index);
    yields 32, matching the stride the guest binds. */
 uint32_t recomp_d3d_fvf_stride(uint32_t fvf);
 
+/* Returns the fixed-function FVF the host should decode for a measured guest
+   stream. Most layouts are returned unchanged. Known retail declaration/stride
+   mismatches drop texture-coordinate sets that do not fit the bound stream. */
+uint32_t recomp_d3d_fvf_for_stream(uint32_t fvf, uint32_t vertex_stride);
+
 /* Byte offset of one FVF component within a vertex, or
    RECOMP_D3D_FVF_ABSENT when the FVF does not carry it. Components are laid
    out in a fixed order - position, blend weights, normal, diffuse, specular,
