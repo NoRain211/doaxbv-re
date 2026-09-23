@@ -43,11 +43,18 @@ It includes the x87 destination and result-sign corrections used by the 0.3
 recipe, plus the existing authenticated-generation interface. Its synthetic
 x87 and result-sign tests contain no game instructions or data.
 
-The casino recipe adds three flag and padding corrections. CMP and TEST now set
+`local-parity.patch` also carries three flag and padding corrections for the
+casino recipe. CMP and TEST now set
 the carry whenever the next flag reader is ADC or SBB, including across a
 flag-preserving MOV: CMP sets the borrow and TEST clears it. Before, every
 `cmp`/`sbb` pair read a stale carry.
 A fallthrough block snapshots incoming flags before replacing their operands.
 CFG recovery treats a register self-move as alignment padding.
 `test_lifter_casino_flags` compiles and runs synthetic sequences for the first
-two (it needs gcc or clang); `test_translator_padding` checks the third.
+two (it needs gcc or clang); `test_translator_padding` checks the third. Run
+both from the patched xboxrecomp checkout:
+
+```text
+python -m unittest tools.recomp.test_lifter_casino_flags
+python -m unittest tools.recomp.test_translator_padding
+```
