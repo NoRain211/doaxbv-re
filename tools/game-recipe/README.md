@@ -4,11 +4,29 @@
 builder checks this recipe hash before using it and checks every generated
 file against the current proven local program before compilation.
 
-The function shards contain addresses and analysis metadata. The 45 recovery
+The function shards contain addresses and analysis metadata. The 61 recovery
 files must retain their listed order. Neither contains machine instructions or
 game assets. Manual call targets preserve native adapter routing.
 
-The final recovery input restores the input-history owner and the reached Radio
+The casino recoveries follow the Radio input. They restore the Blackjack, Poker,
+and Slots handlers and the split bodies that crashed in play. The stub-class
+recovery also joins the same split defect in twelve other functions, including
+D3D and DirectSound code; only 0x60DC0 and 0x13DF80 were crash targets. Three
+earlier inputs also change: the r82 tail gap starts at the Poker double-up
+callback (0x4B460), the r83 gap at the fade initializer it overlapped (0x34EE0),
+and the r329 set joins 22 casino callback fragments into five bodies.
+
+The hotel input, last in the list, extends two callbacks, 0xD8160 and 0xDE700,
+to their final return. The lifter ended 0xDE700 at 0xDE7B8, which stopped the
+game when a gift tape was played.
+
+The lifter patch's casino flag corrections also change 40 generated functions
+outside the recovery ranges, including D3D, DirectSound, WMA decoder, and XPP
+controller code. All four casino games were played before the hotel input,
+which changes only those two bodies, and gift tapes play with it. Volleyball,
+the pool, Radio music, and save and load still need local retesting.
+
+The Radio recovery input restores the input-history owner and the reached Radio
 Station callback. These bodies match the locally tested program;
 the expiry correction keeps comparisons and their branches in the same body.
 

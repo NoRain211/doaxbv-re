@@ -1,0 +1,12 @@
+[
+  {
+    "start": "0x000492F0",
+    "end": "0x000495E9",
+    "coalesce_starts": ["0x000495E0"]
+  },
+  {
+    "start": "0x00056A00",
+    "end": "0x00056AE2",
+    "coalesce_starts": ["0x00056ADE"]
+  }
+]

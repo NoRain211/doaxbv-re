@@ -18,7 +18,6 @@ class ProgramManifestTests(unittest.TestCase):
         verify_files(ROOT, recipe["files"])
         recovery = "tools/game-recipe/recoveries/recover-input-history-radio.json"
         self.assertEqual(recipe["recoveries"].count(recovery), 1)
-        self.assertEqual(recipe["recoveries"][-1], recovery)
         self.assertEqual(recipe["lifter_revision"], LIFTER_REVISION)
         lifter_source = ROOT / "tools/xboxrecomp"
         self.assertTrue((lifter_source / "tools/recomp/translator.py").is_file(),
