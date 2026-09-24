@@ -419,6 +419,8 @@ if(RECOMP_PROGRAM_DIR)
         d3d_frame_adapter.c
         d3d_vblank.cpp
         d3d_presenter_d3d11.cpp
+        d3d_presenter_capture.cpp
+        d3d_presenter_thread.cpp
         d3d_vertex_program.cpp
         d3d_render_state_model.c
         d3d_render_state_adapter.c
@@ -485,8 +487,21 @@ if(WIN32)
         d3d_texture_model.c)
     target_link_libraries(recomp_d3d_presenter_d3d11_test PRIVATE
         d3d11 d3dcompiler dxgi user32)
+    add_executable(recomp_d3d_presenter_thread_test
+        d3d_presenter_thread_test.cpp
+        d3d_presenter_thread.cpp
+        d3d_presenter_capture.cpp
+        d3d_presenter_d3d11.cpp
+        d3d_vertex_program.cpp
+        d3d_draw_model.c
+        d3d_texture_model.c)
+    target_link_libraries(recomp_d3d_presenter_thread_test PRIVATE
+        d3d11 d3dcompiler dxgi user32)
     add_executable(recomp_audio_output_xaudio2_test audio_output_xaudio2_test.cpp)
 endif()
+
+add_executable(recomp_d3d_presenter_capture_test
+    d3d_presenter_capture.cpp d3d_presenter_capture_test.cpp)
 
 add_executable(recomp_save_transaction_test
     save_transaction.cpp save_transaction_test.cpp)
@@ -502,6 +517,7 @@ if(TARGET recomp_audio_output_xaudio2_test)
     add_test(NAME recomp-runtime-audio-output COMMAND recomp_audio_output_xaudio2_test)
 endif()
 add_test(NAME recomp-runtime-save-transaction COMMAND recomp_save_transaction_test)
+add_test(NAME recomp-runtime-d3d-presenter-capture COMMAND recomp_d3d_presenter_capture_test)
 add_test(NAME recomp-runtime-four-cases COMMAND recomp_runtime_test)
 add_test(
     NAME recomp-runtime-fiber-stack-recycling
@@ -544,6 +560,8 @@ endif()
 if(TARGET recomp_d3d_presenter_d3d11_test)
     add_test(NAME recomp-runtime-d3d11-texture-cache
         COMMAND recomp_d3d_presenter_d3d11_test)
+    add_test(NAME recomp-runtime-d3d-presenter-thread
+        COMMAND recomp_d3d_presenter_thread_test)
 endif()
 
 if(MSVC)

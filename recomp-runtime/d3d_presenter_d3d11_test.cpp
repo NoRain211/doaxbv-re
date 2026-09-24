@@ -1568,7 +1568,7 @@ static bool testWindowClose(RecompD3dPresenter *warp)
             const RecompD3dPresenterError expected = scenario < 2u
                 ? RECOMP_D3D_PRESENTER_CLOSED : RECOMP_D3D_PRESENTER_HOST_FAILURE;
             const RecompD3dPresenterError actual =
-                recomp_d3d_presenter_submit(&presenter, &command);
+                d3d11_backend_submit(&presenter, &command);
             passed = passed && actual == expected &&
                 presenter.close_requested == (scenario < 2u || scenario == 4u) &&
                 presenter.present_count == (scenario == 1u ? 1u : 0u);
@@ -1619,10 +1619,10 @@ static bool testTargetLifetimes(
         clear.target.color.data = base + 0x100u;
         clear.target.depth.data = base + 0x400u;
         passed = submitClear(presenter, clear) == RECOMP_D3D_PRESENTER_OK;
-        passed = passed && recomp_d3d_presenter_release_memory(
+        passed = passed && d3d11_backend_release_memory(
             presenter, base - 0x100u, 0x100u) == RECOMP_D3D_PRESENTER_OK &&
             presenter->render_targets.size() == 2u && presenter->depth_targets.size() == 1u;
-        passed = passed && recomp_d3d_presenter_release_memory(
+        passed = passed && d3d11_backend_release_memory(
             presenter, base | 0x80000000u, 0x1000u) == RECOMP_D3D_PRESENTER_OK &&
             presenter->render_targets.size() == 1u && presenter->depth_targets.size() == 0u;
     }
@@ -1640,12 +1640,12 @@ static bool testTargetLifetimes(
     passed = passed && submitClear(presenter, clear) == RECOMP_D3D_PRESENTER_OUT_OF_MEMORY &&
         presenter->render_targets.size() == 25u && presenter->depth_targets.size() == 24u;
     presenter->target_bytes = saved_bytes;
-    passed = passed && recomp_d3d_presenter_release_memory(
+    passed = passed && d3d11_backend_release_memory(
         presenter, 0x81000000u, 24u * 0x1000u) == RECOMP_D3D_PRESENTER_OK &&
         presenter->render_targets.size() == 1u && presenter->depth_targets.empty();
-    passed = passed && recomp_d3d_presenter_release_memory(
+    passed = passed && d3d11_backend_release_memory(
         presenter, 0xfffffff0u, 0x20u) == RECOMP_D3D_PRESENTER_INVALID_ARGUMENT &&
-        recomp_d3d_presenter_release_memory(presenter, retained.data, 0u) ==
+        d3d11_backend_release_memory(presenter, retained.data, 0u) ==
             RECOMP_D3D_PRESENTER_INVALID_ARGUMENT;
     RenderTargetEntry *entry = findRenderTarget(presenter, retained);
     ID3D11Resource *resource = nullptr;
@@ -1658,7 +1658,7 @@ static bool testTargetLifetimes(
         "live target survives forty storage releases", expected);
     releaseCom(texture);
     releaseCom(resource);
-    passed = passed && recomp_d3d_presenter_release_memory(
+    passed = passed && d3d11_backend_release_memory(
         presenter, retained.data, 0x1000u) == RECOMP_D3D_PRESENTER_OK &&
         presenter->render_targets.size() == 0u;
     active_presenter = nullptr;

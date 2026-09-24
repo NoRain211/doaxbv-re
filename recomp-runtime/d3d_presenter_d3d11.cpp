@@ -1,4 +1,4 @@
-#include "d3d_presenter.h"
+#include "d3d_presenter_d3d11_backend.h"
 #include "d3d_draw_model.h"
 #include "d3d_vertex_program.h"
 
@@ -14,8 +14,11 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <atomic>
+#include <mutex>
 #include <new>
 #include <memory>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 #include <string>
@@ -403,11 +406,15 @@ struct RecompD3dPresenter {
     ID3D11RasterizerState *draw_rasterizer_states[3] = {};
     UINT draw_vertex_capacity = 0u;
     UINT draw_index_capacity = 0u;
+    UINT draw_vertex_used = 0u;
+    UINT draw_index_used = 0u;
     /* One pipeline per FVF. A failure is recorded against its own FVF so a
        stream this seam cannot build never disables the ones it can. */
     DrawPipeline draw_pipelines[kDrawPipelineSlots]{};
     uint32_t draw_pipeline_count = 0u;
     uint32_t next_draw_pipeline_slot = 0u;
+    std::atomic<bool> precompile_stop{false};
+    std::thread precompile;
     DepthStateEntry depth_states[kDepthStateSlots]{};
     uint32_t depth_state_count = 0u;
     uint32_t next_depth_state_slot = 0u;
@@ -579,6 +586,8 @@ void releaseGraphics(RecompD3dPresenter *presenter)
     releaseCom(presenter->program_mask_sampler);
     presenter->draw_vertex_capacity = 0u;
     presenter->draw_index_capacity = 0u;
+    presenter->draw_vertex_used = 0u;
+    presenter->draw_index_used = 0u;
     presenter->draw_shared_ready = false;
     releaseCom(presenter->depth_view);
     releaseCom(presenter->depth_texture);
@@ -1088,12 +1097,28 @@ RecompD3dPresenterError submitClear(
         : RECOMP_D3D_PRESENTER_OK;
 }
 
+/* Compiled draw shaders, keyed by entry point and source. Shared by the boot
+   precompile thread and the render worker; blobs live until exit. */
+std::mutex compiled_shaders_lock;
+std::unordered_map<std::string, ID3DBlob *> compiled_shaders;
+
 bool compileDrawShader(
     const char *source,
     const char *entry_point,
     const char *target,
     ID3DBlob **blob)
 {
+    std::string key = std::string(entry_point) + '\n' + source;
+    {
+        std::lock_guard<std::mutex> lock(compiled_shaders_lock);
+        const auto found = compiled_shaders.find(key);
+        if (found != compiled_shaders.end()) {
+            *blob = found->second;
+            (*blob)->AddRef();
+            return true;
+        }
+    }
+
     ID3DBlob *errors = nullptr;
     const HRESULT result = D3DCompile(
         source,
@@ -1119,25 +1144,29 @@ bool compileDrawShader(
                 : "");
     }
     releaseCom(errors);
+    if (SUCCEEDED(result)) {
+        std::lock_guard<std::mutex> lock(compiled_shaders_lock);
+        if (compiled_shaders.emplace(std::move(key), *blob).second) {
+            (*blob)->AddRef();
+        }
+    }
     return SUCCEEDED(result);
 }
 
-/* Builds the shader pair and input layout for one FVF from its decoded
-   component offsets. */
-bool createDrawPipeline(
-    RecompD3dPresenter *presenter,
+/* Builds the HLSL for one FVF, plus its vertex program when it has one. */
+bool drawShaderSource(
     uint32_t fvf,
-    DrawPipeline &pipeline)
+    const DrawPipeline &pipeline,
+    RecompD3dVertexLayout &layout,
+    std::string &compiled_source)
 {
-    RecompD3dVertexLayout layout;
-
     if (!recomp_d3d_fvf_layout(fvf, &layout)) {
         return false;
     }
 
     char source[8192];
     buildDrawShaderSource(layout, source, sizeof source);
-    std::string compiled_source(source);
+    compiled_source = source;
     if (layout.normal_offset != RECOMP_D3D_FVF_ABSENT && !layout.pretransformed &&
         layout.diffuse_offset == RECOMP_D3D_FVF_ABSENT) {
         std::string lighting = "    if (directional_flags.x > 0.5f) {\n"
@@ -1182,6 +1211,51 @@ bool createDrawPipeline(
             "\n    input.texcoord /= input.program_q.x;\n"
             "    if (reflection_flags.z > 0.5f) input.reflection_coord /= input.program_q.y;\n");
 
+    }
+    return true;
+}
+
+/* Every FVF seen across all logged runs (12). Compiling them at boot keeps
+   first use of each scene from stalling ~85 ms per shader. */
+constexpr uint32_t kBootDrawFvfs[] = {
+    0x042u, 0x104u, 0x112u, 0x116u, 0x118u, 0x11Au,
+    0x142u, 0x144u, 0x212u, 0x242u, 0x244u, 0x404u};
+
+// ponytail: fixed list; vertex-program shaders and unlisted FVFs still compile on first use.
+void precompileDrawShaders(const std::atomic<bool> *stop)
+{
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST);
+    const ULONGLONG start = GetTickCount64();
+    static const DrawPipeline no_program{};
+    uint32_t compiled = 0u;
+    for (const uint32_t fvf : kBootDrawFvfs) {
+        RecompD3dVertexLayout layout;
+        std::string source;
+        if (!drawShaderSource(fvf, no_program, layout, source)) continue;
+        for (const char *stage : {"vs", "ps"}) {
+            if (stop->load()) return;
+            ID3DBlob *blob = nullptr;
+            const bool vertex = stage[0] == 'v';
+            compiled += compileDrawShader(source.c_str(), vertex ? "vs_main" : "ps_main",
+                vertex ? "vs_4_0" : "ps_4_0", &blob);
+            releaseCom(blob);
+        }
+    }
+    std::fprintf(stderr, "recomp d3d presenter: precompiled %u draw shaders in %llu ms\n",
+        compiled, static_cast<unsigned long long>(GetTickCount64() - start));
+}
+
+/* Builds the shader pair and input layout for one FVF from its decoded
+   component offsets. */
+bool createDrawPipeline(
+    RecompD3dPresenter *presenter,
+    uint32_t fvf,
+    DrawPipeline &pipeline)
+{
+    RecompD3dVertexLayout layout;
+    std::string compiled_source;
+    if (!drawShaderSource(fvf, pipeline, layout, compiled_source)) {
+        return false;
     }
 
     ID3DBlob *vertex_blob = nullptr;
@@ -1428,6 +1502,38 @@ bool uploadBuffer(
     }
     std::memcpy(mapped.pData, source, size);
     presenter->context->Unmap(buffer, 0u);
+    return true;
+}
+
+/* Appends each draw's vertices or indices and discards only when the ring
+   wraps. A discard per draw made the driver block for up to ~150 ms per tick
+   right after a buffer grew (island map). */
+bool uploadRing(
+    RecompD3dPresenter *presenter,
+    ID3D11Buffer **buffer,
+    UINT &capacity,
+    UINT &used,
+    const void *source,
+    UINT size,
+    UINT bind_flags,
+    UINT &offset)
+{
+    ID3D11Buffer *const previous = *buffer;
+    if (!ensureDynamicBuffer(presenter, buffer, capacity,
+            (std::max)(size * 4u, 1u << 20), bind_flags)) {
+        return false;
+    }
+    const bool wrap = *buffer != previous || used + size > capacity;
+    if (wrap) used = 0u;
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    if (FAILED(presenter->context->Map(*buffer, 0u,
+            wrap ? D3D11_MAP_WRITE_DISCARD : D3D11_MAP_WRITE_NO_OVERWRITE, 0u, &mapped))) {
+        return false;
+    }
+    std::memcpy(static_cast<uint8_t *>(mapped.pData) + used, source, size);
+    presenter->context->Unmap(*buffer, 0u);
+    offset = used;
+    used += (size + 15u) & ~15u;
     return true;
 }
 
@@ -1797,6 +1903,7 @@ void unindexTexture(RecompD3dPresenter *presenter, uint32_t slot)
     }
 }
 
+
 ID3D11ShaderResourceView *lookupTexture(
     RecompD3dPresenter *presenter,
     const RecompD3dPresenterDrawCommand &draw)
@@ -2089,17 +2196,10 @@ RecompD3dPresenterError submitDraw(
     }
 
     const UINT vertex_size = draw.vertex_stride * draw.vertex_count;
-    if (!ensureDynamicBuffer(
-            presenter,
-            &presenter->draw_vertex_buffer,
-            presenter->draw_vertex_capacity,
-            vertex_size,
-            D3D11_BIND_VERTEX_BUFFER) ||
-        !uploadBuffer(
-            presenter,
-            presenter->draw_vertex_buffer,
-            draw.vertex_bytes,
-            vertex_size)) {
+    UINT vertex_offset = 0u;
+    if (!uploadRing(presenter, &presenter->draw_vertex_buffer,
+            presenter->draw_vertex_capacity, presenter->draw_vertex_used,
+            draw.vertex_bytes, vertex_size, D3D11_BIND_VERTEX_BUFFER, vertex_offset)) {
         return RECOMP_D3D_PRESENTER_HOST_FAILURE;
     }
 
@@ -2259,17 +2359,10 @@ RecompD3dPresenterError submitDraw(
         draw_constants[137] = draw.reflection_normalize ? 1.0f : 0.0f;
     }
 
-    if (!ensureDynamicBuffer(
-            presenter,
-            &presenter->draw_index_buffer,
-            presenter->draw_index_capacity,
-            index_size,
-            D3D11_BIND_INDEX_BUFFER) ||
-        !uploadBuffer(
-            presenter,
-            presenter->draw_index_buffer,
-            upload_indices,
-            index_size) ||
+    UINT index_offset = 0u;
+    if (!uploadRing(presenter, &presenter->draw_index_buffer,
+            presenter->draw_index_capacity, presenter->draw_index_used,
+            upload_indices, index_size, D3D11_BIND_INDEX_BUFFER, index_offset) ||
         !uploadBuffer(
             presenter,
             presenter->draw_constant_buffer,
@@ -2279,12 +2372,11 @@ RecompD3dPresenterError submitDraw(
     }
 
     const UINT stride = draw.vertex_stride;
-    const UINT offset = 0u;
     presenter->context->IASetInputLayout(pipeline->input_layout);
     presenter->context->IASetVertexBuffers(
-        0u, 1u, &presenter->draw_vertex_buffer, &stride, &offset);
+        0u, 1u, &presenter->draw_vertex_buffer, &stride, &vertex_offset);
     presenter->context->IASetIndexBuffer(
-        presenter->draw_index_buffer, DXGI_FORMAT_R16_UINT, 0u);
+        presenter->draw_index_buffer, DXGI_FORMAT_R16_UINT, index_offset);
     presenter->context->IASetPrimitiveTopology(topology);
     presenter->context->VSSetShader(pipeline->vertex_shader, nullptr, 0u);
     presenter->context->VSSetConstantBuffers(
@@ -2951,7 +3043,7 @@ RecompD3dPresenterError submitPresent(
 
 } // namespace
 
-RecompD3dPresenterError recomp_d3d_presenter_create(
+RecompD3dPresenterError d3d11_backend_create(
     const RecompD3dPresenterConfig *config,
     RecompD3dPresenter **presenter)
 {
@@ -2993,13 +3085,18 @@ RecompD3dPresenterError recomp_d3d_presenter_create(
         delete created;
         return RECOMP_D3D_PRESENTER_HOST_FAILURE;
     }
+    try {
+        created->precompile = std::thread(precompileDrawShaders, &created->precompile_stop);
+    } catch (const std::system_error &) {
+        // Shaders then compile on first use, as before.
+    }
 
     active_presenter = created;
     *presenter = created;
     return RECOMP_D3D_PRESENTER_OK;
 }
 
-RecompD3dPresenterError recomp_d3d_presenter_submit(
+RecompD3dPresenterError d3d11_backend_submit(
     RecompD3dPresenter *presenter,
     const RecompD3dPresenterCommand *command)
 {
@@ -3027,7 +3124,7 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
     }
 }
 
-RecompD3dPresenterError recomp_d3d_presenter_release_memory(
+RecompD3dPresenterError d3d11_backend_release_memory(
     RecompD3dPresenter *presenter, uint32_t base, uint32_t size)
 {
     if (presenter == nullptr || presenter != active_presenter) {
@@ -3091,7 +3188,7 @@ RecompD3dPresenterError recomp_d3d_presenter_release_memory(
     return RECOMP_D3D_PRESENTER_OK;
 }
 
-RecompD3dPresenterError recomp_d3d_presenter_destroy(
+RecompD3dPresenterError d3d11_backend_destroy(
     RecompD3dPresenter **presenter)
 {
     if (presenter == nullptr) {
@@ -3107,17 +3204,20 @@ RecompD3dPresenterError recomp_d3d_presenter_destroy(
     RecompD3dPresenter *destroyed = *presenter;
     active_presenter = nullptr;
     *presenter = nullptr;
+    destroyed->precompile_stop = true;
+    if (destroyed->precompile.joinable()) destroyed->precompile.join();
     releasePresenter(destroyed);
     delete destroyed;
     return RECOMP_D3D_PRESENTER_OK;
 }
 
-void recomp_d3d_presenter_set_immediate_present(bool enabled)
+void d3d11_backend_set_immediate_present(bool enabled)
 {
     immediate_present = enabled;
 }
 
-void recomp_d3d_presenter_report_draw_textures(void)
+
+void d3d11_backend_report_draw_textures(void)
 {
     for (uint32_t format = 0u; format < 256u; ++format) {
         const uint32_t sampled = draw_texture_tally.textured[format];
