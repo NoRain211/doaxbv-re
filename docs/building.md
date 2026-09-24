@@ -3,9 +3,12 @@
 ## Build a local runner from a user-owned ISO
 
 The current `tools/build_game.py` workflow extracts a supported user-owned ISO,
-checks its XBE, checks out `xboxrecomp` fork revision
-`5e148a876abe348828f73e5f2723f3a31d2d5769`, generates the game program, and
+checks its XBE, generates the game program with the `tools/xboxrecomp` submodule
+at fork revision `5e148a876abe348828f73e5f2723f3a31d2d5769`, and
 builds an x64 Release runner. The authenticated `tools/game-recipe/recipe.json`
+provides the lifter revision; setup initializes the submodule when needed (a
+release ZIP clones it from NoRain211/xboxrecomp) and stops if it is modified or
+checked out at another revision. The recipe also
 provides the original function boundaries, 45 ordered recovery inputs, manual
 call targets, and expected generated-file hashes. Setup stops before compiling
 if any recipe input or generated file differs. It creates a new `private/setup-*` directory for

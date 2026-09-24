@@ -1,6 +1,6 @@
 # Current local generation recipe
 
-`recipe.json` authenticates the lifter patch and every generation input. The
+`recipe.json` pins the lifter revision and authenticates every generation input. The
 builder checks this recipe hash before using it and checks every generated
 file against the current proven local program before compilation.
 

@@ -14,6 +14,8 @@ import uuid
 from extract_iso import extract, run_logged, sha256
 
 ROOT = Path(__file__).resolve().parents[1]
+LIFTER = ROOT / "tools/xboxrecomp"
+LIFTER_REPOSITORY = "https://github.com/NoRain211/xboxrecomp.git"
 LIFTER_REVISION = "5e148a876abe348828f73e5f2723f3a31d2d5769"
 RECIPE_SHA256 = "1b6d18c07f229dd8b2440297d70f01ba5495151ed5fb8175148820ad4479e9c8"
 SUPPORTED_XBE_SHA256 = "053d44e885fa33c1d15d909a533f39dfbd976e97eeaf67e4fdef8438ea7e5c54"
@@ -40,6 +42,21 @@ def verify_files(root, expected):
         path = root / name
         if not path.is_file() or sha256(path) != digest:
             raise ValueError(f"Build parity check failed: {name}")
+
+
+def prepare_lifter(work):
+    """Generate from tools/xboxrecomp, fetching it at the recipe revision when absent."""
+    if not (LIFTER / ".git").exists():
+        if (ROOT / ".git").exists():
+            command(["git", "submodule", "update", "--init", "tools/xboxrecomp"], ROOT, work / "lifter.log")
+        else:  # A release ZIP carries no repository metadata.
+            command(["git", "clone", "--no-checkout", LIFTER_REPOSITORY, LIFTER], ROOT, work / "lifter.log")
+            command(["git", "checkout", "--detach", LIFTER_REVISION], LIFTER, work / "checkout.log")
+    head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=LIFTER, text=True).strip()
+    dirty = subprocess.check_output(["git", "status", "--porcelain"], cwd=LIFTER, text=True).strip()
+    if head != LIFTER_REVISION or dirty:
+        raise ValueError(f"tools/xboxrecomp must be a clean checkout of {LIFTER_REVISION}; "
+                         "run: git submodule update tools/xboxrecomp")
 
 
 def build(args):
@@ -88,10 +105,7 @@ def build(args):
         xbe = images[0]
         receipt.update(iso_sha256=imported_receipt["iso_sha256"],
                        xbe_sha256=SUPPORTED_XBE_SHA256, disc=str(disc))
-        lifter = work / "lifter"
-        command(["git", "clone", "--no-checkout", "--filter=blob:none",
-                 "https://github.com/NoRain211/xboxrecomp.git", lifter], ROOT, work / "clone.log")
-        command(["git", "checkout", "--detach", LIFTER_REVISION], lifter, work / "checkout.log")
+        prepare_lifter(work)
         # Reuse the proven function boundaries and ordered recoveries, not fresh discovery.
         functions = work / "functions.json"
         functions.write_text(json.dumps([
@@ -107,7 +121,7 @@ def build(args):
                  "--manual-call-targets", targets, "--manual-call-targets-sha256", sha256(targets)]
         for recovery in recipe["recoveries"]:
             generate.extend(["--recover-functions", ROOT / recovery])
-        command(generate, lifter, work / "generate.log")
+        command(generate, LIFTER, work / "generate.log")
         summary = json.loads((metadata / "summary.json").read_text(encoding="utf-8"))
         if summary["failed"] or summary["total"] != summary["translated"]:
             raise ValueError("Generation failed; see generate.log")
