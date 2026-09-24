@@ -1,10 +1,12 @@
 <div align="center">
 
+<img src="https://github.com/NoRain211/doaxbv-re/releases/download/readme-media/doaxbv-logo.png" alt="Dead or Alive Xtreme Beach Volleyball logo" width="420">
+
 # DOAXBV Native PC Port
 
 **A native Windows port of _Dead or Alive Xtreme Beach Volleyball_, built by static recompilation and rewritten into readable source.**
 
-[![Latest release](https://img.shields.io/github/v/release/NoRain211/doaxbv-re?include_prereleases&label=alpha)](https://github.com/NoRain211/doaxbv-re/releases/latest)
+[![Latest release](https://img.shields.io/github/v/release/NoRain211/doaxbv-re?label=alpha)](https://github.com/NoRain211/doaxbv-re/releases/latest)
 [![CI](https://github.com/NoRain211/doaxbv-re/actions/workflows/public-ci.yml/badge.svg)](https://github.com/NoRain211/doaxbv-re/actions/workflows/public-ci.yml)
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)](LICENSE)
 ![Platform: Windows x64](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-0078D6)
@@ -29,6 +31,20 @@ linked against a hand-written runtime that replaces the Xbox kernel, audio and
 Direct3D 8 with native Windows equivalents. Generated code is the scaffold:
 game logic is replaced with readable, hand-written source cluster by cluster
 while the game keeps running.
+
+## Screenshots
+
+<p align="center">
+  <img src="https://github.com/NoRain211/doaxbv-re/releases/download/readme-media/doaxbv-match.jpg" alt="Beach volleyball match at dusk" width="100%">
+</p>
+<table>
+  <tr>
+    <td width="50%"><img src="https://github.com/NoRain211/doaxbv-re/releases/download/readme-media/doaxbv-pool.jpg" alt="Hopping Game at the pool"></td>
+    <td width="50%"><img src="https://github.com/NoRain211/doaxbv-re/releases/download/readme-media/doaxbv-beach.jpg" alt="Kasumi on the beach at dusk"></td>
+  </tr>
+</table>
+
+<p align="center"><sub>Captured from the native port at 2560x1440.</sub></p>
 
 ## Status
 
