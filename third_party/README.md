@@ -1,7 +1,16 @@
 # Third-Party Tools
 
 Downloaded public tooling can live here locally. Everything except this README
-and the two dependency submodules below is ignored.
+and the dependency submodules below is ignored.
+
+## Renderer
+
+- [SMAA](https://github.com/iryoku/smaa): the `RECOMP_D3D_SMAA` post-process.
+  MIT licensed and optional; without it the runtime builds without SMAA.
+
+```sh
+git submodule update --init third_party/smaa
+```
 
 ## Rollback dependencies
 
