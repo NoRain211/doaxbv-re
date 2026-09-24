@@ -2704,8 +2704,10 @@ RecompD3dPresenterError recomp_d3d_presenter_create(
         return RECOMP_D3D_PRESENTER_ALREADY_INITIALIZED;
     }
 
-    RecompD3dPresenter *created = new (std::nothrow) RecompD3dPresenter{};
-    if (created == nullptr) {
+    RecompD3dPresenter *created = nullptr;
+    try {
+        created = new RecompD3dPresenter{};
+    } catch (const std::bad_alloc &) {
         return RECOMP_D3D_PRESENTER_OUT_OF_MEMORY;
     }
     created->config = *config;
