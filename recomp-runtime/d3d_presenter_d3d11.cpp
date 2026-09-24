@@ -333,8 +333,31 @@ struct TextureEntry {
     uint32_t height;
     uint32_t mip_levels;
     uint8_t palette[kPaletteBytes];
+    uint64_t fingerprint;
     ID3D11ShaderResourceView *view;
 };
+
+/* A guest buffer can be refilled with another texture of the same size and
+   format without being freed (item previews reuse theirs), so a hit must also
+   match the texels.
+   ponytail: samples 128 words; a rewrite missing all of them stays stale.
+   Hash the whole span if that is ever observed. */
+uint64_t textureFingerprint(const void *bytes, uint32_t count)
+{
+    const auto *data = static_cast<const uint8_t *>(bytes);
+    uint64_t hash = 0xcbf29ce484222325ull ^ count;
+    if (count < 8u) {
+        for (uint32_t i = 0u; i < count; ++i) hash = (hash ^ data[i]) * 0x100000001b3ull;
+        return hash;
+    }
+    constexpr uint32_t kSamples = 128u;
+    for (uint32_t i = 0u; i < kSamples; ++i) {
+        uint64_t word;
+        std::memcpy(&word, data + static_cast<uint64_t>(count - 8u) * i / (kSamples - 1u), 8u);
+        hash = (hash ^ word) * 0x100000001b3ull;
+    }
+    return hash;
+}
 
 /* Rendered pixels have no CPU copy to re-upload after texture FIFO eviction.
    Retain targets until their guest backing storage is released.
@@ -1753,12 +1776,26 @@ ID3D11ShaderResourceView *lookupTexture(
         return nullptr;
     }
     const auto cached = presenter->texture_index.equal_range(desc.data);
+    const uint64_t fingerprint = linear_bgra ? 0u
+        : textureFingerprint(draw.texture_bytes, draw.texture_byte_count);
     for (auto it = cached.first; it != cached.second; ++it) {
         TextureEntry &entry = presenter->textures[it->second];
 
         if (entry.format_byte == desc.format_byte &&
             entry.width == desc.width && entry.height == desc.height && entry.mip_levels == levels &&
             (!palettized || std::memcmp(entry.palette, draw.palette_bytes, kPaletteBytes) == 0)) {
+            if (!linear_bgra && entry.fingerprint != fingerprint) {
+                static unsigned reported;
+                if (reported < 32u) {
+                    ++reported;
+                    std::fprintf(stderr, "recomp d3d presenter: texels changed data=0x%08X "
+                        "fmt=0x%02X size=%ux%u\n", desc.data, desc.format_byte, desc.width, desc.height);
+                }
+                unindexTexture(presenter, it->second);
+                releaseCom(entry.view);
+                entry.used = false;
+                break;
+            }
             if (linear_bgra) {
                 ID3D11Resource *resource = nullptr;
                 entry.view->GetResource(&resource);
@@ -1873,6 +1910,7 @@ ID3D11ShaderResourceView *lookupTexture(
     entry.height = desc.height;
     entry.mip_levels = levels;
     if (palettized) std::memcpy(entry.palette, draw.palette_bytes, kPaletteBytes);
+    entry.fingerprint = fingerprint;
     entry.view = view;
     try {
         presenter->texture_index.emplace(desc.data, slot);
