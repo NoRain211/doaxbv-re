@@ -14,8 +14,8 @@ import uuid
 from extract_iso import extract, run_logged, sha256
 
 ROOT = Path(__file__).resolve().parents[1]
-LIFTER_REVISION = "32da23872a552b12b4a932c9d5a6e952bb3f24bb"
-RECIPE_SHA256 = "b3a0beab2d56c0e71cf2d7ea489d5490a1f4049d35ad746ed4a99e0add40df2d"
+LIFTER_REVISION = "5e148a876abe348828f73e5f2723f3a31d2d5769"
+RECIPE_SHA256 = "1b6d18c07f229dd8b2440297d70f01ba5495151ed5fb8175148820ad4479e9c8"
 SUPPORTED_XBE_SHA256 = "053d44e885fa33c1d15d909a533f39dfbd976e97eeaf67e4fdef8438ea7e5c54"
 
 
@@ -90,12 +90,8 @@ def build(args):
                        xbe_sha256=SUPPORTED_XBE_SHA256, disc=str(disc))
         lifter = work / "lifter"
         command(["git", "clone", "--no-checkout", "--filter=blob:none",
-                 "https://github.com/sp00nznet/xboxrecomp.git", lifter], ROOT, work / "clone.log")
+                 "https://github.com/NoRain211/xboxrecomp.git", lifter], ROOT, work / "clone.log")
         command(["git", "checkout", "--detach", LIFTER_REVISION], lifter, work / "checkout.log")
-        patch = ROOT / recipe["patch"]
-        receipt["lifter_patch_sha256"] = sha256(patch)
-        command(["git", "apply", "--check", patch], lifter, work / "patch-check.log")
-        command(["git", "apply", patch], lifter, work / "patch.log")
         # Reuse the proven function boundaries and ordered recoveries, not fresh discovery.
         functions = work / "functions.json"
         functions.write_text(json.dumps([

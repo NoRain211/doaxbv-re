@@ -38,21 +38,10 @@ producer. This checks instruction support; register liveness still needs review
 before enabling a function. CVTPS2PI follows host MXCSR rounding. Guest rounding
 state and unmasked guest exceptions are not modeled by this patch.
 
-The ISO setup builder applies `local-parity.patch` to its pinned upstream revision.
-It includes the x87 destination and result-sign corrections used by the 0.3
-recipe, plus the existing authenticated-generation interface. Its synthetic
-x87 and result-sign tests contain no game instructions or data.
-
-`local-parity.patch` also carries three flag and padding corrections for the
-casino recipe. CMP and TEST now set
-the carry whenever the next flag reader is ADC or SBB, including across a
-flag-preserving MOV: CMP sets the borrow and TEST clears it. Before, every
-`cmp`/`sbb` pair read a stale carry.
-A fallthrough block snapshots incoming flags before replacing their operands.
-CFG recovery treats a register self-move as alignment padding.
-`test_lifter_casino_flags` compiles and runs synthetic sequences for the first
-two (it needs gcc or clang); `test_translator_padding` checks the third. Run
-both from the patched xboxrecomp checkout:
+The ISO setup builder no longer applies a patch. It checks out the recipe's
+fork revision (`LIFTER_REVISION` in `tools/build_game.py`), which carries the
+x87 destination, result-sign, casino flag and padding, and cross-block carry
+corrections as commits. Their synthetic tests run from `tools/xboxrecomp`:
 
 ```text
 python -m unittest tools.recomp.test_lifter_casino_flags

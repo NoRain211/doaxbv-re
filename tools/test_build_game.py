@@ -33,11 +33,10 @@ class ProgramManifestTests(unittest.TestCase):
                                         timeout=60)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
-            # Use the builder's pinned revision and patch without modifying the submodule.
+            # Use the builder's pinned revision without modifying the submodule.
             run(["git", "clone", "--quiet", "--shared", "--no-checkout",
                  str(lifter_source), str(lifter)])
             run(["git", "checkout", "--quiet", "--detach", LIFTER_REVISION], lifter)
-            run(["git", "apply", str(ROOT / recipe["patch"])], lifter)
             run([sys.executable, str(ROOT / "tools/xboxrecomp-patches/check_input_history.py"),
                  str(lifter), str(ROOT / recovery), str(work)])
             rest = "tools/game-recipe/recoveries/recover-rest-predicate.json"

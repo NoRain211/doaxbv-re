@@ -20,11 +20,15 @@ The hotel input, last in the list, extends two callbacks, 0xD8160 and 0xDE700,
 to their final return. The lifter ended 0xDE700 at 0xDE7B8, which stopped the
 game when a gift tape was played.
 
-The lifter patch's casino flag corrections also change 40 generated functions
+The lifter's casino flag corrections also change 40 generated functions
 outside the recovery ranges, including D3D, DirectSound, WMA decoder, and XPP
 controller code. All four casino games were played before the hotel input,
 which changes only those two bodies, and gift tapes play with it. Volleyball,
 the pool, Radio music, and save and load still need local retesting.
+
+The cross-block carry correction changes 17 generated functions and adds only
+carry writes. Two are the island map's name comparators (0xF2160, 0xF2250),
+which never returned "less" and so sorted wrongly and slowly.
 
 The Radio recovery input restores the input-history owner and the reached Radio
 Station callback. These bodies match the locally tested program;
@@ -45,11 +49,11 @@ python -m pip install capstone==5.0.9
 python -m unittest discover -s tools -p 'test_*.py'
 ```
 
-The source base is upstream `32da23872a552b12b4a932c9d5a6e952bb3f24bb`.
-Apply `local-parity.patch` directly to that clean revision. Do not first apply
-`runtime-bootstrap.patch`. The patch reconstructs the preserved working local
-lifter, including the explicit x87 destination correction used by camera
-calculations; it is not an upgrade to the latest upstream release.
+The lifter is the `tools/xboxrecomp` submodule at fork revision
+`5e148a876abe348828f73e5f2723f3a31d2d5769` (branch `codex/doaxbv-recipe`): upstream
+`32da23872a552b12b4a932c9d5a6e952bb3f24bb` plus the preserved working local lifter,
+including the explicit x87 destination correction used by camera
+calculations. It is not an upgrade to the latest upstream release.
 
 Changing the recipe requires regenerating from the supported user-owned XBE,
 reviewing output differences, and validating the affected player-visible flows.
