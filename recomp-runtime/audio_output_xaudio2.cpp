@@ -56,8 +56,11 @@ IXAudio2MasteringVoice *master;
 OutputVoice voices[kVoiceCount];
 bool reported_nonzero[kVoiceCount];
 bool attempted, com_initialized, callback_registered, summary_printed;
+/* Initialized COM; only this thread may release it. */
+DWORD owner_thread;
 unsigned long long submitted_buffers, submitted_bytes, nonzero_buffers;
 unsigned long long dropped_buffers, underruns;
+unsigned engine_glitches;
 
 void destroyVoice(OutputVoice &voice)
 {
@@ -73,6 +76,9 @@ void releaseOutput()
     if (master) master->DestroyVoice();
     master = nullptr;
     if (engine) {
+        XAUDIO2_PERFORMANCE_DATA performance{};
+        engine->GetPerformanceData(&performance);
+        engine_glitches = performance.GlitchesSinceEngineStarted;
         if (callback_registered) engine->UnregisterForCallbacks(&callback);
         engine->Release();
     }
@@ -84,6 +90,13 @@ void releaseOutput()
 
 void disableOutput(const char *operation, HRESULT error)
 {
+    if (GetCurrentThreadId() != owner_thread) {
+        /* CoUninitialize is thread-affine: stop output here and let the owner
+           thread's next call release it. */
+        HRESULT none = S_OK;
+        critical_error.compare_exchange_strong(none, error);
+        return;
+    }
     std::fprintf(stderr,
         "[audio-output] disabled operation=%s error=0x%08lx\n",
         operation, static_cast<unsigned long>(error));
@@ -152,6 +165,7 @@ extern "C" void recomp_audio_output_initialize(void)
     checkCriticalError();
     if (attempted) return;
     attempted = true;
+    owner_thread = GetCurrentThreadId();
     double gain = 0.0;
     const char *setting = std::getenv("RECOMP_AUDIO_GAIN");
     if (setting) {
@@ -203,8 +217,6 @@ extern "C" void recomp_audio_output_shutdown(void)
 {
     if (summary_printed) return;
     checkCriticalError();
-    XAUDIO2_PERFORMANCE_DATA performance{};
-    if (engine) engine->GetPerformanceData(&performance);
     releaseOutput();
     attempted = true;
     summary_printed = true;
@@ -213,7 +225,7 @@ extern "C" void recomp_audio_output_shutdown(void)
         "nonzero_buffers=%llu dropped_buffers=%llu underruns=%llu "
         "engine_glitches=%u\n",
         submitted_buffers, submitted_bytes, nonzero_buffers, dropped_buffers,
-        underruns, performance.GlitchesSinceEngineStarted);
+        underruns, engine_glitches);
 }
 
 extern "C" void recomp_audio_output_reset_voice(uint32_t slot)
@@ -228,7 +240,8 @@ extern "C" void recomp_audio_output_submit(
     int32_t volume_hundredth_db)
 {
     recomp_audio_output_initialize();
-    if (!engine || bytes == 0) return;
+    if (!engine || bytes == 0 ||
+        FAILED(critical_error.load(std::memory_order_relaxed))) return;
     if (slot >= kVoiceCount || !pcm || bytes > kMaxBufferBytes ||
         sample_rate < XAUDIO2_MIN_SAMPLE_RATE ||
         sample_rate > XAUDIO2_MAX_SAMPLE_RATE ||

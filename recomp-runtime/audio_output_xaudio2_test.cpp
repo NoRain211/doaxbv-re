@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <map>
+#include <thread>
 #include <vector>
 
 /* Substitute only the API calls used by the backend; this test cannot open an
@@ -299,6 +300,10 @@ int main()
 
     fake_engine.callback->OnCriticalError(XAUDIO2_E_DEVICE_INVALIDATED);
     check(engine && !allocations.empty());
+    /* Another thread stops submitting but leaves COM teardown to the owner. */
+    std::thread([&] { recomp_audio_output_submit(1, pcm, sizeof pcm, 8000, 1, 8, 0); }).join();
+    check(engine && release_calls == 1 && com_balance == 1 &&
+        submitted_buffers == submitted);
     recomp_audio_output_submit(1, pcm, sizeof pcm, 8000, 1, 8, 0);
     check(!engine && allocations.empty() && submitted_buffers == submitted &&
         release_calls == 2 && com_balance == 0);

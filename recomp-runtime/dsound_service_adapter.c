@@ -67,8 +67,10 @@ static BufferClock buffer_clocks[RECOMP_DSOUND_VOICE_STATE_COUNT];
    shares them with the game thread. Never held across generated code. */
 #ifdef _WIN32
 static SRWLOCK clock_lock = SRWLOCK_INIT;
-#define LOCK_CLOCKS() AcquireSRWLockExclusive(&clock_lock)
-#define UNLOCK_CLOCKS() ReleaseSRWLockExclusive(&clock_lock)
+static volatile DWORD clock_owner;
+#define LOCK_CLOCKS() \
+    (AcquireSRWLockExclusive(&clock_lock), clock_owner = GetCurrentThreadId())
+#define UNLOCK_CLOCKS() (clock_owner = 0u, ReleaseSRWLockExclusive(&clock_lock))
 #else
 #define LOCK_CLOCKS() ((void)0)
 #define UNLOCK_CLOCKS() ((void)0)
@@ -558,8 +560,12 @@ static DWORD WINAPI output_pump_loop(void *unused)
 static void stop_output_pump(void)
 {
     output_pump_stop = 1;
-    /* Bounded: when exit starts under the lock, the pump stays parked on it. */
-    WaitForSingleObject(output_pump, 100u);
+    /* Output teardown follows this handler, so the pump must be out of its
+       pass. Exiting under the lock (recomp_stop in a locked adapter path)
+       already parks it for good; joining then would deadlock. */
+    if (clock_owner != GetCurrentThreadId()) {
+        WaitForSingleObject(output_pump, INFINITE);
+    }
 }
 
 static void start_output_pump(void)
