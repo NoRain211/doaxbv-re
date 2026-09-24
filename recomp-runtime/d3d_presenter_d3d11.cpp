@@ -1874,7 +1874,13 @@ ID3D11ShaderResourceView *lookupTexture(
     entry.mip_levels = levels;
     if (palettized) std::memcpy(entry.palette, draw.palette_bytes, kPaletteBytes);
     entry.view = view;
-    presenter->texture_index.emplace(desc.data, slot);
+    try {
+        presenter->texture_index.emplace(desc.data, slot);
+    } catch (const std::bad_alloc &) {
+        releaseCom(entry.view);
+        entry.used = false;
+        return nullptr;
+    }
     return view;
 }
 
