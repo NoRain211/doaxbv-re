@@ -4,7 +4,7 @@
 
 # DOAXBV Native PC Port
 
-**A native Windows port of _Dead or Alive Xtreme Beach Volleyball_, built by static recompilation and rewritten into readable source.**
+**A native Windows port of _Dead or Alive Xtreme Beach Volleyball_, built by static recompilation, with the goal of rewriting it into readable source.**
 
 [![Latest release](https://img.shields.io/github/v/release/NoRain211/doaxbv-re?label=alpha)](https://github.com/NoRain211/doaxbv-re/releases/latest)
 [![CI](https://github.com/NoRain211/doaxbv-re/actions/workflows/public-ci.yml/badge.svg)](https://github.com/NoRain211/doaxbv-re/actions/workflows/public-ci.yml)
@@ -27,10 +27,12 @@
 ## About
 
 The original Xbox executable is lifted to C with a static recompiler, then
-linked against a hand-written runtime that replaces the Xbox kernel, audio and
-Direct3D 8 with native Windows equivalents. Generated code is the scaffold:
-game logic is replaced with readable, hand-written source cluster by cluster
-while the game keeps running.
+linked against a hand-written runtime that replaces the Xbox kernel imports,
+audio output and key Direct3D 8 and DirectSound APIs with native Windows
+equivalents. The rest of the game, including its statically linked libraries,
+still runs as generated code. The plan is to replace game logic with readable,
+hand-written source one data-structure cluster at a time while the game keeps
+running; so far only the startup thread entry has been rewritten.
 
 ## Screenshots
 
@@ -63,6 +65,7 @@ while the game keeps running.
 | Portraits, pool water, item previews | Restored |
 | Lighting, camera, full rendering fidelity | Incomplete |
 | Casino, collection, activity variants | Not yet verified |
+| Hand-written game logic | Startup thread entry only; the rest runs as generated code |
 | Rollback multiplayer | Planned ([#20](https://github.com/NoRain211/doaxbv-re/issues/20)) |
 
 Remaining work is tracked in the
