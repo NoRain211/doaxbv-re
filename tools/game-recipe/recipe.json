@@ -1,5 +1,5 @@
 {
-  "lifter_revision": "5e148a876abe348828f73e5f2723f3a31d2d5769",
+  "lifter_revision": "6255fd6a35ea73fbad3d0685672438f6906e4837",
   "functions": [
     "tools/game-recipe/functions/00.json",
     "tools/game-recipe/functions/01.json",
@@ -191,7 +191,7 @@
     "tools/game-recipe/recoveries/recover-slots2.json": "4a40725ec1d9960b2253dc968a8ad33499330c2f1355d8b7dbd80b27c33ab04c",
     "tools/game-recipe/recoveries/recover-hotel-tapes.json": "f96a7f949807e3a686fc809bd924379466cfa9fe285c0ec634adccc2bb0109f9"
   },
-  "program_manifest_sha256": "08474d8fa30a3933d68978f3cfb799aa74801e01193bc571061c682d85b46de0",
+  "program_manifest_sha256": "f5ee50b06c2219d8416feca5930a3c93666f9627894059b4b72a59b8e5d01b0b",
   "ebp_overrides": 10816,
   "manual_call_targets": "tools/game-recipe/manual-call-targets.json",
   "generated_files": {
@@ -210,8 +210,8 @@
     "recomp_0012.c": "98da53c12ce42cddc55ccdb1762e159abf65975be073b37f1154a8c3cbe1e1d2",
     "recomp_0013.c": "20e9f93b982e4c30825c422835f94768bfc3f876201fcabdfdffbd6eb8e119d4",
     "recomp_0014.c": "1952a639307722069aa33cd139fda85c5f4978052c48ed5d5b5308cedf8ea94b",
-    "recomp_0015.c": "81ed9d69a0a235535e55c8387cf793edce55672099cfefc0441df2f7244e76f9",
-    "recomp_0016.c": "e67e51ac31c881c29194ce3f636cc9bac02fecad0cb1bc18720bc1f3f3e38d0d",
+    "recomp_0015.c": "9cb739e4a0499493c1b34ab48a82ae3a8d242884a93a68df61494eca1ea97751",
+    "recomp_0016.c": "8ec00012315b28bc859c649d84c416f37c8dc8a8a916d0d356aa7a2dd0d42d83",
     "recomp_dispatch.c": "ce05bc184425484acd87d07bc90a32c46011183387f6414c0041093213ae2ede",
     "recomp_funcs.h": "95949681473a0002ef533026260e5ef685de84e73b9220d02277d087dced6d09",
     "recomp_stubs_unresolved.c": "8b9a4502e0d80a56850df731dbbb1da6011a9af6a26a8d64ed2bd8af440d0453"
