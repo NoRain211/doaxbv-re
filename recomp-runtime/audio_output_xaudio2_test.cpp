@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <map>
+#include <thread>
 #include <vector>
 
 /* Substitute only the API calls used by the backend; this test cannot open an
@@ -27,12 +28,15 @@ struct FakeSource {
     bool destroyed = false;
     bool started = false;
     float volume = 1.0f;
+    float ratio = 1.0f;
+    UINT64 played = 0;
     std::vector<XAUDIO2_BUFFER> queued;
 
     void DestroyVoice() { check(!destroyed); destroyed = true; queued.clear(); }
     HRESULT Start() { started = true; return S_OK; }
     void GetState(XAUDIO2_VOICE_STATE *state, UINT32 flags);
     HRESULT SetVolume(float gain) { volume = gain; return S_OK; }
+    HRESULT SetFrequencyRatio(float value) { ratio = value; return S_OK; }
     HRESULT SubmitSourceBuffer(const XAUDIO2_BUFFER *buffer)
     {
         check(started && !destroyed);
@@ -51,8 +55,9 @@ static unsigned gain_reads;
 
 void FakeSource::GetState(XAUDIO2_VOICE_STATE *state, UINT32 flags)
 {
-    check(!destroyed && flags == XAUDIO2_VOICE_NOSAMPLESPLAYED);
+    check(!destroyed && flags == 0);
     state->BuffersQueued = static_cast<UINT32>(queued.size());
+    state->SamplesPlayed = played;
     current_source = this;
 }
 
@@ -88,12 +93,13 @@ struct FakeEngine {
         UINT32 flags, float ratio)
     {
         check(format->wFormatTag == WAVE_FORMAT_PCM &&
-            flags == XAUDIO2_VOICE_NOPITCH && ratio == 1.0f);
+            flags == 0 && ratio == 1.01f);
         *out = new FakeSource;
         fake_sources.push_back(*out);
         return S_OK;
     }
     void Release() { check(callback == nullptr); ++release_calls; }
+    void GetPerformanceData(XAUDIO2_PERFORMANCE_DATA *data) { *data = {}; }
 };
 
 static FakeEngine fake_engine;
@@ -123,6 +129,7 @@ using std::atomic;
 using std::fprintf;
 using std::isfinite;
 using std::memcpy;
+using std::memset;
 using std::memory_order_relaxed;
 using std::pow;
 using std::strtod;
@@ -215,9 +222,12 @@ int main()
     fake_gain = "0.02";
     recomp_audio_output_submit(0, pcm, sizeof pcm, 8000, 1, 16, 1000);
     FakeSource *source = voices[0].source;
-    check(source && source->queued.size() == 1 && source->volume == 1.0f);
+    /* A new voice starts behind 50 ms (400 frames) of silence. */
+    check(source && source->queued.size() == 2 && source->volume == 1.0f);
+    check(source->queued[0].AudioBytes == 800);
+    for (uint32_t i = 0; i < 800; ++i) check(source->queued[0].pAudioData[i] == 0);
     check(std::fabs(fake_engine.master.volume - 0.02f) < 0.00001f);
-    const uint8_t *copy = source->queued[0].pAudioData;
+    const uint8_t *copy = source->queued[1].pAudioData;
     check(copy != pcm && std::memcmp(copy, pcm, sizeof pcm) == 0);
     std::memset(pcm, 0, sizeof pcm);
     check(copy[0] == 1 && nonzero_buffers == 1);
@@ -229,21 +239,46 @@ int main()
     recomp_audio_output_submit(0, pcm, sizeof pcm, 8000, 1, 16, 0);
     check(source->volume == 1.0f);
     recomp_audio_output_submit(0, pcm, sizeof pcm, 8000, 1, 16, -10000);
-    check(submitted_buffers == 4 && dropped_buffers == 1 &&
-        source->queued.size() == 4 && source->volume == 0.0f);
+    check(submitted_buffers == 5 && dropped_buffers == 0 &&
+        source->queued.size() == 6 && source->volume == 0.0f);
+    while (voices[0].queued < 16)
+        recomp_audio_output_submit(0, pcm, sizeof pcm, 8000, 1, 16, 0);
+    recomp_audio_output_submit(0, pcm, sizeof pcm, 8000, 1, 16, 0);
+    check(dropped_buffers == 1 && source->queued.size() == 16);
 
+    /* Growing a slot must only reallocate retired buffers. */
     const uint8_t *active = source->queued[2].pAudioData;
     source->queued.erase(source->queued.begin(), source->queued.begin() + 2);
-    uint8_t larger[16] = {};
+    uint8_t larger[1000] = {};
     recomp_audio_output_submit(0, larger, sizeof larger, 8000, 1, 16, 0);
-    check(source->queued.size() == 3 && source->queued[0].pAudioData == active &&
-        voices[0].front == 2 && voices[0].queued == 3);
+    check(source->queued.size() == 15 && source->queued[0].pAudioData == active &&
+        voices[0].front == 2 && voices[0].queued == 15 && underruns == 0);
+
+    /* A drained voice counts an underrun and rebuilds its cushion. */
+    source->queued.clear();
+    recomp_audio_output_submit(0, pcm, sizeof pcm, 8000, 1, 16, 0);
+    check(underruns == 1 && source->queued.size() == 2 &&
+        source->queued[0].AudioBytes == 800 && source->queued[1].AudioBytes == 8);
     recomp_audio_output_reset_voice(0);
     check(source->destroyed && !voices[0].source && allocations.empty());
+
+    /* The pitch trim slows a short queue and speeds up a long one. */
+    recomp_audio_output_submit(2, pcm, sizeof pcm, 8000, 1, 16, 0);
+    source = voices[2].source;
+    check(source->ratio == 1.0f);
+    source->played = 404;
+    recomp_audio_output_submit(2, pcm, sizeof pcm, 8000, 1, 16, 0);
+    check(source->ratio < 1.0f);
+    for (int i = 0; i < 4; ++i)
+        recomp_audio_output_submit(2, larger, sizeof larger, 8000, 1, 16, 0);
+    check(source->ratio > 1.0f && source->ratio <= 1.0f + kRateTrim);
 
     std::memset(pcm, 0x80, sizeof pcm);
     recomp_audio_output_submit(1, pcm, sizeof pcm, 8000, 1, 8, 0);
     check(nonzero_buffers == 1);
+    check(voices[1].source->queued[0].AudioBytes == 400);
+    for (uint32_t i = 0; i < 400; ++i)
+        check(voices[1].source->queued[0].pAudioData[i] == 0x80);
     pcm[0] = 0;
     recomp_audio_output_submit(1, pcm, sizeof pcm, 8000, 1, 8, 0);
     check(nonzero_buffers == 2 && reported_nonzero[1]);
@@ -265,6 +300,10 @@ int main()
 
     fake_engine.callback->OnCriticalError(XAUDIO2_E_DEVICE_INVALIDATED);
     check(engine && !allocations.empty());
+    /* Another thread stops submitting but leaves COM teardown to the owner. */
+    std::thread([&] { recomp_audio_output_submit(1, pcm, sizeof pcm, 8000, 1, 8, 0); }).join();
+    check(engine && release_calls == 1 && com_balance == 1 &&
+        submitted_buffers == submitted);
     recomp_audio_output_submit(1, pcm, sizeof pcm, 8000, 1, 8, 0);
     check(!engine && allocations.empty() && submitted_buffers == submitted &&
         release_calls == 2 && com_balance == 0);

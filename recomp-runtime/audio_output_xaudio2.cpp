@@ -14,8 +14,16 @@
 namespace {
 
 constexpr uint32_t kVoiceCount = 256;
-constexpr uint32_t kQueueSize = 4;
+constexpr uint32_t kQueueSize = 16;
 constexpr uint32_t kMaxBufferBytes = 160000;
+/* Silence queued ahead of a new or starved voice, so producer jitter (15.6 ms
+   clock steps, thread wakeups) is absorbed instead of heard as gaps. */
+constexpr uint32_t kPrerollMs = 50;
+/* XAudio2 does not consume exactly the nominal rate: a 22050 Hz source runs
+   0.23% fast without resampling (whole frames per 10 ms pass) and 0.05% slow
+   with it. A wall-clock producer would drain or flood the queue, so each voice
+   trims its pitch (inaudibly, at most this much) to hold the cushion. */
+constexpr float kRateTrim = 0.01f;
 
 struct PcmBuffer {
     uint8_t *data;
@@ -27,6 +35,8 @@ struct OutputVoice {
     PcmBuffer buffers[kQueueSize];
     uint32_t sample_rate, channels, bits_per_sample;
     uint32_t front, queued;
+    uint64_t bytes_submitted;
+    float level_ms;
 };
 
 std::atomic<HRESULT> critical_error{S_OK};
@@ -46,8 +56,11 @@ IXAudio2MasteringVoice *master;
 OutputVoice voices[kVoiceCount];
 bool reported_nonzero[kVoiceCount];
 bool attempted, com_initialized, callback_registered, summary_printed;
+/* Initialized COM; only this thread may release it. */
+DWORD owner_thread;
 unsigned long long submitted_buffers, submitted_bytes, nonzero_buffers;
-unsigned long long dropped_buffers;
+unsigned long long dropped_buffers, underruns;
+unsigned engine_glitches;
 
 void destroyVoice(OutputVoice &voice)
 {
@@ -63,6 +76,9 @@ void releaseOutput()
     if (master) master->DestroyVoice();
     master = nullptr;
     if (engine) {
+        XAUDIO2_PERFORMANCE_DATA performance{};
+        engine->GetPerformanceData(&performance);
+        engine_glitches = performance.GlitchesSinceEngineStarted;
         if (callback_registered) engine->UnregisterForCallbacks(&callback);
         engine->Release();
     }
@@ -74,6 +90,13 @@ void releaseOutput()
 
 void disableOutput(const char *operation, HRESULT error)
 {
+    if (GetCurrentThreadId() != owner_thread) {
+        /* CoUninitialize is thread-affine: stop output here and let the owner
+           thread's next call release it. */
+        HRESULT none = S_OK;
+        critical_error.compare_exchange_strong(none, error);
+        return;
+    }
     std::fprintf(stderr,
         "[audio-output] disabled operation=%s error=0x%08lx\n",
         operation, static_cast<unsigned long>(error));
@@ -97,13 +120,52 @@ void dropBuffer(uint32_t slot, const char *reason)
     }
 }
 
+bool queueBuffer(OutputVoice &voice, uint32_t slot, const uint8_t *pcm,
+    uint32_t bytes, uint8_t silence)
+{
+    if (voice.queued == kQueueSize) {
+        dropBuffer(slot, "queue-full");
+        return false;
+    }
+    PcmBuffer &owned = voice.buffers[(voice.front + voice.queued) % kQueueSize];
+    if (owned.capacity < bytes) {
+        auto *data = static_cast<uint8_t *>(std::realloc(owned.data, bytes));
+        if (!data) {
+            dropBuffer(slot, "allocation");
+            return false;
+        }
+        owned.data = data;
+        owned.capacity = bytes;
+    }
+    if (pcm) std::memcpy(owned.data, pcm, bytes);
+    else std::memset(owned.data, silence, bytes);
+    XAUDIO2_BUFFER buffer{};
+    buffer.AudioBytes = bytes;
+    buffer.pAudioData = owned.data;
+    const HRESULT error = voice.source->SubmitSourceBuffer(&buffer);
+    if (FAILED(error)) {
+        dropBuffer(slot, "submit");
+        disableOutput("SubmitSourceBuffer", error);
+        return false;
+    }
+    ++voice.queued;
+    voice.bytes_submitted += bytes;
+    return true;
+}
+
 } // namespace
+
+extern "C" int recomp_audio_output_enabled(void)
+{
+    return engine != nullptr;
+}
 
 extern "C" void recomp_audio_output_initialize(void)
 {
     checkCriticalError();
     if (attempted) return;
     attempted = true;
+    owner_thread = GetCurrentThreadId();
     double gain = 0.0;
     const char *setting = std::getenv("RECOMP_AUDIO_GAIN");
     if (setting) {
@@ -160,8 +222,10 @@ extern "C" void recomp_audio_output_shutdown(void)
     summary_printed = true;
     std::fprintf(stderr,
         "[audio-output] summary submitted_buffers=%llu submitted_bytes=%llu "
-        "nonzero_buffers=%llu dropped_buffers=%llu\n",
-        submitted_buffers, submitted_bytes, nonzero_buffers, dropped_buffers);
+        "nonzero_buffers=%llu dropped_buffers=%llu underruns=%llu "
+        "engine_glitches=%u\n",
+        submitted_buffers, submitted_bytes, nonzero_buffers, dropped_buffers,
+        underruns, engine_glitches);
 }
 
 extern "C" void recomp_audio_output_reset_voice(uint32_t slot)
@@ -176,7 +240,8 @@ extern "C" void recomp_audio_output_submit(
     int32_t volume_hundredth_db)
 {
     recomp_audio_output_initialize();
-    if (!engine || bytes == 0) return;
+    if (!engine || bytes == 0 ||
+        FAILED(critical_error.load(std::memory_order_relaxed))) return;
     if (slot >= kVoiceCount || !pcm || bytes > kMaxBufferBytes ||
         sample_rate < XAUDIO2_MIN_SAMPLE_RATE ||
         sample_rate > XAUDIO2_MAX_SAMPLE_RATE ||
@@ -205,7 +270,7 @@ extern "C" void recomp_audio_output_submit(
         format.nBlockAlign = static_cast<WORD>(block_align);
         format.wBitsPerSample = static_cast<WORD>(bits_per_sample);
         HRESULT error = engine->CreateSourceVoice(
-            &voice.source, &format, XAUDIO2_VOICE_NOPITCH, 1.0f);
+            &voice.source, &format, 0, 1.0f + kRateTrim);
         if (FAILED(error)) {
             dropBuffer(slot, "create-voice");
             disableOutput("CreateSourceVoice", error);
@@ -214,6 +279,7 @@ extern "C" void recomp_audio_output_submit(
         voice.sample_rate = sample_rate;
         voice.channels = channels;
         voice.bits_per_sample = bits_per_sample;
+        voice.level_ms = kPrerollMs;
         error = voice.source->Start();
         if (FAILED(error)) {
             dropBuffer(slot, "start-voice");
@@ -233,43 +299,37 @@ extern "C" void recomp_audio_output_submit(
         return;
     }
     XAUDIO2_VOICE_STATE state{};
-    voice.source->GetState(&state, XAUDIO2_VOICE_NOSAMPLESPLAYED);
+    voice.source->GetState(&state, 0);
+    const bool starved = state.BuffersQueued == 0;
+    if (starved && voice.queued > 0) ++underruns;
     /* BuffersQueued includes the active buffer; only retire the FIFO prefix. */
     while (voice.queued > state.BuffersQueued) {
         voice.front = (voice.front + 1) % kQueueSize;
         --voice.queued;
     }
-    if (voice.queued == kQueueSize) {
-        dropBuffer(slot, "queue-full");
+    const uint8_t silence = bits_per_sample == 8 ? 0x80 : 0;
+    if (starved && !queueBuffer(voice, slot, nullptr,
+            sample_rate * kPrerollMs / 1000 * block_align, silence)) {
         return;
     }
-    PcmBuffer &owned = voice.buffers[(voice.front + voice.queued) % kQueueSize];
-    if (owned.capacity < bytes) {
-        auto *data = static_cast<uint8_t *>(std::realloc(owned.data, bytes));
-        if (!data) {
-            dropBuffer(slot, "allocation");
-            return;
-        }
-        owned.data = data;
-        owned.capacity = bytes;
-    }
-    std::memcpy(owned.data, pcm, bytes);
-    XAUDIO2_BUFFER buffer{};
-    buffer.AudioBytes = bytes;
-    buffer.pAudioData = owned.data;
-    error = voice.source->SubmitSourceBuffer(&buffer);
+    const float queued_ms = static_cast<float>(
+        voice.bytes_submitted / block_align - state.SamplesPlayed) * 1000.0f / sample_rate;
+    voice.level_ms += (queued_ms - voice.level_ms) / 16.0f; /* smooths pump jitter */
+    float ratio = 1.0f + (voice.level_ms - kPrerollMs) / 10000.0f;
+    if (ratio < 1.0f - kRateTrim) ratio = 1.0f - kRateTrim;
+    if (ratio > 1.0f + kRateTrim) ratio = 1.0f + kRateTrim;
+    error = voice.source->SetFrequencyRatio(ratio);
     if (FAILED(error)) {
-        dropBuffer(slot, "submit");
-        disableOutput("SubmitSourceBuffer", error);
+        dropBuffer(slot, "rate");
+        disableOutput("SetFrequencyRatio", error);
         return;
     }
-    ++voice.queued;
+    if (!queueBuffer(voice, slot, pcm, bytes, silence)) return;
     ++submitted_buffers;
     submitted_bytes += bytes;
     bool nonzero = false;
-    const uint8_t silence = bits_per_sample == 8 ? 0x80 : 0;
     for (uint32_t i = 0; i < bytes && !nonzero; ++i)
-        nonzero = owned.data[i] != silence;
+        nonzero = pcm[i] != silence;
     if (nonzero) ++nonzero_buffers;
     if (submitted_buffers == 1 || (nonzero && !reported_nonzero[slot])) {
         std::fprintf(stderr,

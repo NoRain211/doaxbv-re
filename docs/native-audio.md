@@ -9,6 +9,15 @@ Set `RECOMP_AUDIO_GAIN=1` for full host gain, or a finite value from 0 to 1.
 The default is muted. An unavailable output device leaves guest timing active.
 The backend uses each source's sample rate; it does not force 22 kHz output.
 
+A pump thread feeds XAudio2 from guest buffers on its own, so frame hitches,
+loading, and window drags delay only the game's refills, not audio it already
+wrote. Each new or starved voice starts behind 50 ms of silence. XAudio2
+consumes some rates slightly off nominal (22050 Hz runs 0.23% fast without its
+resampler, 0.05% slow with it), so each voice trims its pitch by at most 1% to
+hold that cushion. The exit line `[audio-output] summary` reports
+`dropped_buffers`, `underruns`, and `engine_glitches`; nonzero values point
+to audible gaps.
+
 Before regenerating the game, apply the FSUBP source correction documented in
 [`tools/xboxrecomp-patches`](../tools/xboxrecomp-patches/README.md).
 It fixes an incorrect x87 destination that corrupted ADX filter coefficients.
