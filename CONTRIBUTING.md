@@ -20,9 +20,11 @@ right to submit. Never commit:
 - code copied from xemu, Cxbx, nxdk, or another project without preserving and
   satisfying its license.
 
-Keep local inputs under `private/`. The pinned upstream `xboxrecomp` checkout
-lives at `tools/xboxrecomp`. General lifter fixes should be sent upstream
-separately; do not add a game-specific lifter fork here.
+Keep local inputs under `private/`. The pinned `xboxrecomp` checkout lives at
+`tools/xboxrecomp`, a submodule of the `codex/doaxbv-recipe` branch of
+`NoRain211/xboxrecomp`. Lifter fixes are commits on that branch; offer general
+fixes to `sp00nznet/xboxrecomp` as focused pull requests. Do not copy lifter
+source or generated output into this repository.
 
 ## Verification
 
