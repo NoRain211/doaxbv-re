@@ -44,26 +44,28 @@ def verify_files(root, expected):
             raise ValueError(f"Build parity check failed: {name}")
 
 
-def prepare_lifter(work):
+def prepare_lifter(work, revision=None):
     """Generate from tools/xboxrecomp, fetching it at the recipe revision when absent."""
+    revision = revision or LIFTER_REVISION
     if not (LIFTER / ".git").exists():
         if (ROOT / ".git").exists():
             command(["git", "submodule", "update", "--init", "tools/xboxrecomp"], ROOT, work / "lifter.log")
         else:  # A release ZIP carries no repository metadata.
             command(["git", "clone", "--no-checkout", LIFTER_REPOSITORY, LIFTER], ROOT, work / "lifter.log")
-            command(["git", "checkout", "--detach", LIFTER_REVISION], LIFTER, work / "checkout.log")
+            command(["git", "checkout", "--detach", revision], LIFTER, work / "checkout.log")
     head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=LIFTER, text=True).strip()
     dirty = subprocess.check_output(["git", "status", "--porcelain"], cwd=LIFTER, text=True).strip()
-    if head != LIFTER_REVISION or dirty:
-        raise ValueError(f"tools/xboxrecomp must be a clean checkout of {LIFTER_REVISION}; "
+    if head != revision or dirty:
+        raise ValueError(f"tools/xboxrecomp must be a clean checkout of {revision}; "
                          "run: git submodule update tools/xboxrecomp")
 
 
-def build(args):
-    verify_files(ROOT, {"tools/game-recipe/recipe.json": RECIPE_SHA256})
+def build(args, verify_parity=True, lifter_revision=None):
+    if verify_parity:
+        verify_files(ROOT, {"tools/game-recipe/recipe.json": RECIPE_SHA256})
     recipe = json.loads((ROOT / "tools/game-recipe/recipe.json").read_text(encoding="utf-8"))
     verify_files(ROOT, recipe["files"])
-    if recipe["lifter_revision"] != LIFTER_REVISION:
+    if verify_parity and recipe["lifter_revision"] != LIFTER_REVISION:
         raise ValueError("Build recipe and lifter revision differ")
     for tool in (("git",) if args.generate_only else ("git", "cmake")):
         if shutil.which(tool) is None:
@@ -105,7 +107,7 @@ def build(args):
         xbe = images[0]
         receipt.update(iso_sha256=imported_receipt["iso_sha256"],
                        xbe_sha256=SUPPORTED_XBE_SHA256, disc=str(disc))
-        prepare_lifter(work)
+        prepare_lifter(work, lifter_revision)
         # Reuse the proven function boundaries and ordered recoveries, not fresh discovery.
         functions = work / "functions.json"
         functions.write_text(json.dumps([
@@ -134,12 +136,13 @@ def build(args):
               "The runner will stop if it reaches an unresolved target.", flush=True)
         manifest, ebp = program_manifest(generated)
         receipt.update(program_manifest_sha256=manifest, ebp_overrides=ebp)
-        verify_files(generated, recipe["generated_files"])
-        if ({p.name for p in generated.iterdir() if p.is_file()} != set(recipe["generated_files"])
-                or manifest != recipe["program_manifest_sha256"] or ebp != recipe["ebp_overrides"]):
-            raise ValueError("Generated program differs from the proven local recipe")
-        receipt["generation_parity"] = "exact-local-match"
-        print("Generated game code matches the original local build byte-for-byte.", flush=True)
+        if verify_parity:
+            verify_files(generated, recipe["generated_files"])
+            if ({p.name for p in generated.iterdir() if p.is_file()} != set(recipe["generated_files"])
+                    or manifest != recipe["program_manifest_sha256"] or ebp != recipe["ebp_overrides"]):
+                raise ValueError("Generated program differs from the proven local recipe")
+            receipt["generation_parity"] = "exact-local-match"
+            print("Generated game code matches the original local build byte-for-byte.", flush=True)
         if args.generate_only:
             receipt["status"] = "generated-unverified"
             return work

@@ -58,3 +58,9 @@ calculations. It is not an upgrade to the latest upstream release.
 Changing the recipe requires regenerating from the supported user-owned XBE,
 reviewing output differences, and validating the affected player-visible flows.
 Do not update expected hashes merely to make a mismatched build pass.
+
+`tools/update_lifter_pin.py --imported private/<import>` does the mechanical
+part: it proves the current pin still reproduces the recipe, checks out the
+target revision (default: the fork's `main`), regenerates, rewrites the recipe,
+`build_game.py` and `public-export.json` identities, stages the submodule and
+writes `changed-functions.txt` beside the new program. It does not commit.
