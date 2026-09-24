@@ -11,6 +11,7 @@
 
 #include <cmath>
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -466,6 +467,10 @@ struct RecompD3dPresenter {
     uint32_t present_count = 0;
     bool performance_counter = false;
     FrameRateCounter frame_rate;
+    // RECOMP_PERF_COUNTER pacing: present-to-present gaps within the second.
+    double last_present_ms = 0.0;
+    double present_call_max_ms = 0.0;
+    std::vector<double> present_gaps;
     bool first_present_reported = false;
     unsigned frame_dump_count = 0u;
     ULONGLONG next_frame_dump_ms = 0u;
@@ -3040,6 +3045,11 @@ RecompD3dPresenterError submitPresent(
     // Capture the rendered buffer before flip presentation releases it.
     dumpBackBufferOnce(presenter, presenter->present_count + 1u);
 
+    const auto clock_ms = [] {
+        return std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+    };
+    const double present_start_ms = clock_ms();
     const HRESULT present_result = presenter->swap_chain->Present(
         immediate_present ? 0u : 1u,
         immediate_present ? DXGI_PRESENT_DO_NOT_WAIT : 0u);
@@ -3057,14 +3067,32 @@ RecompD3dPresenterError submitPresent(
     }
     ++presenter->present_count;
     if (presenter->performance_counter) {
+        const double present_end_ms = clock_ms();
+        presenter->present_call_max_ms = (std::max)(
+            presenter->present_call_max_ms, present_end_ms - present_start_ms);
+        if (presenter->last_present_ms != 0.0) {
+            presenter->present_gaps.push_back(present_end_ms - presenter->last_present_ms);
+        }
+        presenter->last_present_ms = present_end_ms;
         double fps, frame_ms;
         const ULONGLONG now = GetTickCount64();
         if (sampleFrameRate(presenter->frame_rate, now, fps, frame_ms)) {
             char title[96];
             std::snprintf(title, sizeof title, "DOAXBV Recomp | %.1f FPS | %.1f ms/frame", fps, frame_ms);
             SetWindowTextA(presenter->window, title);
-            std::fprintf(stderr, "recomp performance: tick_ms=%llu present=%u fps=%.2f frame_ms=%.3f\n",
-                static_cast<unsigned long long>(now), presenter->present_count, fps, frame_ms);
+            // A late frame took over 1.5x this second's average: visible judder.
+            double max_ms = 0.0;
+            unsigned late = 0u;
+            for (const double gap : presenter->present_gaps) {
+                max_ms = (std::max)(max_ms, gap);
+                late += gap > frame_ms * 1.5;
+            }
+            std::fprintf(stderr, "recomp performance: tick_ms=%llu present=%u fps=%.2f frame_ms=%.3f "
+                "max_ms=%.1f late=%u present_max_ms=%.1f\n",
+                static_cast<unsigned long long>(now), presenter->present_count, fps, frame_ms,
+                max_ms, late, presenter->present_call_max_ms);
+            presenter->present_gaps.clear();
+            presenter->present_call_max_ms = 0.0;
         }
     }
 

@@ -4,8 +4,12 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
+#include <algorithm>
 #include <condition_variable>
+#include <chrono>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <memory>
 #include <mutex>
 #include <new>
@@ -31,6 +35,12 @@ struct PresenterThread {
     RecompD3dPresenterError status = RECOMP_D3D_PRESENTER_OK;
     RecompD3dPresenterError destroyed = RECOMP_D3D_PRESENTER_OK;
     unsigned draw_declines = 0;
+    // RECOMP_PERF_COUNTER pacing on the game side, reported once per second.
+    bool pacing = false;
+    double last_frame_ms = 0.0;
+    double frame_max_ms = 0.0;
+    double queue_wait_ms = 0.0;
+    ULONGLONG pacing_start = 0u;
 
     ~PresenterThread() { if (wake != nullptr) CloseHandle(wake); }
 };
@@ -166,13 +176,40 @@ void run(PresenterThread &thread, RecompD3dPresenterConfig config)
         thread.draw_declines);
 }
 
+double clock_ms()
+{
+    return std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+/* Separates a slow game frame (tick_max_ms high) from a render thread that
+   cannot keep up (queue_wait_ms high). */
+void notePacing(PresenterThread &thread, double wait_start_ms, double wait_end_ms)
+{
+    if (thread.last_frame_ms != 0.0) {
+        thread.frame_max_ms = (std::max)(thread.frame_max_ms, wait_start_ms - thread.last_frame_ms);
+    }
+    thread.last_frame_ms = wait_start_ms;
+    thread.queue_wait_ms += wait_end_ms - wait_start_ms;
+    const ULONGLONG now = GetTickCount64();
+    if (thread.pacing_start == 0u) thread.pacing_start = now;
+    if (now - thread.pacing_start < 1000u) return;
+    std::fprintf(stderr, "recomp pacing: tick_ms=%llu tick_max_ms=%.1f queue_wait_ms=%.1f\n",
+        static_cast<unsigned long long>(now), thread.frame_max_ms, thread.queue_wait_ms);
+    thread.pacing_start = now;
+    thread.frame_max_ms = 0.0;
+    thread.queue_wait_ms = 0.0;
+}
+
 RecompD3dPresenterError publish(PresenterThread &thread, bool destroying)
 {
+    const double wait_start_ms = thread.pacing ? clock_ms() : 0.0;
     std::unique_lock<std::mutex> lock(thread.mutex);
     thread.changed.wait(lock, [&] {
         return thread.pending < 2 ||
             (!destroying && thread.status != RECOMP_D3D_PRESENTER_OK);
     });
+    if (thread.pacing) notePacing(thread, wait_start_ms, clock_ms());
     if (!destroying && thread.status != RECOMP_D3D_PRESENTER_OK) return thread.status;
     thread.packets[thread.open].seal();
     thread.open = (thread.open + 1) % 3;
@@ -199,6 +236,8 @@ RecompD3dPresenterError recomp_d3d_presenter_create(
     std::unique_ptr<PresenterThread> thread;
     try {
         thread = std::make_unique<PresenterThread>();
+        const char *performance = std::getenv("RECOMP_PERF_COUNTER");
+        thread->pacing = performance != nullptr && std::strcmp(performance, "1") == 0;
         thread->wake = CreateEventW(nullptr, FALSE, FALSE, nullptr);
         if (thread->wake == nullptr) return RECOMP_D3D_PRESENTER_HOST_FAILURE;
         thread->worker = std::thread(run, std::ref(*thread), *config);
