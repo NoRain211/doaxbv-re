@@ -81,7 +81,7 @@ def generate(imported, verify_parity, revision=None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--imported", type=Path, required=True, help="Completed import beneath private/")
-    parser.add_argument("--revision", help="Lifter commit (default: the fork's main branch tip)")
+    parser.add_argument("--revision", help="Lifter commit (default: the fork's codex/doaxbv-recipe tip)")
     args = parser.parse_args()
     if git("status", "--porcelain"):
         raise SystemExit("tools/xboxrecomp has local changes; commit or discard them first")
@@ -89,7 +89,8 @@ def main():
     if args.revision:
         revision = git("rev-parse", "--verify", f"{args.revision}^{{commit}}")
     else:
-        git("fetch", "origin", "main")
+        # The fork's main follows upstream, whose lifter line regresses gameplay.
+        git("fetch", "origin", "codex/doaxbv-recipe")
         revision = git("rev-parse", "FETCH_HEAD")
     old = generate(args.imported, verify_parity=True)
     try:

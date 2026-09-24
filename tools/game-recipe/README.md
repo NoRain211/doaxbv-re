@@ -50,10 +50,13 @@ python -m unittest discover -s tools -p 'test_*.py'
 ```
 
 The lifter is the `tools/xboxrecomp` submodule at fork revision
-`5e148a876abe348828f73e5f2723f3a31d2d5769` (branch `codex/doaxbv-recipe`): upstream
+`6255fd6a35ea73fbad3d0685672438f6906e4837` (branch `codex/doaxbv-recipe`): upstream
 `32da23872a552b12b4a932c9d5a6e952bb3f24bb` plus the preserved working local lifter,
 including the explicit x87 destination correction used by camera
-calculations. It is not an upgrade to the latest upstream release.
+calculations, the cross-block carry fix, the jump-table slot-one retry and the
+LOOP/LOOPE/LOOPNE lift. It is not an upgrade to the latest upstream release:
+the fork's `main` follows upstream, and pinning it froze player movement
+animation, broke an island map texture and sent the hotel to the pool scene.
 
 Changing the recipe requires regenerating from the supported user-owned XBE,
 reviewing output differences, and validating the affected player-visible flows.
@@ -61,6 +64,6 @@ Do not update expected hashes merely to make a mismatched build pass.
 
 `tools/update_lifter_pin.py --imported private/<import>` does the mechanical
 part: it proves the current pin still reproduces the recipe, checks out the
-target revision (default: the fork's `main`), regenerates, rewrites the recipe,
+target revision (default: the fork's `codex/doaxbv-recipe`), regenerates, rewrites the recipe,
 `build_game.py` and `public-export.json` identities, stages the submodule and
 writes `changed-functions.txt` beside the new program. It does not commit.
