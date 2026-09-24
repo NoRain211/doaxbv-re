@@ -52,7 +52,8 @@ def pin_metadata(root, generated, revision):
     manifest, ebp = build_game.program_manifest(generated)
     recipe.update(lifter_revision=revision, generated_files=files,
                   program_manifest_sha256=manifest, ebp_overrides=ebp)
-    recipe_path.write_text(json.dumps(recipe, indent=2) + "\n", encoding="utf-8")
+    # LF on every platform: RECIPE_SHA256 must hash the bytes git stores.
+    recipe_path.write_text(json.dumps(recipe, indent=2) + "\n", encoding="utf-8", newline="\n")
 
     builder = root / "tools/build_game.py"
     source = builder.read_text(encoding="utf-8")
@@ -60,7 +61,7 @@ def pin_metadata(root, generated, revision):
         source, count = re.subn(rf'(?m)^{name} = "[0-9a-f]+"$', f'{name} = "{value}"', source)
         if count != 1:
             raise ValueError(f"Could not update {name} in build_game.py")
-    builder.write_text(source, encoding="utf-8")
+    builder.write_text(source, encoding="utf-8", newline="\n")
 
     export_path = root / "public-export.json"
     export = json.loads(export_path.read_text(encoding="utf-8"))
@@ -68,7 +69,7 @@ def pin_metadata(root, generated, revision):
     if len(links) != 1:
         raise ValueError("public-export.json must list tools/xboxrecomp once")
     links[0]["commit"] = revision
-    export_path.write_text(json.dumps(export, indent=2) + "\n", encoding="utf-8")
+    export_path.write_text(json.dumps(export, indent=2) + "\n", encoding="utf-8", newline="\n")
     return changed
 
 

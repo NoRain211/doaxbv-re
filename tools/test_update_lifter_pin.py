@@ -36,6 +36,8 @@ class LifterPinTests(unittest.TestCase):
             self.assertEqual(written["lifter_revision"], "a" * 40)
             self.assertNotIn("gone.c", written["generated_files"])
             self.assertIn(f'LIFTER_REVISION = "{"a" * 40}"', (root / "tools/build_game.py").read_text())
+            for name in ("tools/game-recipe/recipe.json", "tools/build_game.py", "public-export.json"):
+                self.assertNotIn(b"\r", (root / name).read_bytes())
             export = json.loads((root / "public-export.json").read_text(encoding="utf-8"))
             self.assertEqual(export["gitlinks"][0]["commit"], "a" * 40)
             self.assertEqual(compare(function_hashes(old), function_hashes(new)),
