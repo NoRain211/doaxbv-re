@@ -136,10 +136,14 @@ def build(args):
         output = work / "build"
         receipt.update(cmake_generator="Visual Studio 17 2022", platform="x64",
                        configuration="Release", build_parallelism=2)
-        command(["cmake", "-S", ROOT / "recomp-runtime", "-B", output,
-                 "-G", "Visual Studio 17 2022", "-A", "x64",
-                 f"-DRECOMP_PROGRAM_DIR={generated}", f"-DRECOMP_PROGRAM_MANIFEST_SHA256={manifest}",
-                 f"-DRECOMP_PROGRAM_EBP_EXPECTED={ebp}"], ROOT, work / "configure.log")
+        configure = ["cmake", "-S", ROOT / "recomp-runtime", "-B", output,
+                     "-G", "Visual Studio 17 2022", "-A", "x64",
+                     f"-DRECOMP_PROGRAM_DIR={generated}", f"-DRECOMP_PROGRAM_MANIFEST_SHA256={manifest}",
+                     f"-DRECOMP_PROGRAM_EBP_EXPECTED={ebp}"]
+        icon = ROOT / "tools/artifacts/doaxbv.ico"
+        if icon.is_file():
+            configure.append(f"-DRECOMP_APP_ICON={icon.as_posix()}")
+        command(configure, ROOT, work / "configure.log")
         command(["cmake", "--build", output, "--config", "Release", "--parallel", "2",
                  "--target", "recomp_program_runner", "--", "/nodeReuse:false"], ROOT, work / "build.log")
         runner = output / "Release/recomp_program_runner.exe"

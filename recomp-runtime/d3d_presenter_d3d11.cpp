@@ -577,6 +577,8 @@ bool createWindow(RecompD3dPresenter *presenter)
     window_class.lpfnWndProc = presenterWindowProc;
     window_class.hInstance = presenter->instance;
     window_class.hCursor = LoadCursor(nullptr, IDC_ARROW);
+    // Resource 1 is the optional RECOMP_APP_ICON; without it Windows uses its default.
+    window_class.hIcon = LoadIconW(presenter->instance, MAKEINTRESOURCEW(1));
     window_class.lpszClassName = kWindowClassName;
 
     const ATOM window_class_atom = RegisterClassExW(&window_class);

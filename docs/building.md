@@ -24,6 +24,10 @@ The repository does not include an all-in-one build executable. Place
 `extract-xiso.exe` at `tools/artifacts/extract-xiso.exe`, add it to `PATH`, or
 pass its path to `tools/build_game.py`.
 
+The runner icon is optional and kept out of git. Place it at
+`tools/artifacts/doaxbv.ico` and the build embeds it; without it, the runner uses
+the default Windows icon.
+
 The **DOAXBV-0.35-Alpha** ZIP bundles Python, Capstone, and the tagged
 extractor. Git, CMake, and the Visual Studio 2022 C++ build tools are still
 required. Extract the whole ZIP into a new folder with a short path before setup
