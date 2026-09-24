@@ -28,9 +28,11 @@ typedef struct RecompDispatchFrame {
 static RecompDispatchFrame dispatch_stack[64];
 static size_t dispatch_depth;
 static uint8_t *direct_ram;
+uint8_t *recomp_fast_ram;
 
 static void report_dispatch_stack(void);
 static void watch_init(void);
+static void update_fast_ram(void);
 
 enum {
     XBOX_RAM_SIZE = 0x04000000u,
@@ -79,6 +81,7 @@ void recomp_runtime_init(
     recomp_apu_init(&mcpx_apu);
     mmio_u32_access = (RecompMmioU32Access){0};
     watch_init();
+    update_fast_ram();
 }
 
 void recomp_runtime_set_lookup(RecompFunctionLookup lookup)
@@ -154,6 +157,7 @@ static void commit_mmio_u32_write(void)
     }
 
     mmio_u32_access.pending = false;
+    update_fast_ram();
     if (mmio_u32_access.value == mmio_u32_access.original) {
         return;
     }
@@ -278,6 +282,12 @@ static struct {
     uint32_t hits;
     uint32_t hit_limit;
 } watch;
+
+static void update_fast_ram(void)
+{
+    recomp_fast_ram = !watch.active && recomp_runtime.accesses == NULL &&
+        !mmio_u32_access.pending ? direct_ram : NULL;
+}
 
 static void watch_init(void)
 {
@@ -802,7 +812,7 @@ uint8_t *recomp_memory(uint32_t guest_address, size_t width)
     return recomp_memory_slow(guest_address, width);
 }
 
-uint32_t *recomp_memory_u32(uint32_t guest_address)
+uint32_t *recomp_memory_u32_checked(uint32_t guest_address)
 {
     RecompOhciRegister reg;
     uint32_t value;
@@ -828,6 +838,7 @@ uint32_t *recomp_memory_u32(uint32_t guest_address)
             .original = value,
             .value = value,
         };
+        update_fast_ram();
         return &mmio_u32_access.value;
     }
 
