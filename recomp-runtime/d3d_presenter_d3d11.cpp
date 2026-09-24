@@ -15,6 +15,7 @@
 #include <cstring>
 #include <new>
 #include <memory>
+#include <unordered_map>
 #include <vector>
 
 namespace {
@@ -317,8 +318,11 @@ struct BlendStateEntry {
 };
 
 /* Guest textures are cached by address and shape. Linear movie buffers are
-   rewritten in place, so their pixels are refreshed whenever sampled. */
-constexpr uint32_t kTextureSlots = 256u;
+   rewritten in place, so their pixels are refreshed whenever sampled.
+   Map and menu screens sample about 300 textures per frame; a FIFO smaller
+   than one frame's set evicts each texture before its next use and rebuilds
+   all of them every frame. */
+constexpr uint32_t kTextureSlots = 4096u;
 constexpr uint32_t kPaletteBytes = 256u * 4u;
 
 struct TextureEntry {
@@ -391,7 +395,8 @@ struct RecompD3dPresenter {
     BlendStateEntry blend_states[kBlendStateSlots]{};
     uint32_t blend_state_count = 0u;
     uint32_t next_blend_state_slot = 0u;
-    TextureEntry textures[kTextureSlots]{};
+    std::vector<TextureEntry> textures = std::vector<TextureEntry>(kTextureSlots);
+    std::unordered_multimap<uint32_t, uint32_t> texture_index; // guest address -> slot
     uint32_t texture_count = 0u;
     uint32_t next_texture_slot = 0u;
     std::vector<RenderTargetEntry> render_targets;
@@ -510,6 +515,7 @@ void releaseGraphics(RecompD3dPresenter *presenter)
         releaseCom(entry.view);
         entry.used = false;
     }
+    presenter->texture_index.clear();
     presenter->texture_count = 0u;
     presenter->next_texture_slot = 0u;
     for (uint32_t i = 0u; i < presenter->render_targets.size(); ++i) {
@@ -1699,6 +1705,17 @@ ID3D11SamplerState *lookupDrawSampler(
     return sampler;
 }
 
+void unindexTexture(RecompD3dPresenter *presenter, uint32_t slot)
+{
+    const auto range = presenter->texture_index.equal_range(presenter->textures[slot].data);
+    for (auto it = range.first; it != range.second; ++it) {
+        if (it->second == slot) {
+            presenter->texture_index.erase(it);
+            return;
+        }
+    }
+}
+
 ID3D11ShaderResourceView *lookupTexture(
     RecompD3dPresenter *presenter,
     const RecompD3dPresenterDrawCommand &draw)
@@ -1735,11 +1752,11 @@ ID3D11ShaderResourceView *lookupTexture(
             draw.texture_byte_count)) {
         return nullptr;
     }
-    for (uint32_t i = 0u; i < presenter->texture_count; ++i) {
-        TextureEntry &entry = presenter->textures[i];
+    const auto cached = presenter->texture_index.equal_range(desc.data);
+    for (auto it = cached.first; it != cached.second; ++it) {
+        TextureEntry &entry = presenter->textures[it->second];
 
-        if (entry.used && entry.data == desc.data &&
-            entry.format_byte == desc.format_byte &&
+        if (entry.format_byte == desc.format_byte &&
             entry.width == desc.width && entry.height == desc.height && entry.mip_levels == levels &&
             (!palettized || std::memcmp(entry.palette, draw.palette_bytes, kPaletteBytes) == 0)) {
             if (linear_bgra) {
@@ -1840,7 +1857,9 @@ ID3D11ShaderResourceView *lookupTexture(
     }
 
     // ponytail: FIFO eviction; track recent use if upload churn is costly.
-    TextureEntry &entry = presenter->textures[presenter->next_texture_slot];
+    const uint32_t slot = presenter->next_texture_slot;
+    TextureEntry &entry = presenter->textures[slot];
+    if (entry.used) unindexTexture(presenter, slot);
     releaseCom(entry.view);
     presenter->next_texture_slot =
         (presenter->next_texture_slot + 1u) % kTextureSlots;
@@ -1855,6 +1874,13 @@ ID3D11ShaderResourceView *lookupTexture(
     entry.mip_levels = levels;
     if (palettized) std::memcpy(entry.palette, draw.palette_bytes, kPaletteBytes);
     entry.view = view;
+    try {
+        presenter->texture_index.emplace(desc.data, slot);
+    } catch (const std::bad_alloc &) {
+        releaseCom(entry.view);
+        entry.used = false;
+        return nullptr;
+    }
     return view;
 }
 
@@ -2247,7 +2273,7 @@ RecompD3dPresenterError submitDraw(
            ordinal draw of each present instead. */
         static unsigned ytrace_last_present = 0xffffffffu;
         static unsigned ytrace_ordinal;
-        const char *ord_text = std::getenv("RECOMP_D3D_YTRACE_DRAW");
+        static const char *ord_text = std::getenv("RECOMP_D3D_YTRACE_DRAW");
         const unsigned want_ordinal = ord_text != nullptr
             ? static_cast<unsigned>(std::strtoul(ord_text, nullptr, 10))
             : 1u;
@@ -2323,9 +2349,8 @@ RecompD3dPresenterError submitDraw(
                     ? " inside" : " OUTSIDE");
         }
     }
-    return FAILED(presenter->device->GetDeviceRemovedReason())
-        ? RECOMP_D3D_PRESENTER_HOST_FAILURE
-        : RECOMP_D3D_PRESENTER_OK;
+    // Present reports device removal; checking per draw costs a kernel call each.
+    return RECOMP_D3D_PRESENTER_OK;
 }
 
 bool pumpMessages()
@@ -2685,8 +2710,10 @@ RecompD3dPresenterError recomp_d3d_presenter_create(
         return RECOMP_D3D_PRESENTER_ALREADY_INITIALIZED;
     }
 
-    RecompD3dPresenter *created = new (std::nothrow) RecompD3dPresenter{};
-    if (created == nullptr) {
+    RecompD3dPresenter *created = nullptr;
+    try {
+        created = new RecompD3dPresenter{};
+    } catch (const std::bad_alloc &) {
         return RECOMP_D3D_PRESENTER_OUT_OF_MEMORY;
     }
     created->config = *config;
@@ -2782,6 +2809,7 @@ RecompD3dPresenterError recomp_d3d_presenter_release_memory(
     for (uint32_t i = 0u; i < presenter->texture_count; ++i) {
         TextureEntry &entry = presenter->textures[i];
         if (entry.used && released(entry.data)) {
+            unindexTexture(presenter, i);
             releaseCom(entry.view);
             entry.used = false;
             changed = true;
