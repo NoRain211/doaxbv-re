@@ -1,5 +1,25 @@
 # Public Status
 
+## Fully playable (0.4 Alpha)
+
+The local build published as 0.4 Alpha (tag `v0.4`, commit `3848a67`,
+generated-program manifest `9558380…`) is fully playable. Long player
+sessions with that generated program covered every stage, the Casino, Hotel
+and Shops, saving and reloading, and the end of a vacation carrying into a new
+one. They ran at a steady 60 FPS with no audio underruns and closed normally.
+The vacation-end run started from an edited day-14 save. Days 11–13 are
+accepted by inference from shared code, not a full natural run. See the
+[playability decision](https://github.com/NoRain211/doaxbv-re/issues/16#issuecomment-5840313062).
+
+Known issues are [#54](https://github.com/NoRain211/doaxbv-re/issues/54)
+(second Hopping Game playable before it loads),
+[#55](https://github.com/NoRain211/doaxbv-re/issues/55) (upside-down map flash
+leaving the pool) and [#56](https://github.com/NoRain211/doaxbv-re/issues/56)
+(possibly missing underwater textures). Formal acceptance of every offline row,
+and original lighting and camera fidelity, remain open in #16.
+
+## Public tree
+
 The public tree proves that the tracked runtime, model, and adapter tests build
 without private game input. It does not prove that the game boots, reaches a
 menu, renders correctly, or is playable.
