@@ -1,6 +1,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Pick resolution and anti-aliasing, remember them, then start RunGame.cmd.
 Add-Type -AssemblyName System.Windows.Forms
+# The console is hidden, so show any failure instead of exiting silently.
+$ErrorActionPreference = 'Stop'
+trap { [Windows.Forms.MessageBox]::Show("$_", 'DOAXBV launcher') | Out-Null; exit 1 }
 $root = Split-Path $PSScriptRoot -Parent
 $settingsPath = Join-Path $root 'private\launcher.json'
 $heights = 480, 720, 1080, 1440, 2160
@@ -13,7 +16,7 @@ $form.Text = 'DOAXBV'
 $form.FormBorderStyle = 'FixedDialog'
 $form.MaximizeBox = $false
 $form.StartPosition = 'CenterScreen'
-$form.ClientSize = '240,140'
+$form.ClientSize = New-Object Drawing.Size 240, 140
 $icon = Join-Path $root 'private\doaxbv.ico'
 if (Test-Path $icon) { $form.Icon = New-Object Drawing.Icon $icon }
 

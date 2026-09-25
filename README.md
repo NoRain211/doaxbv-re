@@ -83,7 +83,7 @@ desktop workload and a Windows SDK.
    and extract it into a new folder with a short path.
 2. Drag your ISO onto `BuildGame.cmd` and wait for **Setup complete**.
 3. Run `Launcher.cmd` from the same folder to pick resolution, MSAA and SMAA,
-   then press **Play**. `RunGame.cmd` starts with default settings.
+   then press **Play**. Running `RunGame.cmd` directly uses the defaults.
 
 Setup extracts your ISO and builds an x64 Release runner locally; the package
 contains tools and source, never a prebuilt runner or game data. When updating,
