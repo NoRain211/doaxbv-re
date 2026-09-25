@@ -13,6 +13,7 @@ generated/
 recomp_*.c
 recomp_dispatch.c
 recomp_funcs.h
+tools/artifacts/
 
 # Game and console artifacts
 *.xbe
