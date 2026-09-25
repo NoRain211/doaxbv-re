@@ -160,7 +160,10 @@ It checks the receipt status, runner file and runner SHA-256,
 exactly one XBE, and the recorded XBE SHA-256 before launch. It does not
 revalidate every extracted file. It writes the run log under `private/`, uses
 VSync, and sets the default audio gain to 0.2. FPS and frame time appear in the
-window title; one-second performance samples are included in the log. Set
+window title; one-second performance samples are included in the log, with the
+worst frame gap, late frames (over 1.5x that second's average) and, on
+`recomp pacing:` lines, the worst game frame and time spent waiting on the
+render thread. Set
 `RECOMP_PERF_COUNTER=0` to disable this counter. No continuous capture is enabled. Recipe, lifter revision, generated
 manifest, and generation-parity identities are included in each run log when
 the build receipt provides them.
