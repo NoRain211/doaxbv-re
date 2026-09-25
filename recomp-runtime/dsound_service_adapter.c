@@ -240,6 +240,7 @@ static void original_buffer_call(uint32_t address)
 #ifdef RECOMP_FULL_PROGRAM
     void sub_001F8FD8(void);
     void sub_001F8FFC(void);
+    void sub_001F9014(void);
     void sub_001F9058(void);
     void sub_001F9074(void);
     void sub_001F9094(void);
@@ -249,6 +250,7 @@ static void original_buffer_call(uint32_t address)
     switch (address) {
     case 0x001f8fd8u: sub_001F8FD8(); return;
     case 0x001f8ffcu: sub_001F8FFC(); return;
+    case 0x001f9014u: sub_001F9014(); return;
     case 0x001f9058u: sub_001F9058(); return;
     case 0x001f9074u: sub_001F9074(); return;
     case 0x001f9094u: sub_001F9094(); return;
@@ -347,6 +349,20 @@ static void buffer_call(uint32_t operation, uint32_t argument_count)
     case 0x001f8ffcu:
         recomp_dsound_buffer_stop(&clock->model, now);
         break;
+    case 0x001f9014u:
+        /* StopEx(buffer, timestamp, flags). ENVELOPE|RELEASEWAVEFORM on a
+           loop exits the loop and plays to the end; other flags stop now.
+           ponytail: the game's callers pass a zero timestamp and no envelope;
+           schedule timestamps and model release envelopes if a caller needs them. */
+        if ((stack_argument(entry, 3u) & 3u) == 3u && clock->model.playing &&
+            (clock->model.play_flags & RECOMP_DSOUND_PLAY_LOOPING)) {
+            recomp_dsound_buffer_cursor(&clock->model, now);
+            clock->model.play_flags &= ~RECOMP_DSOUND_PLAY_LOOPING;
+            continue_output = clock->model.playing && clock->output_model.playing;
+        } else {
+            recomp_dsound_buffer_stop(&clock->model, now);
+        }
+        break;
     case 0x001f9058u: {
         uint32_t output = stack_argument(entry, 1u);
         recomp_dsound_buffer_cursor(&clock->model, now);
@@ -392,7 +408,7 @@ static void buffer_call(uint32_t operation, uint32_t argument_count)
     }
     if (result == RECOMP_DSOUND_OK && operation != 0x001f9058u &&
         operation != 0x001f9074u) {
-        if (operation != 0x001f8fd8u || !continue_output) {
+        if (!continue_output) {
             recomp_audio_output_reset_voice((uint32_t)(clock - buffer_clocks));
         }
         if (continue_output) {
@@ -413,6 +429,7 @@ static void buffer_call(uint32_t operation, uint32_t argument_count)
 
 static void buffer_play(void) { buffer_call(0x001f8fd8u, 4u); }
 static void buffer_stop(void) { buffer_call(0x001f8ffcu, 1u); }
+static void buffer_stop_ex(void) { buffer_call(0x001f9014u, 4u); }
 static void buffer_status(void) { buffer_call(0x001f9058u, 2u); }
 static void buffer_position(void) { buffer_call(0x001f9074u, 3u); }
 static void buffer_seek(void) { buffer_call(0x001f9094u, 2u); }
@@ -753,6 +770,7 @@ RecompFunction recomp_dsound_service_lookup_manual(uint32_t guest_address)
     switch (guest_address) {
     case 0x001f8fd8u: return buffer_play;
     case 0x001f8ffcu: return buffer_stop;
+    case 0x001f9014u: return buffer_stop_ex;
     case 0x001f9058u: return buffer_status;
     case 0x001f9074u: return buffer_position;
     case 0x001f9094u: return buffer_seek;

@@ -855,6 +855,44 @@ int recomp_dsound_service_adapter_test(void)
         recomp_runtime.registers.esp = TEST_ENTRY_ESP;
         recomp_dsound_service_lookup_manual(0x001f9058u)();
         passed &= expect_u32("stopped buffer status", *recomp_memory_u32(TEST_OUTPUT), 0u);
+
+        /* The game's sound manager stops voices with StopEx(buffer, 0, 0). */
+        write_argument(1u, 0u);
+        write_argument(3u, RECOMP_DSOUND_PLAY_LOOPING);
+        recomp_runtime.registers.esp = TEST_ENTRY_ESP;
+        recomp_dsound_service_lookup_manual(0x001f8fd8u)();
+        write_argument(3u, 0u);
+        uint32_t resets = output_resets;
+        recomp_runtime.registers.esp = TEST_ENTRY_ESP;
+        recomp_dsound_service_lookup_manual(0x001f9014u)();
+        passed &= expect_u32("stop-ex HRESULT", recomp_runtime.registers.eax, 0u);
+        passed &= expect_u32("stop-ex ESP", recomp_runtime.registers.esp, TEST_ENTRY_ESP + 20u);
+        passed &= expect_u32("stop-ex voice reset", output_resets, resets + 1u);
+        write_argument(1u, TEST_OUTPUT);
+        recomp_runtime.registers.esp = TEST_ENTRY_ESP;
+        recomp_dsound_service_lookup_manual(0x001f9058u)();
+        passed &= expect_u32("stop-ex status", *recomp_memory_u32(TEST_OUTPUT), 0u);
+
+        /* ENVELOPE|RELEASEWAVEFORM leaves the loop but keeps playing to the end. */
+        write_argument(1u, 0u);
+        write_argument(3u, RECOMP_DSOUND_PLAY_LOOPING);
+        recomp_runtime.registers.esp = TEST_ENTRY_ESP;
+        recomp_dsound_service_lookup_manual(0x001f8fd8u)();
+        write_argument(3u, 3u);
+        resets = output_resets;
+        recomp_runtime.registers.esp = TEST_ENTRY_ESP;
+        recomp_dsound_service_lookup_manual(0x001f9014u)();
+        passed &= expect_u32("released loop keeps its voice", output_resets, resets);
+        write_argument(1u, TEST_OUTPUT);
+        recomp_runtime.registers.esp = TEST_ENTRY_ESP;
+        recomp_dsound_service_lookup_manual(0x001f9058u)();
+        passed &= expect_u32("released loop status", *recomp_memory_u32(TEST_OUTPUT), 1u);
+        const uint64_t released_at = test_now;
+        test_now += 60000u;
+        recomp_runtime.registers.esp = TEST_ENTRY_ESP;
+        recomp_dsound_service_lookup_manual(0x001f9058u)();
+        passed &= expect_u32("released loop plays out", *recomp_memory_u32(TEST_OUTPUT), 0u);
+        test_now = released_at;
         passed &= expect_lookup(0x001f84b0u);
     }
 
