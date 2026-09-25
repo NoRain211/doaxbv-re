@@ -1343,6 +1343,24 @@ static int testTextureCache(RecompD3dPresenter *presenter, uint32_t &detail)
         presenter->texture_count != kTextureSlots) {
         return 50;
     }
+
+    // The same buffer refilled with other texels must not return the old texture.
+    ID3D11ShaderResourceView *stale = lookupTexture(presenter, draw);
+    if (stale == nullptr) return 60;
+    stale->AddRef();  // Keep its address from being reused by the rebuilt view.
+    const uint8_t refilled[sizeof dxt1_block] = {0x00u, 0xf8u};
+    draw.texture_bytes = refilled;
+    ID3D11ShaderResourceView *fresh = lookupTexture(presenter, draw);
+    stale->Release();
+    if (fresh == nullptr || fresh == stale) return 60;
+    uint32_t matches = 0u;
+    for (uint32_t i = 0u; i < presenter->texture_count; ++i) {
+        const TextureEntry &entry = presenter->textures[i];
+        if (!entry.used || entry.data != evicted_data) continue;
+        ++matches;
+        if (entry.fingerprint != textureFingerprint(refilled, sizeof refilled)) return 70;
+    }
+    if (matches != 1u) return 70;
     return 0;
 }
 
