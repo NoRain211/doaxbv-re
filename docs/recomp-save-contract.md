@@ -25,20 +25,20 @@ The host journal has its own version, independent of the game schema. Unknown ve
 
 ## Process-interruption protection
 
-The full-profile and profile-region save hooks in `save_adapter.c` wrap the original game routines. Each outer operation backs up the entire existing `UDATA` tree before allowing its writes. Nested saves from the same guest fiber join that operation. This protects all slots in the tree as one unit, rather than committing individual files independently.
+The full-profile and profile-region save hooks in `save_adapter.c` wrap the original game routines. Each outer operation backs up the entire existing `UDATA` tree, with file times, into one `undo` file in the journal before allowing its writes. Nested saves from the same guest fiber join that operation. This protects all slots in the tree as one unit, rather than committing individual files independently.
 
 The operation commits only after the original routine reports success, required file operations have succeeded, and its writable profile handles are closed. Short writes and required open, seek, truncate, flush or close failures mark the operation failed. A nested failure also aborts the outer save even if its caller ignores the return value. The adapter stops guest execution when the transaction cannot complete successfully.
 
 Recovery runs before guest startup and before another outer save:
 
-- An unfinished backup has not authorized guest writes and is discarded.
+- An unfinished backup, shorter than the size recorded in its header, has not authorized guest writes and is discarded.
 - A pending operation restores the complete pre-operation tree. If that tree was absent, recovery removes the incomplete first save.
-- Renaming the pending journal record to committed is the commit point. Interrupted cleanup keeps the completed new save.
+- Deleting the `undo` file is the commit point.
 - The undo copy remains available until restoration finishes, so restoration can be retried after another interruption. If validation or restoration fails, startup stops with the journal retained.
 
 Windows holds an exclusive handle to the journal's empty `lock` file for the host's lifetime. A second host cannot initialize the same store while that handle is held. The file remains on disk after ownership ends. Journal and profile-tree checks reject reparse points.
 
-Journal renames retry temporary Windows access, sharing and lock denials against a 500 ms deadline, without replacing an existing destination. This applies when beginning, committing and finishing recovery; persistent denial still stops the operation.
+Deleting the `undo` file retries temporary Windows access, sharing and lock denials against a 500 ms deadline; persistent denial still stops the operation. Builds before 2026-09-24 kept `staging`, `pending` and `committed` directory records instead. If one is present, startup stops; running the build that wrote it once recovers it.
 
 This protection applies to the intercepted saves. It is not a blanket atomicity guarantee for profile deletion, arbitrary writes outside those operations, external file edits, or other platform storage. Closing the host does not itself request a new game save; only completed game save operations are committed.
 
@@ -55,6 +55,8 @@ An actual game save has also been interrupted after a protected write changed th
 An earlier short-write attempt stopped before injection because the staging-to-pending journal rename was denied; its prior profile remained unchanged. After adding the bounded rename retry, a separate real game save wrote only part of a requested payload. The process exited with a pending undo record. A fresh process restored the exact previous payload and save metadata, cleared the pending journal, and normal Continue returned to the prior morning map within 31 seconds. Read-only state checks also confirmed the previous balance and inventory state; those values were not displayed in the map screenshot.
 
 The current candidate passes all five existing runtime tests, including transient and persistent child-handle rename denial. Synthetic tests additionally cover commit, rollback, interrupted-recovery states, ownership, required I/O failures and invalid journal/path handling. The historical holder responsible for the earlier denied rename was not identified.
+
+The single-file journal replaced those directory records on 2026-09-24 because a save cost about 48 ms of file operations on the game thread. It now costs about 2.5 ms. On a real game save, both an interruption after the second protected write and a short second write left a changed live profile and a pending `undo` file. In each case a fresh process restored the previous `UDATA` tree with identical bytes and file times before guest startup. The synthetic tests cover commit, rollback, a truncated `undo` image, a legacy record, and transient and persistent delete denial.
 
 The two complete flows and the real fault recoveries satisfy the acceptance gate in [#17](https://github.com/NoRain211/doaxbv-re/issues/17). This contract resolves the storage, profile, recovery and compatibility questions in [#11](https://github.com/NoRain211/doaxbv-re/issues/11); [audible native output (#15)](https://github.com/NoRain211/doaxbv-re/issues/15) is the next milestone. Both fault/recovery observations were bounded by the supervisor; the separate complete flows supply the clean-shutdown evidence.
 
