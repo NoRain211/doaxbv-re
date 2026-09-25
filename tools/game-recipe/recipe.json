@@ -170,7 +170,7 @@
     "tools/game-recipe/recoveries/recover-fparms-r84-20260830.json": "d3554ab49be87187af816d07f3f58978c96dd6a4d9dff48298026d84742bf98a",
     "tools/game-recipe/recoveries/recover-codeptr-r329-controller-exit.json": "9c33eed63e7b98a620c7b7ce451d37901544f86b667a781b6c837c4bfd2204a3",
     "tools/game-recipe/recoveries/recover-r468-dusk-complete.json": "9390aad40665260a7b3cc2b9bfb400318e72d51f6d1027174a78d39f392d3a98",
-    "tools/game-recipe/manual-call-targets.json": "af9a0b8fbaf34d54239d00065e68cb9f15560cbabde5c44294892fd556662c84",
+    "tools/game-recipe/manual-call-targets.json": "c5c6e8d9560f18ec2e38c2a51622477db9e4f320f5d7063f605b0cc7e95a07c7",
     "tools/game-recipe/recoveries/recover-input-history-radio.json": "8164a3c3d1b22d0bfdd1fc9594f503e607e2c34389ea421b197398db4d36c2e8",
     "tools/game-recipe/recoveries/recover-rest-callback.json": "73c69b062d695abd4e699695c7ef82d66ac266fc6f02844760b1f203d5c43fd3",
     "tools/game-recipe/recoveries/recover-rest-predicate.json": "994a602780c604088cc27e9d51be17547d772fa1e76f526021986a9ea75318c8",
@@ -191,7 +191,7 @@
     "tools/game-recipe/recoveries/recover-slots2.json": "4a40725ec1d9960b2253dc968a8ad33499330c2f1355d8b7dbd80b27c33ab04c",
     "tools/game-recipe/recoveries/recover-hotel-tapes.json": "f96a7f949807e3a686fc809bd924379466cfa9fe285c0ec634adccc2bb0109f9"
   },
-  "program_manifest_sha256": "f5ee50b06c2219d8416feca5930a3c93666f9627894059b4b72a59b8e5d01b0b",
+  "program_manifest_sha256": "9558380992ca491336a2bdd864ceebde9c2354094e07f871ebbf4043a4301a64",
   "ebp_overrides": 10816,
   "manual_call_targets": "tools/game-recipe/manual-call-targets.json",
   "generated_files": {
@@ -199,7 +199,7 @@
     "recomp_0001.c": "a7849a4f55a4755b0d470fe702f4f0a6881e9fb25b782377959aeecedc19e850",
     "recomp_0002.c": "d597ccdca3ada224617252b6d061abd0f05053f04e393f5840f682e692de46c1",
     "recomp_0003.c": "7490ba3e61854ec08d8f1c7f3356b9fdf89fe975d224abaff993695cfb533e00",
-    "recomp_0004.c": "f23c419a7e62176f30a6f0005620e336ffd5c55f71b875e50adf85f3de38ae04",
+    "recomp_0004.c": "dfa7a8f7e66cdb6d40b606e029deae4d3868d65a1a91e9568ab030777a5bd476",
     "recomp_0005.c": "7f75f6303ad1df6c4d697a79f3187f8620c2901c183af107319e5f00a7539ede",
     "recomp_0006.c": "e5fc4aaac25588b2dbcbafc7f5497074ef964ada50358ed373a5f02e61941b0e",
     "recomp_0007.c": "8df10ef1b9a1fa46051c4a12e1a51c7ccd08be029e84704c5f16b36092dbeab4",
