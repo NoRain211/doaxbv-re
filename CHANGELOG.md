@@ -2,9 +2,9 @@
 
 ## 0.4 Alpha — 2026-09-25
 
-The game is playable from start to finish in long player sessions: all
+Long player sessions report the game playable from start to finish: all
 stages, Casino, Hotel, Shops, save and reload, and a vacation's last day
-carrying into a new vacation.
+carrying into a new vacation. Formal offline acceptance continues in #16.
 
 ### Added
 
