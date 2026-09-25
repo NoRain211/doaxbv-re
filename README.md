@@ -50,21 +50,27 @@ running; so far only the startup thread entry has been rewritten.
 
 ## Status
 
-> [!WARNING]
-> This is an experimental alpha. Occasional volleyball stalls are under
-> investigation, and lighting, camera behavior and some offline activities are
-> incomplete.
+> [!NOTE]
+> **Fully playable as of 0.4 Alpha.** Long player sessions cover every stage,
+> the Casino, Hotel and Shops, saving and reloading, and a vacation's end
+> carrying into a new one (that run started from an edited day-14 save; see
+> [status](docs/public-status.md)). Known issues: a second Hopping Game playable before
+> it loads ([#54](https://github.com/NoRain211/doaxbv-re/issues/54)), an
+> upside-down map flash leaving the pool
+> ([#55](https://github.com/NoRain211/doaxbv-re/issues/55)) and possibly missing
+> underwater textures ([#56](https://github.com/NoRain211/doaxbv-re/issues/56)).
 
 | Area | State |
 | --- | --- |
 | Exhibition volleyball, character select | Working, including Xbox Series controllers |
-| Jungle, Beach, Niki Beach, Private Beach | Working in local testing |
-| Take a Rest, Hopping Game, Radio Station | Working in local testing |
+| Jungle, Beach, Niki Beach, Private Beach | Working |
+| Take a Rest, Hopping Game, Radio Station | Working |
+| Casino, Hotel, full vacation to its end | Working in player sessions |
 | Movies and native audio | Working, including natural endings and skips |
 | Store purchases, saves and reloads | Working, with interrupted-save recovery |
 | Portraits, pool water, item previews | Restored |
 | Lighting, camera, full rendering fidelity | Incomplete |
-| Casino, collection, activity variants | Not yet verified |
+| Every collection item and activity/time variant | Not individually verified |
 | Hand-written game logic | Startup thread entry only; the rest runs as generated code |
 | Rollback multiplayer | Planned ([#20](https://github.com/NoRain211/doaxbv-re/issues/20)) |
 
