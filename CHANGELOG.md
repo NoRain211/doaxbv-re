@@ -1,40 +1,118 @@
 # Changelog
 
-## 0.4 Alpha — 2026-09-25
+## 0.4 Beta — 2026-09-25
 
-Long player sessions report the game playable from start to finish: all
-stages, Casino, Hotel, Shops, save and reload, and a vacation's last day
-carrying into a new vacation. Formal offline acceptance continues in #16.
+0.4 is the first Beta. Long player sessions report the game playable from
+start to finish: every stage, the Casino, Hotel and Shops, saving and
+reloading, and a vacation's last day carrying into a new vacation. Formal
+offline acceptance continues in #16.
+
+This entry lists every change since 0.3.51. Together with the 0.3.51 and 0.35
+entries below, it covers everything since 0.3. 0.4 was first published as
+"0.4 Alpha (experimental)"; the Beta label changes no files, and the download
+keeps its original name, `DOAXBV-0.4-Alpha.zip`.
 
 ### Added
 
-- `Launcher.cmd`: pick resolution (480p windowed to 2160p), MSAA and SMAA,
-  remembered in `private/launcher.json`. `RunGame.cmd` keeps the defaults.
-- Render scale, MSAA and SMAA options in the D3D11 presenter. The package
-  bundles the SMAA shader and lookup tables (MIT, `third_party/smaa`).
-- Casino games (poker, blackjack and slots) and the Hotel menu.
-- 16:9 presentation by default, with a 4:3 option.
-- `RECOMP_PERF_COUNTER=1` logs frame pacing, including game-thread and
-  render-queue time.
+- **Launcher** (#57). `Launcher.cmd` opens a small window with a resolution
+  list (480p windowed, 720p, 1080p, 1440p, 2160p), MSAA (Off, 2x, 4x, 8x) and
+  an SMAA checkbox. Choices are saved in `private/launcher.json`, and **Play**
+  starts `RunGame.cmd`, which still runs with the defaults on its own. On first
+  run the launcher picks the largest preset that fits your display.
+- **Render scale, MSAA and SMAA** (#44). `RECOMP_D3D_SCALE` (1–8) multiplies
+  the render height; `3` renders 2560x1440. Above 1, the window is borderless
+  and fills the screen height. `RECOMP_D3D_MSAA` sets the sample count and
+  falls back to the highest count your GPU supports. `RECOMP_D3D_SMAA=1` runs
+  SMAA on the finished frame. The package bundles the SMAA shader and lookup
+  tables (MIT, `third_party/smaa`). All three are off by default.
+- **16:9 presentation** (#38). The game renders true 16:9 into an 854x480
+  window by default. `RECOMP_D3D_WIDESCREEN=0` reports the dashboard's
+  Normal video setting, so the game renders 4:3 into a 640x480 window.
+- **Casino and hotel gift tapes** (#40). Blackjack, Poker and Slots no longer
+  stop at missing or split functions, and playing a gift tape in the hotel no
+  longer stops the game. The recipe grows from 45 to 61 recovery inputs.
+- **App icon** (#48). When `private/doaxbv.ico` is present, setup embeds it in
+  the runner for the title bar and taskbar. The package ships the icon.
+- **Frame pacing report** (#53). With `RECOMP_PERF_COUNTER=1` (the launcher
+  default), the once-a-second performance line adds the worst frame gap, late
+  frames and the slowest present. A `recomp pacing:` line shows whether the
+  game thread or the render thread was slow.
 
-### Fixed
+### Fixed: gameplay and generated code
 
-- Lifter fixes for cross-block carries and loops. These correct locked,
-  gliding character animation, a broken island texture, wrong ball colors
-  and the Hotel option that opened the pool scene.
-- Shop and menu sound effects no longer go silent after fast purchases
-  (DirectSound `StopEx`).
-- Retail shop vertex streams, texture address modes, culling and two
-  vertex-program draw paths.
-- Cached textures rebuild when their texels change.
+- **Lifter carry and loop fixes** (#40, #50). Compare and test instructions now
+  set the carry flag when the next flag reader is ADC or SBB, including a
+  reader in another block; before, every such pair read a stale carry. This
+  affected 40 generated functions across game, D3D, DirectSound, WMA decoder
+  and controller code, and two sort comparators that sorted wrongly. LOOP,
+  LOOPE and LOOPNE now decrement ECX and branch on it; their back edge used to
+  read a flag value that was never set. A jump table whose first slot is
+  unusable is now read from its second slot.
+- **Shop and menu sound effects** (#51). Buying items quickly in a shop no
+  longer silences shop and menu sound effects until you leave the scene. The
+  game stops looping sounds with DirectSound `StopEx`, which the audio adapter
+  did not handle, so short shop loops kept "playing" and filled the voice pool.
+
+### Fixed: rendering
+
+- **Casino rendering** (#39). The Poker and Blackjack double-up prompt no
+  longer flashes solid white, Zack's icon draws once instead of twice, and
+  Poker cards show their faces. The fixes cover supersampled back buffers,
+  texture clamp and wrap modes, and back-face culling.
+- **Retail shop meshes** (#41). Some shop models use vertex streams shorter than
+  their declared layout. They were skipped; they now draw, including their
+  reflection material.
+- **Item previews** (#49). Each ball in View items now shows its own colors.
+  The texture cache served the first ball's texture because the viewer refills
+  one buffer without freeing it. Cached textures now rebuild when their
+  contents change.
+- **Two vertex-program defects** (#37). A texture could be freed while still
+  bound during alpha-mask draws, which could crash with heap corruption. A
+  paired instruction could also corrupt a shader register and shade with the
+  wrong color.
+- Depth buffers at the main render size no longer count against the render
+  target budget (#44).
+
+### Fixed: audio
+
+- **Crackle and dropouts** (#42). A dedicated high-priority thread now feeds
+  audio output instead of the game thread, so game stalls, loading and window
+  dragging no longer starve it. Each voice starts behind 50 ms of silence, and
+  a small pitch trim (at most 1%) holds that cushion against XAudio2's rate
+  drift. On the same route, dropped buffers fell from 50 to 0 and underruns
+  from 352 to 0.
+
+### Fixed: saves
+
+- **Faster, safer save journal** (#52). A save now writes one undo file of
+  the pre-save data; deleting it commits the save. This cuts a save's file
+  work on the game thread from about 48 ms to about 2.5 ms. An undo file cut
+  short by an interruption is discarded, since it never allowed the game to
+  write. Recovery validates the undo image and the live save data before it
+  restores anything, keeps a malformed undo image for inspection instead of
+  deleting it, rejects absolute paths, and compares file names the way
+  Windows does.
 
 ### Performance
 
-- The D3D11 presenter renders on its own thread.
-- The game and render threads run at high priority, and vblank waits use a
-  high-resolution timer.
-- Saves keep one undo file (about 2.5 ms instead of 48 ms), stderr is
-  buffered, and textures are no longer rebuilt every frame.
+- **Menus and maps at 60 FPS** (#43). The texture cache grew from 256 to 4096
+  entries. Menu and map screens sample about 300 textures a frame, so the old
+  cache rebuilt every texture every frame. Two per-draw system calls were also
+  removed. Menu and map screens went from a median of 54 FPS to 60, and a Niki
+  Beach match from 24 seconds below 55 FPS to 1.
+- **Render thread** (#46). D3D11 rendering runs on its own thread. Vertex and
+  index uploads use a ring buffer, and common shaders compile at boot. Loading
+  the island map no longer drops to 4–5 FPS, and first use of a scene no
+  longer hitches while its shaders compile.
+- **Game-thread stalls** (#52). The game and render threads run at high
+  priority; a busy machine had dropped matches to 12–18 FPS. Vblank waits use a
+  high-resolution timer, so 99% of waits overshoot by at most 0.1 ms instead of
+  1.9 ms. The renderer no longer zero-fills every capture packet, and error
+  output is buffered and flushed every 250 ms instead of written one character
+  at a time.
+- **Guest memory** (#45). Plain RAM reads and writes, the hottest calls in the
+  generated code, take an inline fast path. Process CPU during a match fell
+  from about 750 to 620–710 ms per second.
 
 ### Known issues
 
@@ -42,14 +120,24 @@ carrying into a new vacation. Formal offline acceptance continues in #16.
   loading (#54).
 - An upside-down map briefly flashes when leaving the pool area (#55).
 - Some underwater beach textures may be missing (#56).
+- Boot movies still run near their 30 FPS source rate, and loading can still
+  pause for up to about a second.
 
 ### Release and setup
 
-- Setup regenerates the game program byte for byte to match the
-  play-tested local program, and builds an x64 Release runner with
-  Visual Studio 2022 Build Tools.
+- Setup builds the lifter from the `codex/doaxbv-recipe` branch of
+  `NoRain211/xboxrecomp` (#50) and fails unless the submodule is a clean
+  checkout of `LIFTER_REVISION`. The earlier build-time patch against upstream
+  is gone. `tools/update_lifter_pin.py` moves the pin and updates the recipe.
+- Setup regenerates the game program byte for byte to match the play-tested
+  local program, and builds an x64 Release runner with Visual Studio 2022
+  Build Tools.
+- A save journal left by an interrupted save in 0.35 or earlier stops startup.
+  Run that older build once to finish its recovery, then start 0.4.
 - Download and build in a new folder. Keep your previous install and saves;
   saves are not imported automatically.
+- The README and status pages were rewritten, and the status now labels the
+  game fully playable (#47, #59).
 
 ## 0.3.51 Alpha — 2026-09-17
 
