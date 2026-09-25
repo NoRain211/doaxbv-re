@@ -35,9 +35,9 @@ static void watch_init(void);
 static void update_fast_ram(void);
 
 enum {
-    XBOX_RAM_SIZE = 0x04000000u,
-    XBOX_CACHED_ALIAS = 0x80000000u,
-    XBOX_PHYSICAL_ALIAS = 0xf0000000u,
+    XBOX_RAM_SIZE = RECOMP_XBOX_RAM_SIZE,
+    XBOX_CACHED_ALIAS = RECOMP_XBOX_CACHED_ALIAS,
+    XBOX_PHYSICAL_ALIAS = RECOMP_XBOX_PHYSICAL_ALIAS,
     USB0_OHCI_BASE = 0xfed00000u,
 };
 

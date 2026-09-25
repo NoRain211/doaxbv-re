@@ -640,8 +640,10 @@ static int run_direct_ram_windows(uint8_t *ram)
 
     recomp_runtime_init(&region, 1u, NULL, 0u, NULL, 0u);
 
-    /* The u32 checks below must exercise the inline RAM path. */
-    if (recomp_fast_ram != ram) {
+    /* The u32 checks below must exercise the inline RAM path, which a
+       RECOMP_WATCH debug session deliberately disables. */
+    const char *watch = getenv("RECOMP_WATCH");
+    if ((watch == NULL || watch[0] == '\0') && recomp_fast_ram != ram) {
         fprintf(stderr, "direct RAM: inline fast path not armed\n");
         passed = 0;
     }

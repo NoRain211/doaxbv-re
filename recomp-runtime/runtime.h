@@ -103,6 +103,10 @@ void recomp_runtime_set_lookup(RecompFunctionLookup lookup);
 /* Resolve a complete guest span through the normal checked memory path. */
 uint8_t *recomp_memory(uint32_t guest_address, size_t width);
 uint32_t *recomp_memory_u32_checked(uint32_t guest_address);
+/* Guest RAM and the two windows that alias it. */
+#define RECOMP_XBOX_RAM_SIZE 0x04000000u
+#define RECOMP_XBOX_CACHED_ALIAS 0x80000000u
+#define RECOMP_XBOX_PHYSICAL_ALIAS 0xf0000000u
 /* Guest RAM while plain accesses need no watch, access log or pending device
    write; NULL otherwise. Owned by runtime.c. */
 extern uint8_t *recomp_fast_ram;
@@ -110,11 +114,12 @@ extern uint8_t *recomp_fast_ram;
    everything else, including the RAM end boundary, through the checked path. */
 static inline uint32_t *recomp_memory_u32(uint32_t guest_address)
 {
-    const uint32_t window = guest_address & 0xfc000000u;
-    const uint32_t offset = guest_address & 0x03ffffffu;
+    const uint32_t window = guest_address & ~(RECOMP_XBOX_RAM_SIZE - 1u);
+    const uint32_t offset = guest_address & (RECOMP_XBOX_RAM_SIZE - 1u);
 
-    if (recomp_fast_ram != NULL && offset <= 0x04000000u - sizeof(uint32_t) &&
-        (window == 0u || window == 0x80000000u || window == 0xf0000000u)) {
+    if (recomp_fast_ram != NULL && offset <= RECOMP_XBOX_RAM_SIZE - sizeof(uint32_t) &&
+        (window == 0u || window == RECOMP_XBOX_CACHED_ALIAS ||
+         window == RECOMP_XBOX_PHYSICAL_ALIAS)) {
         return (uint32_t *)(void *)(recomp_fast_ram + offset);
     }
     return recomp_memory_u32_checked(guest_address);
