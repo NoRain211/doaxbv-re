@@ -233,13 +233,23 @@ void set_times(const Node &node)
 #endif
 }
 
+/* A name as the filesystem compares it: Windows ignores case and separator style. */
+fs::path::string_type name_key(const fs::path &path)
+{
+    auto key = path.lexically_normal().native();
+#ifdef _WIN32
+    if (!key.empty()) CharUpperBuffW(key.data(), static_cast<DWORD>(key.size()));
+#endif
+    return key;
+}
+
 /* Parse the whole image before touching live data. A restart during removal
    or rewriting repeats this from the same image. */
 void restore(std::string_view image)
 {
     Reader in{image};
     std::vector<Node> nodes;
-    std::set<fs::path> seen, directories;
+    std::set<fs::path::string_type> seen, directories;
     while (in.at != image.size()) {
         Node node{};
         const char kind = in.take(1)[0];
@@ -257,9 +267,10 @@ void restore(std::string_view image)
                               : !relative.empty() && !relative.has_root_path());
         for (const auto &part : relative) require(part != ".." && part != ".");
         /* Each name once, after its parent directory, so rebuilding cannot fail midway. */
-        require(nodes.empty() || directories.count(relative.parent_path()) != 0);
-        require(seen.insert(relative).second);
-        if (node.directory) directories.insert(relative);
+        const auto key = name_key(relative);
+        require(nodes.empty() || directories.count(name_key(relative.parent_path())) != 0);
+        require(seen.insert(key).second);
+        if (node.directory) directories.insert(key);
         node.path = nodes.empty() ? live : live / relative;
         if (!node.directory) node.data = in.take(in.number());
         nodes.push_back(node);
