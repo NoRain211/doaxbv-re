@@ -25,7 +25,7 @@ python "%~dp0tools\build_game.py" --iso "%~f1"
 :done
 set "result=%errorlevel%"
 echo.
-if "%result%"=="0" echo Build complete. Double-click RunGame.cmd, or drop the printed build receipt onto it.
+if "%result%"=="0" echo Build complete. Double-click Launcher.cmd, or drop the printed build receipt onto RunGame.cmd.
 pause
 exit /b %result%
 :usage
