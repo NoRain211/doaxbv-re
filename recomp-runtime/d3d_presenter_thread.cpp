@@ -201,6 +201,9 @@ RecompD3dPresenterError recomp_d3d_presenter_create(
         thread->wake = CreateEventW(nullptr, FALSE, FALSE, nullptr);
         if (thread->wake == nullptr) return RECOMP_D3D_PRESENTER_HOST_FAILURE;
         thread->worker = std::thread(run, std::ref(*thread), *config);
+        // Runs on the game thread. Busy Normal-priority desktop apps left it ready but unscheduled for 20-50 ms.
+        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+        SetThreadPriority(thread->worker.native_handle(), THREAD_PRIORITY_HIGHEST);
     } catch (const std::bad_alloc &) {
         return RECOMP_D3D_PRESENTER_OUT_OF_MEMORY;
     } catch (const std::system_error &) {
