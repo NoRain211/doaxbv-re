@@ -258,7 +258,11 @@ RecompD3dPresenterError recomp_d3d_presenter_destroy(RecompD3dPresenter **presen
     }
     SetEvent(thread.wake);
     thread.worker.join();
-    const auto destroyed = thread.destroyed;
+    // A close already reached the owner through PRESENT; report other pending work errors.
+    const auto pending = thread.status == RECOMP_D3D_PRESENTER_CLOSED
+        ? RECOMP_D3D_PRESENTER_OK : thread.status;
+    const auto destroyed = thread.destroyed != RECOMP_D3D_PRESENTER_OK
+        ? thread.destroyed : pending;
     delete active_thread;
     active_thread = nullptr;
     *presenter = nullptr;

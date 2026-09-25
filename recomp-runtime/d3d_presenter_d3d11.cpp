@@ -1244,18 +1244,22 @@ void precompileDrawShaders(const std::atomic<bool> *stop)
     const ULONGLONG start = GetTickCount64();
     static const DrawPipeline no_program{};
     uint32_t compiled = 0u;
-    for (const uint32_t fvf : kBootDrawFvfs) {
-        RecompD3dVertexLayout layout;
-        std::string source;
-        if (!drawShaderSource(fvf, no_program, layout, source)) continue;
-        for (const char *stage : {"vs", "ps"}) {
-            if (stop->load()) return;
-            ID3DBlob *blob = nullptr;
-            const bool vertex = stage[0] == 'v';
-            compiled += compileDrawShader(source.c_str(), vertex ? "vs_main" : "ps_main",
-                vertex ? "vs_4_0" : "ps_4_0", &blob);
-            releaseCom(blob);
+    try {
+        for (const uint32_t fvf : kBootDrawFvfs) {
+            RecompD3dVertexLayout layout;
+            std::string source;
+            if (!drawShaderSource(fvf, no_program, layout, source)) continue;
+            for (const char *stage : {"vs", "ps"}) {
+                if (stop->load()) return;
+                ID3DBlob *blob = nullptr;
+                const bool vertex = stage[0] == 'v';
+                compiled += compileDrawShader(source.c_str(), vertex ? "vs_main" : "ps_main",
+                    vertex ? "vs_4_0" : "ps_4_0", &blob);
+                releaseCom(blob);
+            }
         }
+    } catch (const std::exception &) {
+        return;  // Remaining shaders compile on first use.
     }
     std::fprintf(stderr, "recomp d3d presenter: precompiled %u draw shaders in %llu ms\n",
         compiled, static_cast<unsigned long long>(GetTickCount64() - start));
