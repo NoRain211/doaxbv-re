@@ -892,7 +892,9 @@ RecompD3dPresenterError lookupDepthTarget(
             return RECOMP_D3D_PRESENTER_OK;
         }
     }
-    const uint64_t bytes = static_cast<uint64_t>(host_width) * host_height * 4u * samples;
+    // Like the main color target, a main-sized depth is outside the offscreen budget.
+    const uint64_t bytes = host_main
+        ? 0u : static_cast<uint64_t>(host_width) * host_height * 4u * samples;
     if (bytes > kTargetByteLimit - presenter->target_bytes) {
         std::fprintf(stderr, "recomp d3d presenter: target memory budget exhausted\n");
         return RECOMP_D3D_PRESENTER_OUT_OF_MEMORY;
