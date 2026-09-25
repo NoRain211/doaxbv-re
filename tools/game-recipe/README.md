@@ -1,6 +1,6 @@
 # Current local generation recipe
 
-`recipe.json` authenticates the lifter patch and every generation input. The
+`recipe.json` pins the lifter revision and authenticates every generation input. The
 builder checks this recipe hash before using it and checks every generated
 file against the current proven local program before compilation.
 
@@ -20,11 +20,15 @@ The hotel input, last in the list, extends two callbacks, 0xD8160 and 0xDE700,
 to their final return. The lifter ended 0xDE700 at 0xDE7B8, which stopped the
 game when a gift tape was played.
 
-The lifter patch's casino flag corrections also change 40 generated functions
+The lifter's casino flag corrections also change 40 generated functions
 outside the recovery ranges, including D3D, DirectSound, WMA decoder, and XPP
 controller code. All four casino games were played before the hotel input,
 which changes only those two bodies, and gift tapes play with it. Volleyball,
 the pool, Radio music, and save and load still need local retesting.
+
+The cross-block carry correction changes 17 generated functions and adds only
+carry writes. Two are the island map's name comparators (0xF2160, 0xF2250),
+which never returned "less" and so sorted wrongly and slowly.
 
 The Radio recovery input restores the input-history owner and the reached Radio
 Station callback. These bodies match the locally tested program;
@@ -45,12 +49,21 @@ python -m pip install capstone==5.0.9
 python -m unittest discover -s tools -p 'test_*.py'
 ```
 
-The source base is upstream `32da23872a552b12b4a932c9d5a6e952bb3f24bb`.
-Apply `local-parity.patch` directly to that clean revision. Do not first apply
-`runtime-bootstrap.patch`. The patch reconstructs the preserved working local
-lifter, including the explicit x87 destination correction used by camera
-calculations; it is not an upgrade to the latest upstream release.
+The lifter is the `tools/xboxrecomp` submodule at fork revision
+`6255fd6a35ea73fbad3d0685672438f6906e4837` (branch `codex/doaxbv-recipe`): upstream
+`32da23872a552b12b4a932c9d5a6e952bb3f24bb` plus the preserved working local lifter,
+including the explicit x87 destination correction used by camera
+calculations, the cross-block carry fix, the jump-table slot-one retry and the
+LOOP/LOOPE/LOOPNE lift. It is not an upgrade to the latest upstream release:
+the fork's `main` follows upstream, and pinning it froze player movement
+animation, broke an island map texture and sent the hotel to the pool scene.
 
 Changing the recipe requires regenerating from the supported user-owned XBE,
 reviewing output differences, and validating the affected player-visible flows.
 Do not update expected hashes merely to make a mismatched build pass.
+
+`tools/update_lifter_pin.py --imported private/<import>` does the mechanical
+part: it proves the current pin still reproduces the recipe, checks out the
+target revision (default: the fork's `codex/doaxbv-recipe`), regenerates, rewrites the recipe,
+`build_game.py` and `public-export.json` identities, stages the submodule and
+writes `changed-functions.txt` beside the new program. It does not commit.

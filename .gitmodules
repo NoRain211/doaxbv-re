@@ -1,6 +1,6 @@
 [submodule "tools/xboxrecomp"]
 	path = tools/xboxrecomp
-	url = https://github.com/sp00nznet/xboxrecomp.git
+	url = https://github.com/NoRain211/xboxrecomp.git
 
 [submodule "third_party/rbengine"]
 	path = third_party/rbengine

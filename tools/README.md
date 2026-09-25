@@ -11,8 +11,9 @@ git submodule update --init --recursive
 
 Use its supported XBE parsing, disassembly, function-identification, and
 recompilation entry points. Keep every user-owned input and all generated
-output under ignored local directories. General lifter fixes belong upstream;
-do not commit a game-specific fork here.
+output under ignored local directories. `build_game.py` generates from this
+submodule and requires it to be clean at the recipe revision. Lifter changes are
+commits in NoRain211/xboxrecomp; general fixes also belong upstream.
 
 The upstream repository also contains experimental runtime code. That code is
 not part of this port's architecture: the tracked runtime remains

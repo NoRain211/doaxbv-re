@@ -3,10 +3,13 @@
 ## Build a local runner from a user-owned ISO
 
 The current `tools/build_game.py` workflow extracts a supported user-owned ISO,
-checks its XBE, applies `tools/xboxrecomp-patches/local-parity.patch` to revision
-`32da23872a552b12b4a932c9d5a6e952bb3f24bb`, generates the game program, and
+checks its XBE, generates the game program with the `tools/xboxrecomp` submodule
+at the fork revision named by `lifter_revision` in the recipe, and
 builds an x64 Release runner. The authenticated `tools/game-recipe/recipe.json`
-provides the original function boundaries, 45 ordered recovery inputs, manual
+provides the lifter revision; setup initializes the submodule when needed (a
+release ZIP clones it from NoRain211/xboxrecomp) and stops if it is modified or
+checked out at another revision. The recipe also
+provides the original function boundaries, 61 ordered recovery inputs, manual
 call targets, and expected generated-file hashes. Setup stops before compiling
 if any recipe input or generated file differs. It creates a new `private/setup-*` directory for
 each attempt. The receipt, logs, generated program, and runner stay there.
@@ -70,9 +73,9 @@ records a build. A supervised native run provides the behavior evidence.
 
 The recipe retains the tested local program and adds the bounded activity
 callback and Rest predicate recoveries. Its 19-file manifest is
-`607dcab6311e4d6dcc62a064ff49be1755963f6438fc33c480f2786b085a1aac`.
+`program_manifest_sha256` in the recipe.
 All 20 generated files, including unresolved stubs, are checked individually.
-The receipt records the recipe, patch, generated manifest, XBE, and runner
+The receipt records the recipe, lifter revision, generated manifest, XBE, and runner
 identities. A matching generated program does not imply an identical executable:
 hand-written runtime changes and compiler inputs also affect the build.
 
@@ -158,7 +161,7 @@ exactly one XBE, and the recorded XBE SHA-256 before launch. It does not
 revalidate every extracted file. It writes the run log under `private/`, uses
 VSync, and sets the default audio gain to 0.2. FPS and frame time appear in the
 window title; one-second performance samples are included in the log. Set
-`RECOMP_PERF_COUNTER=0` to disable this counter. No continuous capture is enabled. Recipe, lifter patch, generated
+`RECOMP_PERF_COUNTER=0` to disable this counter. No continuous capture is enabled. Recipe, lifter revision, generated
 manifest, and generation-parity identities are included in each run log when
 the build receipt provides them.
 

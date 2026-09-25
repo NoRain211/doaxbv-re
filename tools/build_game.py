@@ -14,8 +14,10 @@ import uuid
 from extract_iso import extract, run_logged, sha256
 
 ROOT = Path(__file__).resolve().parents[1]
-LIFTER_REVISION = "32da23872a552b12b4a932c9d5a6e952bb3f24bb"
-RECIPE_SHA256 = "b3a0beab2d56c0e71cf2d7ea489d5490a1f4049d35ad746ed4a99e0add40df2d"
+LIFTER = ROOT / "tools/xboxrecomp"
+LIFTER_REPOSITORY = "https://github.com/NoRain211/xboxrecomp.git"
+LIFTER_REVISION = "6255fd6a35ea73fbad3d0685672438f6906e4837"
+RECIPE_SHA256 = "a42f8f76c2ec60fe48d1a5f8d2363757c463799c8656f0c64eafcf5838deb8c6"
 SUPPORTED_XBE_SHA256 = "053d44e885fa33c1d15d909a533f39dfbd976e97eeaf67e4fdef8438ea7e5c54"
 
 
@@ -42,11 +44,32 @@ def verify_files(root, expected):
             raise ValueError(f"Build parity check failed: {name}")
 
 
-def build(args):
-    verify_files(ROOT, {"tools/game-recipe/recipe.json": RECIPE_SHA256})
+def prepare_lifter(work, revision=None):
+    """Generate from tools/xboxrecomp, fetching it at the recipe revision when absent."""
+    revision = revision or LIFTER_REVISION
+    if (ROOT / ".git").exists():
+        # Older checkouts may still point the submodule at the upstream URL.
+        command(["git", "submodule", "sync", "--", "tools/xboxrecomp"], ROOT, work / "sync.log")
+    if not (LIFTER / ".git").exists():
+        if (ROOT / ".git").exists():
+            command(["git", "submodule", "update", "--init", "tools/xboxrecomp"], ROOT, work / "lifter.log")
+        else:  # A release ZIP carries no repository metadata.
+            command(["git", "clone", "--no-checkout", "--filter=blob:none", LIFTER_REPOSITORY, LIFTER],
+                    ROOT, work / "lifter.log")
+            command(["git", "checkout", "--detach", revision], LIFTER, work / "checkout.log")
+    head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=LIFTER, text=True).strip()
+    dirty = subprocess.check_output(["git", "status", "--porcelain"], cwd=LIFTER, text=True).strip()
+    if head != revision or dirty:
+        raise ValueError(f"tools/xboxrecomp must be a clean checkout of {revision}; "
+                         "run: git submodule sync tools/xboxrecomp, then git submodule update tools/xboxrecomp")
+
+
+def build(args, verify_parity=True, lifter_revision=None):
+    if verify_parity:
+        verify_files(ROOT, {"tools/game-recipe/recipe.json": RECIPE_SHA256})
     recipe = json.loads((ROOT / "tools/game-recipe/recipe.json").read_text(encoding="utf-8"))
     verify_files(ROOT, recipe["files"])
-    if recipe["lifter_revision"] != LIFTER_REVISION:
+    if verify_parity and recipe["lifter_revision"] != LIFTER_REVISION:
         raise ValueError("Build recipe and lifter revision differ")
     for tool in (("git",) if args.generate_only else ("git", "cmake")):
         if shutil.which(tool) is None:
@@ -64,7 +87,7 @@ def build(args):
     work = ROOT / "private" / ("setup-" + uuid.uuid4().hex[:12])
     work.mkdir(parents=True)
     receipt = {"status": "in-progress", "work": str(work),
-               "lifter_revision": LIFTER_REVISION, "recipe_sha256": RECIPE_SHA256}
+               "lifter_revision": lifter_revision or LIFTER_REVISION, "recipe_sha256": RECIPE_SHA256}
     receipt_path = work / "build-receipt.json"
     try:
         if args.imported:
@@ -88,14 +111,7 @@ def build(args):
         xbe = images[0]
         receipt.update(iso_sha256=imported_receipt["iso_sha256"],
                        xbe_sha256=SUPPORTED_XBE_SHA256, disc=str(disc))
-        lifter = work / "lifter"
-        command(["git", "clone", "--no-checkout", "--filter=blob:none",
-                 "https://github.com/sp00nznet/xboxrecomp.git", lifter], ROOT, work / "clone.log")
-        command(["git", "checkout", "--detach", LIFTER_REVISION], lifter, work / "checkout.log")
-        patch = ROOT / recipe["patch"]
-        receipt["lifter_patch_sha256"] = sha256(patch)
-        command(["git", "apply", "--check", patch], lifter, work / "patch-check.log")
-        command(["git", "apply", patch], lifter, work / "patch.log")
+        prepare_lifter(work, lifter_revision)
         # Reuse the proven function boundaries and ordered recoveries, not fresh discovery.
         functions = work / "functions.json"
         functions.write_text(json.dumps([
@@ -111,7 +127,7 @@ def build(args):
                  "--manual-call-targets", targets, "--manual-call-targets-sha256", sha256(targets)]
         for recovery in recipe["recoveries"]:
             generate.extend(["--recover-functions", ROOT / recovery])
-        command(generate, lifter, work / "generate.log")
+        command(generate, LIFTER, work / "generate.log")
         summary = json.loads((metadata / "summary.json").read_text(encoding="utf-8"))
         if summary["failed"] or summary["total"] != summary["translated"]:
             raise ValueError("Generation failed; see generate.log")
@@ -124,12 +140,13 @@ def build(args):
               "The runner will stop if it reaches an unresolved target.", flush=True)
         manifest, ebp = program_manifest(generated)
         receipt.update(program_manifest_sha256=manifest, ebp_overrides=ebp)
-        verify_files(generated, recipe["generated_files"])
-        if ({p.name for p in generated.iterdir() if p.is_file()} != set(recipe["generated_files"])
-                or manifest != recipe["program_manifest_sha256"] or ebp != recipe["ebp_overrides"]):
-            raise ValueError("Generated program differs from the proven local recipe")
-        receipt["generation_parity"] = "exact-local-match"
-        print("Generated game code matches the original local build byte-for-byte.", flush=True)
+        if verify_parity:
+            verify_files(generated, recipe["generated_files"])
+            if ({p.name for p in generated.iterdir() if p.is_file()} != set(recipe["generated_files"])
+                    or manifest != recipe["program_manifest_sha256"] or ebp != recipe["ebp_overrides"]):
+                raise ValueError("Generated program differs from the proven local recipe")
+            receipt["generation_parity"] = "exact-local-match"
+            print("Generated game code matches the original local build byte-for-byte.", flush=True)
         if args.generate_only:
             receipt["status"] = "generated-unverified"
             return work

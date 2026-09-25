@@ -70,8 +70,10 @@ falsifiable mechanism, and test the smallest safe change.
 - XDK or NV2A semantics: consult public Cxbx, nxdk, or public headers, then
   implement independently.
 
-Do not vendor game-specific `xboxrecomp` forks or generated output into this
-repository. General lifter fixes belong in focused upstream pull requests.
+Do not vendor `xboxrecomp` source or generated output into this repository.
+Lifter fixes are commits on the `codex/doaxbv-recipe` branch of
+`NoRain211/xboxrecomp`; move the submodule, `LIFTER_REVISION` and the recipe
+together. Offer general fixes upstream as focused pull requests.
 
 ## Agent skills
 
