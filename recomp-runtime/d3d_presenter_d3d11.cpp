@@ -1776,15 +1776,16 @@ ID3D11ShaderResourceView *lookupTexture(
         return nullptr;
     }
     const auto cached = presenter->texture_index.equal_range(desc.data);
-    const uint64_t fingerprint = linear_bgra ? 0u
-        : textureFingerprint(draw.texture_bytes, draw.texture_byte_count);
+    const bool fingerprinted = !linear_bgra && draw.texture_bytes != nullptr;
+    const uint64_t fingerprint = fingerprinted
+        ? textureFingerprint(draw.texture_bytes, draw.texture_byte_count) : 0u;
     for (auto it = cached.first; it != cached.second; ++it) {
         TextureEntry &entry = presenter->textures[it->second];
 
         if (entry.format_byte == desc.format_byte &&
             entry.width == desc.width && entry.height == desc.height && entry.mip_levels == levels &&
             (!palettized || std::memcmp(entry.palette, draw.palette_bytes, kPaletteBytes) == 0)) {
-            if (!linear_bgra && entry.fingerprint != fingerprint) {
+            if (fingerprinted && entry.fingerprint != fingerprint) {
                 static unsigned reported;
                 if (reported < 32u) {
                     ++reported;
