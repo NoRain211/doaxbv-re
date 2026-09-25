@@ -118,6 +118,7 @@ void execute(PresenterThread &thread, RecompD3dPresenter *backend,
 
 void run(PresenterThread &thread, RecompD3dPresenterConfig config)
 {
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
     RecompD3dPresenter *backend = nullptr;
     RecompD3dPresenterError created;
     try {

@@ -86,8 +86,7 @@ def run(runner, image, root, receipt_path=None):
         log.flush()
         result = subprocess.run([str(runner), "--xbe", str(image), "--vsync"],
                                 cwd=image.parent, env=env, stdout=log,
-                                stderr=subprocess.STDOUT,
-                                creationflags=getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0))
+                                stderr=subprocess.STDOUT)
     print(f"Runner exited with code {result.returncode}. See {log_path}")
     return result.returncode
 

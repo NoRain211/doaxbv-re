@@ -1,6 +1,24 @@
 #include "host_diagnostics.h"
 
+#include <chrono>
 #include <cstdio>
+#include <thread>
+
+namespace {
+/* Unbuffered ucrt stderr issues one WriteFile per character when redirected,
+   which stalled frames. Crash reporters and recomp_stop flush explicitly;
+   the flusher bounds what a hang or hard kill can lose. */
+void bufferStderr()
+{
+    setvbuf(stderr, nullptr, _IOFBF, 1 << 16);
+    std::thread([] {
+        for (;;) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+            std::fflush(stderr);
+        }
+    }).detach();
+}
+}
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -156,6 +174,7 @@ int __cdecl reportRuntimeCheck(
         line,
         module != nullptr ? module : L"<unknown>",
         message);
+    std::fflush(stderr);
     reportGeneratedFrames();
     std::fprintf(
         stderr,
@@ -172,9 +191,7 @@ int __cdecl reportRuntimeCheck(
 
 void recomp_install_host_diagnostics(void)
 {
-    /* A hard crash discards buffered output, which loses exactly the lines
-       that say how far execution got. */
-    setvbuf(stderr, nullptr, _IONBF, 0);
+    bufferStderr();
 #ifdef _WIN32
     SetUnhandledExceptionFilter(reportUnhandledException);
 #endif
@@ -195,7 +212,7 @@ void recomp_install_host_diagnostics(void)
 
 void recomp_install_host_diagnostics(void)
 {
-    setvbuf(stderr, nullptr, _IONBF, 0);
+    bufferStderr();
 #ifdef _WIN32
     SetUnhandledExceptionFilter(reportUnhandledException);
 #endif

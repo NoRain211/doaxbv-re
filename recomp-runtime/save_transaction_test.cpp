@@ -18,7 +18,7 @@
 namespace fs = std::filesystem;
 
 #ifdef _WIN32
-static DWORD WINAPI release_rename_blocker(void *handle)
+static DWORD WINAPI release_delete_blocker(void *handle)
 {
     Sleep(100);
     return CloseHandle(static_cast<HANDLE>(handle)) ? 0 : 1;
@@ -78,7 +78,7 @@ int main()
     fs::create_directory(live / "empty");
     assert(recomp_save_end(7, true));
     assert(get(payload) == "first complete save");
-    assert(!fs::exists(journal / "pending"));
+    assert(!fs::exists(journal / "undo"));
 
     assert(recomp_save_begin(7));
     assert(!recomp_save_begin(9));
@@ -98,7 +98,7 @@ int main()
 
     assert(recomp_save_begin(7));
     put(payload, "interrupted operation");
-    assert(fs::is_directory(journal / "pending"));
+    assert(fs::is_regular_file(journal / "undo"));
 #ifdef _WIN32
     assert(!recomp_save_initialize(nullptr));
     competing = CreateFileW((journal / "lock").c_str(),
@@ -107,7 +107,7 @@ int main()
     assert(competing != INVALID_HANDLE_VALUE);
     assert(!recomp_save_initialize(root_name.c_str()));
     assert(get(payload) == "interrupted operation");
-    assert(fs::is_directory(journal / "pending"));
+    assert(fs::is_regular_file(journal / "undo"));
     assert(CloseHandle(competing) != 0);
 #endif
     /* Reinitialization models a fresh process: volatile ownership is lost. */
@@ -129,7 +129,7 @@ int main()
         OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     assert(locked != INVALID_HANDLE_VALUE);
     assert(!recomp_save_initialize(root_name.c_str()));
-    assert(fs::is_directory(journal / "pending" / "backup"));
+    assert(fs::is_regular_file(journal / "undo"));
     assert(!recomp_save_begin(7));
     assert(CloseHandle(locked) != 0);
     assert(recomp_save_initialize(root_name.c_str()));
@@ -138,23 +138,37 @@ int main()
 
     assert(recomp_save_begin(7));
     put(payload, "committed generation");
-    /* The atomic rename is the commit point; cleanup may be interrupted. */
-    fs::rename(journal / "pending", journal / "committed");
-    fs::remove(journal / "committed" / "present");
+    /* Deleting the undo image is the commit point. */
+    fs::remove(journal / "undo");
     assert(recomp_save_initialize(root_name.c_str()));
     assert(get(payload) == "committed generation");
 
-    fs::create_directory(journal / "staging");
-    put(journal / "staging" / "present", "");
-    put(journal / "staging" / "backup" / "partial", "incomplete backup");
+    /* An image cut short never reached live data and is discarded. */
+    assert(recomp_save_begin(7));
+    const std::string image = get(journal / "undo");
+    assert(recomp_save_end(7, true));
+    put(payload, "newer than the image");
+    put(journal / "undo", image.substr(0, image.size() - 1));
     assert(recomp_save_initialize(root_name.c_str()));
-    assert(get(payload) == "committed generation");
-    assert(!fs::exists(journal / "staging"));
+    assert(get(payload) == "newer than the image");
+    assert(!fs::exists(journal / "undo"));
+
+    /* An image longer than its recorded size is malformed and kept. */
+    put(journal / "undo", image + "x");
+    assert(!recomp_save_initialize(root_name.c_str()));
+    assert(get(payload) == "newer than the image");
+    assert(fs::exists(journal / "undo"));
+    fs::remove(journal / "undo");
+
+    /* A directory record from the previous journal format fails closed. */
+    fs::create_directory(journal / "pending");
+    assert(!recomp_save_initialize(root_name.c_str()));
+    fs::remove(journal / "pending");
 
     put(journal / "unknown", "leave this alone");
     assert(!recomp_save_initialize(root_name.c_str()));
     assert(get(journal / "unknown") == "leave this alone");
-    assert(get(payload) == "committed generation");
+    assert(get(payload) == "newer than the image");
     fs::remove(journal / "unknown");
     assert(recomp_save_initialize(root_name.c_str()));
 
@@ -183,15 +197,14 @@ int main()
     assert(get(payload) == "last generation");
 #ifdef _WIN32
     assert(recomp_save_begin(7));
-    put(payload, "rename released");
-    HANDLE blocker = CreateFileW((journal / "pending" / "backup").c_str(),
+    put(payload, "delete released");
+    HANDLE blocker = CreateFileW((journal / "undo").c_str(),
         GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
-        OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     assert(blocker != INVALID_HANDLE_VALUE);
-    assert(!MoveFileExW((journal / "pending").c_str(),
-        (journal / "committed").c_str(), 0));
-    assert(GetLastError() == ERROR_ACCESS_DENIED);
-    HANDLE release = CreateThread(nullptr, 0, release_rename_blocker,
+    assert(!DeleteFileW((journal / "undo").c_str()));
+    assert(GetLastError() == ERROR_SHARING_VIOLATION);
+    HANDLE release = CreateThread(nullptr, 0, release_delete_blocker,
         blocker, 0, nullptr);
     assert(release != nullptr);
     assert(recomp_save_end(7, true));
@@ -199,25 +212,24 @@ int main()
     DWORD thread_status;
     assert(GetExitCodeThread(release, &thread_status) && thread_status == 0);
     assert(CloseHandle(release));
-    assert(get(payload) == "rename released");
-    assert(!fs::exists(journal / "pending"));
+    assert(get(payload) == "delete released");
+    assert(!fs::exists(journal / "undo"));
 
     assert(recomp_save_begin(7));
-    put(payload, "rename persistently blocked");
-    blocker = CreateFileW((journal / "pending" / "backup").c_str(),
+    put(payload, "delete persistently blocked");
+    blocker = CreateFileW((journal / "undo").c_str(),
         GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
-        OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     assert(blocker != INVALID_HANDLE_VALUE);
     DWORD before = GetTickCount();
     assert(!recomp_save_end(7, true));
     assert(GetTickCount() - before < 2000);
-    assert(fs::exists(journal / "pending"));
-    assert(!fs::exists(journal / "committed"));
+    assert(fs::exists(journal / "undo"));
     assert(!recomp_save_begin(7));
-    assert(get(payload) == "rename persistently blocked");
+    assert(get(payload) == "delete persistently blocked");
     assert(CloseHandle(blocker));
     assert(recomp_save_initialize(root_name.c_str()));
-    assert(get(payload) == "rename released");
+    assert(get(payload) == "delete released");
 #endif
     /* Release the lifetime lock before removing this disposable fixture. */
     assert(!recomp_save_initialize(nullptr));

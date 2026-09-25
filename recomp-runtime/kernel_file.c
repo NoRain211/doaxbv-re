@@ -406,6 +406,11 @@ static int create_directory_tree(const char *path)
         return 0;
     }
     memcpy(current, path, length + 1u);
+    DWORD existing = GetFileAttributesA(current);
+    if (existing != INVALID_FILE_ATTRIBUTES &&
+        (existing & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+        return 1;
+    }
 
     for (char *p = current + 3; *p != '\0'; ++p) {
         if (*p != '\\' && *p != '/') {
