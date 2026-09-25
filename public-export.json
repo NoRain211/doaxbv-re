@@ -43,6 +43,7 @@
     "tools/recomp-net-patches/rollback-seals.patch",
     "third_party/rbengine",
     "third_party/recomp-net",
+    "third_party/smaa",
     ".gitattributes",
     "BuildGame.cmd",
     "tools/build_game.py",
@@ -80,6 +81,11 @@
       "path": "third_party/recomp-net",
       "url": "https://github.com/NoRain211/recomp-net.git",
       "commit": "694e493460740ceb7f6e0171bad6ca484c57f631"
+    },
+    {
+      "path": "third_party/smaa",
+      "url": "https://github.com/iryoku/smaa.git",
+      "commit": "71c806a838bdd7d517df19192a20f0c61b3ca29d"
     }
   ],
   "forbidden_extensions": [

@@ -9,6 +9,20 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# Optional SMAA from the third_party/smaa submodule; without it RECOMP_D3D_SMAA
+# reports unavailable. The shader source is embedded as a byte list.
+set(_smaa_dir "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/smaa")
+if(EXISTS "${_smaa_dir}/SMAA.hlsl")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_smaa_dir}/SMAA.hlsl")
+    file(READ "${_smaa_dir}/SMAA.hlsl" _smaa_hex HEX)
+    string(REGEX REPLACE "(..)" "0x\\1," _smaa_hex "${_smaa_hex}")
+    file(CONFIGURE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/smaa_hlsl.inc" CONTENT "${_smaa_hex}")
+    # Only the presenter uses SMAA; scoping it keeps generated chunks untouched.
+    set_source_files_properties(d3d_presenter_d3d11.cpp d3d_presenter_d3d11_test.cpp
+        PROPERTIES COMPILE_DEFINITIONS RECOMP_SMAA
+        INCLUDE_DIRECTORIES "${CMAKE_CURRENT_BINARY_DIR};${_smaa_dir}/Textures")
+endif()
+
 set(RECOMP_FUNCTION_SOURCE "" CACHE FILEPATH
     "Authenticated generated function source to compile")
 set(RECOMP_FUNCTION_SHA256 "" CACHE STRING

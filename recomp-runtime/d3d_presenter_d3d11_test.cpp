@@ -1522,7 +1522,8 @@ static bool testWindowClose(RecompD3dPresenter *warp)
         passed = createWindow(&presenter);
         RECT client{};
         if (passed) passed = GetClientRect(presenter.window, &client) &&
-            client.right - client.left == static_cast<LONG>(presentClientWidth(&presenter)) &&
+            client.right - client.left ==
+                static_cast<LONG>(presentClientWidth(&presenter, presenter.config.height)) &&
             client.bottom - client.top == static_cast<LONG>(presenter.config.height);
         DXGI_SWAP_CHAIN_DESC desc{};
         desc.BufferDesc.Width = presenter.config.width;
@@ -1589,9 +1590,9 @@ static bool testWidescreenClientWidth()
     presenter.config.width = 720u;
     presenter.config.height = 480u;
     presenter.widescreen = true;
-    if (presentClientWidth(&presenter) != 854u) return false;
+    if (presentClientWidth(&presenter, 480u) != 854u) return false;
     presenter.widescreen = false;
-    return presentClientWidth(&presenter) == 640u;
+    return presentClientWidth(&presenter, 480u) == 640u;
 }
 
 static bool testTargetLifetimes(
