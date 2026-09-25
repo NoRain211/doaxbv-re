@@ -450,6 +450,11 @@ const char *importName(RecompImportKind kind)
 int main(int argc, char **argv)
 {
     recomp_install_host_diagnostics();
+#ifdef _WIN32
+    /* Every guest thread is a fiber on this one. At Normal priority, busy
+       desktop apps left it ready but unscheduled for 20-50 ms. */
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+#endif
 
     std::string xbePath;
     std::string expectStop;
