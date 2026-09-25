@@ -189,7 +189,7 @@ void notePacing(PresenterThread &thread, double wait_start_ms, double wait_end_m
     if (thread.last_frame_ms != 0.0) {
         thread.frame_max_ms = (std::max)(thread.frame_max_ms, wait_start_ms - thread.last_frame_ms);
     }
-    thread.last_frame_ms = wait_start_ms;
+    thread.last_frame_ms = wait_end_ms;
     thread.queue_wait_ms += wait_end_ms - wait_start_ms;
     const ULONGLONG now = GetTickCount64();
     if (thread.pacing_start == 0u) thread.pacing_start = now;

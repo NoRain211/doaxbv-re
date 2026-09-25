@@ -3049,7 +3049,7 @@ RecompD3dPresenterError submitPresent(
         return std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now().time_since_epoch()).count();
     };
-    const double present_start_ms = clock_ms();
+    const double present_start_ms = presenter->performance_counter ? clock_ms() : 0.0;
     const HRESULT present_result = presenter->swap_chain->Present(
         immediate_present ? 0u : 1u,
         immediate_present ? DXGI_PRESENT_DO_NOT_WAIT : 0u);
@@ -3068,8 +3068,11 @@ RecompD3dPresenterError submitPresent(
     ++presenter->present_count;
     if (presenter->performance_counter) {
         const double present_end_ms = clock_ms();
-        presenter->present_call_max_ms = (std::max)(
-            presenter->present_call_max_ms, present_end_ms - present_start_ms);
+        // The first Present lands before the sampled window opens.
+        if (presenter->frame_rate.started) {
+            presenter->present_call_max_ms = (std::max)(
+                presenter->present_call_max_ms, present_end_ms - present_start_ms);
+        }
         if (presenter->last_present_ms != 0.0) {
             presenter->present_gaps.push_back(present_end_ms - presenter->last_present_ms);
         }
