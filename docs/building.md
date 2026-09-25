@@ -190,7 +190,7 @@ sound. Audio is muted by default when you start the runner directly.
 The game renders 16:9 in an 854x480 window. Set `RECOMP_D3D_WIDESCREEN=0` for
 its 4:3 view in a 640x480 window.
 Set `RECOMP_D3D_SCALE` from 1 to 8 to multiply the render height, for example
-3 for 1440p; above 1 the window is borderless and fills the screen height.
-Set `RECOMP_D3D_MSAA` to a sample count such as 4 or 8; it falls back to the
-highest count the GPU supports. Set `RECOMP_D3D_SMAA=1` for SMAA when the
+3 for 1440p; above 1 the window is borderless and capped at the screen height.
+Set `RECOMP_D3D_MSAA` to a sample count such as 4 or 8; it uses the highest
+supported power of two up to that count. Set `RECOMP_D3D_SMAA=1` for SMAA when the
 `third_party/smaa` submodule was checked out at build time.
