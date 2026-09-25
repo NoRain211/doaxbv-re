@@ -465,8 +465,9 @@ if(RECOMP_PROGRAM_DIR)
     # The binary .ico stays out of git; see docs/building.md.
     set(RECOMP_APP_ICON "" CACHE FILEPATH "Optional .ico embedded as the runner icon")
     if(RECOMP_APP_ICON)
+        file(TO_CMAKE_PATH "${RECOMP_APP_ICON}" app_icon)
         file(CONFIGURE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/app_icon.rc"
-            CONTENT "1 ICON \"${RECOMP_APP_ICON}\"\n")
+            CONTENT "1 ICON \"${app_icon}\"\n")
         target_sources(recomp_program_runner PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/app_icon.rc")
     endif()
 endif()

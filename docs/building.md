@@ -25,7 +25,7 @@ The repository does not include an all-in-one build executable. Place
 pass its path to `tools/build_game.py`.
 
 The runner icon is optional and kept out of git. Place it at
-`tools/artifacts/doaxbv.ico` and the build embeds it; without it, the runner uses
+`private/doaxbv.ico` and the build embeds it; without it, the runner uses
 the default Windows icon.
 
 The **DOAXBV-0.35-Alpha** ZIP bundles Python, Capstone, and the tagged

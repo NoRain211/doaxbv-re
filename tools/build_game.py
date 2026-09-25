@@ -140,7 +140,7 @@ def build(args):
                      "-G", "Visual Studio 17 2022", "-A", "x64",
                      f"-DRECOMP_PROGRAM_DIR={generated}", f"-DRECOMP_PROGRAM_MANIFEST_SHA256={manifest}",
                      f"-DRECOMP_PROGRAM_EBP_EXPECTED={ebp}"]
-        icon = ROOT / "tools/artifacts/doaxbv.ico"
+        icon = ROOT / "private/doaxbv.ico"
         if icon.is_file():
             configure.append(f"-DRECOMP_APP_ICON={icon.as_posix()}")
         command(configure, ROOT, work / "configure.log")
