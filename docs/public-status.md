@@ -1,8 +1,8 @@
 # Public Status
 
-## Fully playable (0.4 Alpha)
+## Fully playable (0.4 Beta)
 
-The local build published as 0.4 Alpha (tag `v0.4`, commit `3848a67`,
+The local build published as 0.4 Beta (tag `v0.4`, commit `3848a67`,
 generated-program manifest `9558380…`) is fully playable. Long player
 sessions with that generated program covered every stage, the Casino, Hotel
 and Shops, saving and reloading, and the end of a vacation carrying into a new
