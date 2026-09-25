@@ -252,7 +252,7 @@ void restore(std::string_view image)
         std::memcpy(native.data(), name.data(), name.size());
         const fs::path relative(native);
         require(nodes.empty() ? relative.empty() && node.directory
-                              : !relative.empty() && relative.is_relative());
+                              : !relative.empty() && !relative.has_root_path());
         for (const auto &part : relative) require(part != ".." && part != ".");
         node.path = nodes.empty() ? live : live / relative;
         if (!node.directory) node.data = in.take(in.number());
@@ -280,10 +280,14 @@ void recover()
     if (!exists_plain(undo)) return;
     require(fs::is_regular_file(undo));
     const std::string image = read_file(undo);
+    if (image.size() >= sizeof undo_magic)
+        require(std::memcmp(image.data(), undo_magic, sizeof undo_magic) == 0);
     uint64_t size = 0;
     if (image.size() >= undo_header) std::memcpy(&size, image.data() + sizeof undo_magic, sizeof size);
-    if (image.size() >= undo_header && size == image.size()) {
-        require(std::memcmp(image.data(), undo_magic, sizeof undo_magic) == 0);
+    /* Only an image shorter than its recorded size is discardable; anything
+       else malformed stops startup with the undo file kept. */
+    if (image.size() >= undo_header && image.size() >= size) {
+        require(image.size() == size);
         restore(image);
     }
     remove_file(undo);

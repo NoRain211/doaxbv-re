@@ -147,10 +147,18 @@ int main()
     assert(recomp_save_begin(7));
     const std::string image = get(journal / "undo");
     assert(recomp_save_end(7, true));
+    put(payload, "newer than the image");
     put(journal / "undo", image.substr(0, image.size() - 1));
     assert(recomp_save_initialize(root_name.c_str()));
-    assert(get(payload) == "committed generation");
+    assert(get(payload) == "newer than the image");
     assert(!fs::exists(journal / "undo"));
+
+    /* An image longer than its recorded size is malformed and kept. */
+    put(journal / "undo", image + "x");
+    assert(!recomp_save_initialize(root_name.c_str()));
+    assert(get(payload) == "newer than the image");
+    assert(fs::exists(journal / "undo"));
+    fs::remove(journal / "undo");
 
     /* A directory record from the previous journal format fails closed. */
     fs::create_directory(journal / "pending");
@@ -160,7 +168,7 @@ int main()
     put(journal / "unknown", "leave this alone");
     assert(!recomp_save_initialize(root_name.c_str()));
     assert(get(journal / "unknown") == "leave this alone");
-    assert(get(payload) == "committed generation");
+    assert(get(payload) == "newer than the image");
     fs::remove(journal / "unknown");
     assert(recomp_save_initialize(root_name.c_str()));
 
