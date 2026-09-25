@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -238,6 +239,7 @@ void restore(std::string_view image)
 {
     Reader in{image};
     std::vector<Node> nodes;
+    std::set<fs::path> seen, directories;
     while (in.at != image.size()) {
         Node node{};
         const char kind = in.take(1)[0];
@@ -254,6 +256,10 @@ void restore(std::string_view image)
         require(nodes.empty() ? relative.empty() && node.directory
                               : !relative.empty() && !relative.has_root_path());
         for (const auto &part : relative) require(part != ".." && part != ".");
+        /* Each name once, after its parent directory, so rebuilding cannot fail midway. */
+        require(nodes.empty() || directories.count(relative.parent_path()) != 0);
+        require(seen.insert(relative).second);
+        if (node.directory) directories.insert(relative);
         node.path = nodes.empty() ? live : live / relative;
         if (!node.directory) node.data = in.take(in.number());
         nodes.push_back(node);
@@ -396,8 +402,12 @@ extern "C" bool recomp_save_end(uint32_t owner, bool success)
     if (--depth != 0) return !failed;
     try {
         require(exists_plain(undo));
-        if (failed) recover();
-        else remove_file(undo);
+        if (failed) {
+            recover();
+        } else {
+            check_tree(live);
+            remove_file(undo);
+        }
         return !failed;
     } catch (const std::exception &error) {
         std::fprintf(stderr, "save end failed: %s\n", error.what());
