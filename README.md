@@ -53,7 +53,8 @@ running; so far only the startup thread entry has been rewritten.
 > [!NOTE]
 > **Fully playable as of 0.4 Alpha.** Long player sessions cover every stage,
 > the Casino, Hotel and Shops, saving and reloading, and a vacation's end
-> carrying into a new one. Known issues: a second Hopping Game playable before
+> carrying into a new one (that run started from an edited day-14 save; see
+> [status](docs/public-status.md)). Known issues: a second Hopping Game playable before
 > it loads ([#54](https://github.com/NoRain211/doaxbv-re/issues/54)), an
 > upside-down map flash leaving the pool
 > ([#55](https://github.com/NoRain211/doaxbv-re/issues/55)) and possibly missing
