@@ -19,6 +19,7 @@ from extract_iso import sha256
 ROOT = build_game.ROOT
 LIFTER = build_game.LIFTER
 BODY = re.compile(r"^void (sub_[0-9A-Fa-f]{8})\(void\)", re.MULTILINE)
+PINNED = ("tools/game-recipe/recipe.json", "tools/build_game.py", "public-export.json")
 
 
 def git(*args):
@@ -85,6 +86,10 @@ def main():
     args = parser.parse_args()
     if git("status", "--porcelain"):
         raise SystemExit("tools/xboxrecomp has local changes; commit or discard them first")
+    if subprocess.check_output(["git", "status", "--porcelain", "--", *PINNED], cwd=ROOT, text=True).strip():
+        raise SystemExit(f"Commit or discard local changes to {', '.join(PINNED)} first")
+    # An older checkout may still point the submodule at upstream, which lacks the recipe branch.
+    subprocess.run(["git", "submodule", "sync", "--", "tools/xboxrecomp"], cwd=ROOT, check=True)
     previous = git("rev-parse", "HEAD")
     if args.revision:
         revision = git("rev-parse", "--verify", f"{args.revision}^{{commit}}")
@@ -99,8 +104,7 @@ def main():
     except Exception:
         git("checkout", "--detach", previous)
         raise
-    pinned = ("tools/game-recipe/recipe.json", "tools/build_game.py", "public-export.json")
-    saved = {name: (ROOT / name).read_bytes() for name in pinned}
+    saved = {name: (ROOT / name).read_bytes() for name in PINNED}
     try:
         changed_files = pin_metadata(ROOT, new, revision)
     except Exception:
@@ -108,7 +112,7 @@ def main():
             (ROOT / name).write_bytes(data)
         git("checkout", "--detach", previous)
         raise
-    subprocess.run(["git", "add", "tools/xboxrecomp", *pinned], cwd=ROOT, check=True)
+    subprocess.run(["git", "add", "tools/xboxrecomp", *PINNED], cwd=ROOT, check=True)
     changed, added, removed = compare(function_hashes(old), function_hashes(new))
     report = new.parent / "changed-functions.txt"
     report.write_text("".join(f"{kind} {name}\n" for kind, names in
