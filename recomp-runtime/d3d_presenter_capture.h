@@ -4,7 +4,9 @@
 #include "d3d_presenter.h"
 
 #include <cstddef>
+#include <new>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 class D3dCapturePacket {
@@ -30,6 +32,26 @@ public:
     uint64_t bytes() const;
 
 private:
+    // Default-initializes instead of zeroing; Debug builds rebind to proxy types.
+    template <typename T>
+    struct NoInitAllocator : std::allocator<T> {
+        using std::allocator<T>::allocator;
+        template <typename U>
+        struct rebind { using other = NoInitAllocator<U>; };
+
+        template <typename U>
+        void construct(U *pointer)
+        {
+            ::new (static_cast<void *>(pointer)) U;
+        }
+
+        template <typename U, typename... Args>
+        void construct(U *pointer, Args &&...args)
+        {
+            ::new (static_cast<void *>(pointer)) U(std::forward<Args>(args)...);
+        }
+    };
+
     struct Entry { Record record; size_t command_index; };
     struct CapturedCommand {
         CapturedCommand() {} // Skip zeroing: add() writes every field it uses.
@@ -43,7 +65,8 @@ private:
     std::vector<Entry> entries_;
     std::vector<CapturedCommand> commands_;
     // Word storage keeps indices and vertex data aligned after relocation.
-    std::vector<uint64_t> payload_;
+    // resize() appends uninitialized words; add() overwrites the used bytes.
+    std::vector<uint64_t, NoInitAllocator<uint64_t>> payload_;
     std::unordered_multimap<const void *, Span> spans_;
     bool sealed_ = false;
 };
