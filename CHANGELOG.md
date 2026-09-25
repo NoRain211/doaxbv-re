@@ -1,5 +1,56 @@
 # Changelog
 
+## 0.4 Alpha — 2026-09-25
+
+The game is playable from start to finish in long player sessions: all
+stages, Casino, Hotel, Shops, save and reload, and a vacation's last day
+carrying into a new vacation.
+
+### Added
+
+- `Launcher.cmd`: pick resolution (480p windowed to 2160p), MSAA and SMAA,
+  remembered in `private/launcher.json`. `RunGame.cmd` keeps the defaults.
+- Render scale, MSAA and SMAA options in the D3D11 presenter. The package
+  bundles the SMAA shader and lookup tables (MIT, `third_party/smaa`).
+- Casino games (poker, blackjack and slots) and the Hotel menu.
+- 16:9 presentation by default, with a 4:3 option.
+- `RECOMP_PERF_COUNTER=1` logs frame pacing, including game-thread and
+  render-queue time.
+
+### Fixed
+
+- Lifter fixes for cross-block carries and loops. These correct locked,
+  gliding character animation, a broken island texture, wrong ball colors
+  and the Hotel option that opened the pool scene.
+- Shop and menu sound effects no longer go silent after fast purchases
+  (DirectSound `StopEx`).
+- Retail shop vertex streams, texture address modes, culling and two
+  vertex-program draw paths.
+- Cached textures rebuild when their texels change.
+
+### Performance
+
+- The D3D11 presenter renders on its own thread.
+- The game and render threads run at high priority, and vblank waits use a
+  high-resolution timer.
+- Saves keep one undo file (about 2.5 ms instead of 48 ms), stderr is
+  buffered, and textures are no longer rebuilt every frame.
+
+### Known issues
+
+- The second Hopping Game in a session can be played before it finishes
+  loading (#54).
+- An upside-down map briefly flashes when leaving the pool area (#55).
+- Some underwater beach textures may be missing (#56).
+
+### Release and setup
+
+- Setup regenerates the game program byte for byte to match the
+  play-tested local program, and builds an x64 Release runner with
+  Visual Studio 2022 Build Tools.
+- Download and build in a new folder. Keep your previous install and saves;
+  saves are not imported automatically.
+
 ## 0.3.51 Alpha — 2026-09-17
 
 ### Fixed
