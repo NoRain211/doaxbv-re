@@ -174,6 +174,7 @@ int __cdecl reportRuntimeCheck(
         line,
         module != nullptr ? module : L"<unknown>",
         message);
+    std::fflush(stderr);
     reportGeneratedFrames();
     std::fprintf(
         stderr,
