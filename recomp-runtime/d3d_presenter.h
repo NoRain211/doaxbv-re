@@ -181,8 +181,10 @@ typedef enum RecompD3dPresenterError {
 } RecompD3dPresenterError;
 
 /* Lifecycle calls and submissions occur on one owning thread. Create requires
-   a null output handle, submit consumes the command synchronously, and destroy
-   releases all adapter state and nulls the handle. */
+   a null output handle, and destroy releases all adapter state and nulls the
+   handle. The D3D11 build copies each submit and renders it on a worker thread
+   at the next PRESENT. A failed draw is counted as a decline, as in the
+   synchronous path; other errors surface on a later call or on destroy. */
 #ifdef __cplusplus
 extern "C" {
 #endif

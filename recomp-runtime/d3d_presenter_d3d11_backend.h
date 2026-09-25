@@ -1,0 +1,16 @@
+#ifndef DOAXBV_RECOMP_D3D_PRESENTER_D3D11_BACKEND_H
+#define DOAXBV_RECOMP_D3D_PRESENTER_D3D11_BACKEND_H
+
+#include "d3d_presenter.h"
+
+RecompD3dPresenterError d3d11_backend_create(
+    const RecompD3dPresenterConfig *config, RecompD3dPresenter **presenter);
+RecompD3dPresenterError d3d11_backend_submit(
+    RecompD3dPresenter *presenter, const RecompD3dPresenterCommand *command);
+RecompD3dPresenterError d3d11_backend_release_memory(
+    RecompD3dPresenter *presenter, uint32_t base, uint32_t size);
+RecompD3dPresenterError d3d11_backend_destroy(RecompD3dPresenter **presenter);
+void d3d11_backend_set_immediate_present(bool enabled);
+void d3d11_backend_report_draw_textures();
+
+#endif
