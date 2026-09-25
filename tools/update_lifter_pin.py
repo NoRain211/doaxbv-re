@@ -2,7 +2,7 @@
 """Move the build to another lifter revision and record the regenerated program.
 
 The script generates the current pin (which must still match the recipe) and the
-target revision, rewrites the recipe identities, stages the submodule and lists
+target revision, rewrites the recipe identities, stages them with the submodule and lists
 changed game functions. It never commits: review and test the new program first.
 """
 import argparse
@@ -108,7 +108,7 @@ def main():
             (ROOT / name).write_bytes(data)
         git("checkout", "--detach", previous)
         raise
-    subprocess.run(["git", "add", "tools/xboxrecomp"], cwd=ROOT, check=True)
+    subprocess.run(["git", "add", "tools/xboxrecomp", *pinned], cwd=ROOT, check=True)
     changed, added, removed = compare(function_hashes(old), function_hashes(new))
     report = new.parent / "changed-functions.txt"
     report.write_text("".join(f"{kind} {name}\n" for kind, names in

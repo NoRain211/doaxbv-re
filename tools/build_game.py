@@ -49,7 +49,7 @@ def prepare_lifter(work, revision=None):
     revision = revision or LIFTER_REVISION
     if (ROOT / ".git").exists():
         # Older checkouts may still point the submodule at the upstream URL.
-        command(["git", "submodule", "sync", "--", "tools/xboxrecomp"], ROOT, work / "lifter.log")
+        command(["git", "submodule", "sync", "--", "tools/xboxrecomp"], ROOT, work / "sync.log")
     if not (LIFTER / ".git").exists():
         if (ROOT / ".git").exists():
             command(["git", "submodule", "update", "--init", "tools/xboxrecomp"], ROOT, work / "lifter.log")
