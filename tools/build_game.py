@@ -47,17 +47,21 @@ def verify_files(root, expected):
 def prepare_lifter(work, revision=None):
     """Generate from tools/xboxrecomp, fetching it at the recipe revision when absent."""
     revision = revision or LIFTER_REVISION
+    if (ROOT / ".git").exists():
+        # Older checkouts may still point the submodule at the upstream URL.
+        command(["git", "submodule", "sync", "--", "tools/xboxrecomp"], ROOT, work / "lifter.log")
     if not (LIFTER / ".git").exists():
         if (ROOT / ".git").exists():
             command(["git", "submodule", "update", "--init", "tools/xboxrecomp"], ROOT, work / "lifter.log")
         else:  # A release ZIP carries no repository metadata.
-            command(["git", "clone", "--no-checkout", LIFTER_REPOSITORY, LIFTER], ROOT, work / "lifter.log")
+            command(["git", "clone", "--no-checkout", "--filter=blob:none", LIFTER_REPOSITORY, LIFTER],
+                    ROOT, work / "lifter.log")
             command(["git", "checkout", "--detach", revision], LIFTER, work / "checkout.log")
     head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=LIFTER, text=True).strip()
     dirty = subprocess.check_output(["git", "status", "--porcelain"], cwd=LIFTER, text=True).strip()
     if head != revision or dirty:
         raise ValueError(f"tools/xboxrecomp must be a clean checkout of {revision}; "
-                         "run: git submodule update tools/xboxrecomp")
+                         "run: git submodule sync tools/xboxrecomp, then git submodule update tools/xboxrecomp")
 
 
 def build(args, verify_parity=True, lifter_revision=None):
@@ -83,7 +87,7 @@ def build(args, verify_parity=True, lifter_revision=None):
     work = ROOT / "private" / ("setup-" + uuid.uuid4().hex[:12])
     work.mkdir(parents=True)
     receipt = {"status": "in-progress", "work": str(work),
-               "lifter_revision": LIFTER_REVISION, "recipe_sha256": RECIPE_SHA256}
+               "lifter_revision": lifter_revision or LIFTER_REVISION, "recipe_sha256": RECIPE_SHA256}
     receipt_path = work / "build-receipt.json"
     try:
         if args.imported:

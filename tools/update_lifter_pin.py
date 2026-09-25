@@ -99,7 +99,15 @@ def main():
     except Exception:
         git("checkout", "--detach", previous)
         raise
-    changed_files = pin_metadata(ROOT, new, revision)
+    pinned = ("tools/game-recipe/recipe.json", "tools/build_game.py", "public-export.json")
+    saved = {name: (ROOT / name).read_bytes() for name in pinned}
+    try:
+        changed_files = pin_metadata(ROOT, new, revision)
+    except Exception:
+        for name, data in saved.items():
+            (ROOT / name).write_bytes(data)
+        git("checkout", "--detach", previous)
+        raise
     subprocess.run(["git", "add", "tools/xboxrecomp"], cwd=ROOT, check=True)
     changed, added, removed = compare(function_hashes(old), function_hashes(new))
     report = new.parent / "changed-functions.txt"

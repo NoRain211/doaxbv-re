@@ -4,12 +4,12 @@
 
 The current `tools/build_game.py` workflow extracts a supported user-owned ISO,
 checks its XBE, generates the game program with the `tools/xboxrecomp` submodule
-at fork revision `5e148a876abe348828f73e5f2723f3a31d2d5769`, and
+at fork revision `6255fd6a35ea73fbad3d0685672438f6906e4837`, and
 builds an x64 Release runner. The authenticated `tools/game-recipe/recipe.json`
 provides the lifter revision; setup initializes the submodule when needed (a
 release ZIP clones it from NoRain211/xboxrecomp) and stops if it is modified or
 checked out at another revision. The recipe also
-provides the original function boundaries, 45 ordered recovery inputs, manual
+provides the original function boundaries, 61 ordered recovery inputs, manual
 call targets, and expected generated-file hashes. Setup stops before compiling
 if any recipe input or generated file differs. It creates a new `private/setup-*` directory for
 each attempt. The receipt, logs, generated program, and runner stay there.
@@ -69,7 +69,7 @@ records a build. A supervised native run provides the behavior evidence.
 
 The recipe retains the tested local program and adds the bounded activity
 callback and Rest predicate recoveries. Its 19-file manifest is
-`607dcab6311e4d6dcc62a064ff49be1755963f6438fc33c480f2786b085a1aac`.
+`f5ee50b06c2219d8416feca5930a3c93666f9627894059b4b72a59b8e5d01b0b`.
 All 20 generated files, including unresolved stubs, are checked individually.
 The receipt records the recipe, lifter revision, generated manifest, XBE, and runner
 identities. A matching generated program does not imply an identical executable:

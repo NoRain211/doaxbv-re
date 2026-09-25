@@ -5,6 +5,8 @@ from pathlib import Path
 import tempfile
 import unittest
 
+from build_game import program_manifest
+from extract_iso import sha256
 from update_lifter_pin import compare, function_hashes, pin_metadata
 
 
@@ -35,7 +37,11 @@ class LifterPinTests(unittest.TestCase):
             written = json.loads((root / "tools/game-recipe/recipe.json").read_text(encoding="utf-8"))
             self.assertEqual(written["lifter_revision"], "a" * 40)
             self.assertNotIn("gone.c", written["generated_files"])
-            self.assertIn(f'LIFTER_REVISION = "{"a" * 40}"', (root / "tools/build_game.py").read_text())
+            self.assertEqual((written["program_manifest_sha256"], written["ebp_overrides"]),
+                             program_manifest(new))
+            builder = (root / "tools/build_game.py").read_text()
+            self.assertIn(f'LIFTER_REVISION = "{"a" * 40}"', builder)
+            self.assertIn(f'RECIPE_SHA256 = "{sha256(root / "tools/game-recipe/recipe.json")}"', builder)
             for name in ("tools/game-recipe/recipe.json", "tools/build_game.py", "public-export.json"):
                 self.assertNotIn(b"\r", (root / name).read_bytes())
             export = json.loads((root / "public-export.json").read_text(encoding="utf-8"))
