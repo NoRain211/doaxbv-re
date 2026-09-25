@@ -105,6 +105,8 @@ RecompD3dPresenterError D3dCapturePacket::add(
                 const size_t words = size == 0u ? 1u : (size + 7u) / 8u;
                 if (words > payload_.max_size() - offset) throw std::length_error("capture payload");
                 payload_.resize(offset + words);
+                // The allocator leaves new words uninitialized; define the tail before it can be relocated.
+                payload_[offset + words - 1u] = 0u;
                 if (size != 0u) std::memcpy(payload_.data() + offset, source, size);
                 spans_.emplace(source, Span{size, offset});
                 inserted_sources[inserted_count++] = source;
