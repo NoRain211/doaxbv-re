@@ -124,6 +124,7 @@ class PrerequisiteTests(unittest.TestCase):
                 self.assertTrue(target.is_relative_to(self.root / "private"))
                 self.assertFalse(target.exists())
                 self.assertEqual(env["DOAXBV_BUILD_TOOLS"], "Existing Build Tools")
+                self.assertEqual(env["PSModulePath"], str(prerequisites.POWERSHELL.parent / "Modules"))
                 self.assertEqual(run.call_args.args[0][0], str(prerequisites.POWERSHELL))
                 self.download.assert_called_with(prerequisites.INSTALLER_URL, timeout=60)
 
@@ -147,6 +148,22 @@ class PrerequisiteTests(unittest.TestCase):
                 build_game.build(args, verify_parity=False)
             ensure.assert_not_called()
             extract.assert_called_once()
+
+    @unittest.skipUnless(prerequisites.POWERSHELL.is_file(), "Windows PowerShell required")
+    def test_real_signature_check_rejects_unsigned_download(self):
+        self.download.side_effect = lambda *args, **kwargs: io.BytesIO(b"unsigned test file")
+        original_run = subprocess.run
+
+        def inert_run(args, **kwargs):
+            # Even if signature validation regresses, this test cannot elevate or execute a file.
+            args = [*args[:-1], "function Start-Process { throw 'Unexpected launch' }\n" + args[-1]]
+            return original_run(args, **kwargs, timeout=15)
+
+        with mock.patch.object(prerequisites, "visual_studios", return_value=[]), \
+                mock.patch.object(prerequisites.subprocess, "run", side_effect=inert_run), \
+                mock.patch.dict(os.environ, PSModulePath="inherited modules must not be used"):
+            with self.assertRaisesRegex(ValueError, "valid Microsoft Authenticode signature"):
+                prerequisites.install_build_tools(self.root)
 
     @unittest.skipUnless(prerequisites.POWERSHELL.is_file(), "Windows PowerShell required")
     def test_powershell_signature_gate_and_uac_cancellation(self):

@@ -126,7 +126,9 @@ def install_build_tools(root):
               "Keep this window open. The build will resume after installation.", flush=True)
         result = subprocess.run(
             [str(POWERSHELL), "-NoProfile", "-NonInteractive", "-Command", INSTALL_SCRIPT],
+            # A PowerShell 7 parent can otherwise make Windows PowerShell load incompatible modules.
             env=dict(os.environ, DOAXBV_INSTALLER=str(installer),
+                     PSModulePath=str(POWERSHELL.parent / "Modules"),
                      DOAXBV_BUILD_TOOLS=str(existing[0]) if existing else ""),
             capture_output=True, text=True)
     code = result.returncode
