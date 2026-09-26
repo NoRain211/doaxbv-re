@@ -93,11 +93,11 @@ uint32_t recomp_d3d_fvf_stride(uint32_t fvf)
 
 uint32_t recomp_d3d_fvf_for_stream(uint32_t fvf, uint32_t vertex_stride)
 {
-    if (fvf == 0x342u && vertex_stride == 32u) {
-        return 0x242u;
-    }
-    if (fvf == 0x312u && vertex_stride == 40u) {
-        return 0x212u;
+    /* Retail meshes can declare more texture-coordinate sets than their
+       stream stores (swimsuit skins declare TEX3 in two-set vertices). */
+    while (recomp_d3d_fvf_stride(fvf) > vertex_stride &&
+           ((fvf >> RECOMP_D3D_FVF_TEXCOUNT_SHIFT) & RECOMP_D3D_FVF_TEXCOUNT_MASK) != 0u) {
+        fvf -= 1u << RECOMP_D3D_FVF_TEXCOUNT_SHIFT;
     }
     return fvf;
 }

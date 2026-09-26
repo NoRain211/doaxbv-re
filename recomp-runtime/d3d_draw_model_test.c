@@ -67,6 +67,15 @@ int recomp_d3d_draw_model_test(void)
     passed &= expect_u32(
         "fvf unrelated stream unchanged",
         recomp_d3d_fvf_for_stream(0x112u, 32u), 0x112u);
+    passed &= expect_u32(
+        "fvf 0x316 swimsuit stream",
+        recomp_d3d_fvf_for_stream(0x316u, 44u), 0x216u);
+    passed &= expect_u32(
+        "fvf 0x31a swimsuit stream",
+        recomp_d3d_fvf_for_stream(0x31au, 52u), 0x21au);
+    passed &= expect_u32(
+        "fvf too short for any texcoords still exceeds stride",
+        recomp_d3d_fvf_stride(recomp_d3d_fvf_for_stream(0x112u, 20u)) > 20u, 1u);
 
     /* Two unweighted FVFs this title draws with. 0x142 carries a diffuse color
        where 0x112 carries a normal, so their texcoords sit at different
