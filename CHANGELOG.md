@@ -2,8 +2,16 @@
 
 ## 0.4.5 Beta — 2026-09-26
 
-This release simplifies setup. Its game runtime, generation recipe and launcher
-are unchanged from 0.4; existing 0.4 players do not need to rebuild.
+This release simplifies setup and fixes swimsuits whose fabric did not render.
+Its generation recipe and launcher are unchanged from 0.4. The corrected
+upload of 2026-09-26 adds the swimsuit fix; download it and run
+`BuildGame.cmd` again to get the fix.
+
+### Fixed
+
+- **Missing swimsuit fabric** (#62). Some swimsuits, such as Diamond, showed
+  only their strings and ties, both on the character and in swimsuit
+  previews. Their fabric meshes now render.
 
 ### Added
 
