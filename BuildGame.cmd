@@ -15,13 +15,13 @@ exit /b 1
 set "PYTHONHOME=%~dp0tools\python"
 set "PYTHONPATH="
 set "PYTHONNOUSERSITE=1"
-"%~dp0tools\python\python.exe" "%~dp0tools\build_game.py" --iso "%~f1"
+"%~dp0tools\python\python.exe" "%~dp0tools\build_game.py" --install-prerequisites --iso "%~f1"
 goto done
 :py
-py -3 "%~dp0tools\build_game.py" --iso "%~f1"
+py -3 "%~dp0tools\build_game.py" --install-prerequisites --iso "%~f1"
 goto done
 :python
-python "%~dp0tools\build_game.py" --iso "%~f1"
+python "%~dp0tools\build_game.py" --install-prerequisites --iso "%~f1"
 :done
 set "result=%errorlevel%"
 echo.
@@ -30,6 +30,6 @@ pause
 exit /b %result%
 :usage
 echo Drag one Xbox ISO onto BuildGame.cmd.
-echo Install the prerequisites in docs/building.md first.
+echo Setup checks the build tools and offers to install missing Microsoft prerequisites.
 pause
 exit /b 1

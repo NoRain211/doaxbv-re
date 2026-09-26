@@ -80,14 +80,18 @@ Development results do not guarantee every route works in the packaged beta.
 
 ## Play the beta
 
-**Requirements:** Windows 10/11 x64, a supported USA game ISO, Git with
-internet access, CMake 3.20+, and Visual Studio 2022 Build Tools with the C++
-desktop workload and a Windows SDK.
+**Requirements:** Windows 10/11 x64, a supported USA game ISO and internet
+access. The 0.4.5 Beta ZIP bundles Python, Capstone, Git, CMake and the ISO
+extractor. If the Microsoft C++ compiler or Windows SDK is missing, setup
+offers to download and run Microsoft's installer. That installation needs
+administrator approval and several GB of disk space; the full Visual Studio
+IDE is not required.
 
 1. Download the ZIP from the
    [latest release](https://github.com/NoRain211/doaxbv-re/releases/latest)
    and extract it into a new folder with a short path.
-2. Drag your ISO onto `BuildGame.cmd` and wait for **Setup complete**.
+2. Drag your ISO onto `BuildGame.cmd`, follow any prerequisite installation
+   prompts and wait for **Setup complete**.
 3. Run `Launcher.cmd` from the same folder to pick resolution, MSAA and SMAA,
    then press **Play**. Running `RunGame.cmd` directly uses the defaults.
 

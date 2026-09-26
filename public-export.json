@@ -49,6 +49,8 @@
     ".gitattributes",
     "BuildGame.cmd",
     "tools/build_game.py",
+    "tools/build_prerequisites.py",
+    "tools/test_build_prerequisites.py",
     "tools/test_build_game.py",
     "tools/update_lifter_pin.py",
     "tools/test_update_lifter_pin.py",

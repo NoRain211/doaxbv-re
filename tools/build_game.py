@@ -3,7 +3,6 @@
 import argparse
 import hashlib
 import json
-import os
 from pathlib import Path
 import re
 import shutil
@@ -12,6 +11,7 @@ import sys
 import uuid
 
 from extract_iso import extract, run_logged, sha256
+from build_prerequisites import ensure_prerequisites, prefer_bundled_tools
 
 ROOT = Path(__file__).resolve().parents[1]
 LIFTER = ROOT / "tools/xboxrecomp"
@@ -65,6 +65,7 @@ def prepare_lifter(work, revision=None):
 
 
 def build(args, verify_parity=True, lifter_revision=None):
+    prefer_bundled_tools(ROOT)
     if verify_parity:
         verify_files(ROOT, {"tools/game-recipe/recipe.json": RECIPE_SHA256})
     recipe = json.loads((ROOT / "tools/game-recipe/recipe.json").read_text(encoding="utf-8"))
@@ -78,12 +79,8 @@ def build(args, verify_parity=True, lifter_revision=None):
         import capstone
     except ImportError as error:
         raise ValueError("Install Capstone for this Python: python -m pip install capstone==5.0.9") from error
-    vswhere = Path(os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)")) / "Microsoft Visual Studio/Installer/vswhere.exe"
-    if not args.generate_only and (not vswhere.is_file() or not subprocess.check_output(
-            [str(vswhere), "-products", "*", "-version", "[17.0,18.0)",
-             "-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
-             "-property", "installationPath"], text=True).strip()):
-        raise ValueError("Install Visual Studio 2022 Build Tools with Desktop development with C++ and a Windows SDK before running setup.")
+    if not args.generate_only:
+        instance = ensure_prerequisites(ROOT, getattr(args, "install_prerequisites", False))
     work = ROOT / "private" / ("setup-" + uuid.uuid4().hex[:12])
     work.mkdir(parents=True)
     receipt = {"status": "in-progress", "work": str(work),
@@ -155,6 +152,7 @@ def build(args, verify_parity=True, lifter_revision=None):
                        configuration="Release", build_parallelism=2)
         configure = ["cmake", "-S", ROOT / "recomp-runtime", "-B", output,
                      "-G", "Visual Studio 17 2022", "-A", "x64",
+                     f"-DCMAKE_GENERATOR_INSTANCE={instance}",
                      f"-DRECOMP_PROGRAM_DIR={generated}", f"-DRECOMP_PROGRAM_MANIFEST_SHA256={manifest}",
                      f"-DRECOMP_PROGRAM_EBP_EXPECTED={ebp}"]
         icon = ROOT / "private/doaxbv.ico"
@@ -188,6 +186,8 @@ if __name__ == "__main__":
     bundled = ROOT / "tools/artifacts/extract-xiso.exe"
     parser.add_argument("--extractor", default=str(bundled) if bundled.is_file() else "extract-xiso")
     parser.add_argument("--generate-only", action="store_true", help="Stop before compilation for diagnosis")
+    parser.add_argument("--install-prerequisites", action="store_true",
+                        help="Offer to install missing Microsoft C++ tools and Windows SDK (asks first)")
     try:
         build(parser.parse_args())
     except (OSError, ValueError, subprocess.CalledProcessError) as error:

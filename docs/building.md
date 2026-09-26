@@ -14,7 +14,7 @@ call targets, and expected generated-file hashes. Setup stops before compiling
 if any recipe input or generated file differs. It creates a new `private/setup-*` directory for
 each attempt. The receipt, logs, generated program, and runner stay there.
 
-Install these tools before you start:
+For a source checkout or GitHub's automatic source archive, install:
 
 - Python 3.12 or newer
 - Capstone 5.0.9 distribution for that Python installation
@@ -31,12 +31,25 @@ The runner icon is optional and kept out of git. Place it at
 `private/doaxbv.ico` and the build embeds it; without it, the runner uses
 the default Windows icon.
 
-The **DOAXBV-0.35-Alpha** ZIP bundles Python, Capstone, and the tagged
-extractor. Git, CMake, and the Visual Studio 2022 C++ build tools are still
-required. Extract the whole ZIP into a new folder with a short path before setup
+The **DOAXBV-0.4.5-Beta** ZIP bundles Python, Capstone, MinGit, CMake and the
+tagged extractor. Setup prefers the bundled Git and CMake for its own process;
+it does not change the system PATH. Extract the whole ZIP into a new folder
+with a short path before setup
 (for example, a folder directly under Downloads). Use the scripts
 from that folder.
 The bundled Capstone distribution is 5.0.9; its Python binding reports 5.0.7.
+`BuildGame.cmd` checks for the Visual Studio 2022 C++ tools and a Windows SDK.
+If missing, it offers to download Microsoft's official Build Tools installer
+and install the needed components. The download is signature-checked before
+execution. This step needs internet access, several GB of disk space and
+Windows administrator approval. The build itself runs without elevation.
+If installation requires a restart, restart Windows and run `BuildGame.cmd`
+again. A complete Visual Studio IDE is not required.
+
+Direct `tools/build_game.py` invocations only check prerequisites by default.
+Add `--install-prerequisites` to enable the same interactive installation
+offer as `BuildGame.cmd`. `--generate-only` does not need the compiler or SDK.
+
 If the extractor reports a missing `VCRUNTIME140.dll`, install the included
 `Prerequisites/vc_redist.x86.exe` and retry. The extractor remains 32-bit;
 the game runner is x64.
@@ -109,8 +122,8 @@ not build a playable game runner and do not require game files. The fixture
 tests guest memory, registers, and dispatch at the generated-function seam. It
 does not contain generated game code or prove game parity.
 
-The named 0.35 Alpha ZIP includes the ISO setup workflow and bundled
-Python, Capstone and extractor. GitHub's automatic source archives contain
+The named 0.4.5 Beta ZIP includes the ISO setup workflow and bundled
+Python, Capstone, MinGit, CMake and extractor. GitHub's automatic source archives contain
 the same project source and recipe but require separately installed tools.
 Neither download includes generated game code or a prebuilt game runner.
 

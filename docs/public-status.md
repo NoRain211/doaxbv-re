@@ -2,6 +2,10 @@
 
 ## Fully playable (0.4 Beta)
 
+0.4.5 Beta packages the same game runtime and generation recipe with bundled
+Git and CMake and an installation offer for missing Microsoft build tools.
+It does not add gameplay fixes or expand the play-test coverage below.
+
 The local build published as 0.4 Beta (tag `v0.4`, commit `3848a67`,
 generated-program manifest `9558380…`) is fully playable. Long player
 sessions with that generated program covered every stage, the Casino, Hotel

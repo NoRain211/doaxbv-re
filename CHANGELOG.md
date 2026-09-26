@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.4.5 Beta — 2026-09-26
+
+This release simplifies setup. Its game runtime, generation recipe and launcher
+are unchanged from 0.4; existing 0.4 players do not need to rebuild.
+
+### Added
+
+- **Bundled Git and CMake.** The release ZIP now includes portable MinGit and
+  CMake alongside Python, Capstone and the ISO extractor. Setup uses these
+  copies without changing the system PATH or requiring separate installations.
+- **Microsoft prerequisite setup.** `BuildGame.cmd` checks for the Visual
+  Studio 2022 C++ tools and a Windows SDK before extracting the ISO. If needed,
+  it offers to download Microsoft's installer, verifies its Microsoft
+  signature and waits for installation. Only the installer needs administrator
+  approval. Internet access and several GB of disk space are still required.
+- **Setup documentation and tool licenses.** The packaged quick-start guide
+  and build instructions explain what is bundled, the remaining Microsoft
+  installation step, and how to build from a source-only archive.
+
+### Unchanged
+
+- No game files, generated game code or prebuilt game runner are included.
+  A supported USA ISO is still required, and setup builds the game locally.
+- Resolution, MSAA and SMAA remain available in `Launcher.cmd`.
+- The known Hopping Game loading issue (#54), pool transition flash (#55)
+  and possible underwater texture issue (#56) remain.
+
 ## 0.4 Beta — 2026-09-25
 
 0.4 is the first Beta. Long player sessions report the game playable from
