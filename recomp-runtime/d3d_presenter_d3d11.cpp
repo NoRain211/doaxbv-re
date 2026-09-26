@@ -1266,11 +1266,11 @@ bool drawShaderSource(
     return true;
 }
 
-/* Every FVF seen across all logged runs (12). Compiling them at boot keeps
+/* Every FVF seen across all logged runs (14). Compiling them at boot keeps
    first use of each scene from stalling ~85 ms per shader. */
 constexpr uint32_t kBootDrawFvfs[] = {
     0x042u, 0x104u, 0x112u, 0x116u, 0x118u, 0x11Au,
-    0x142u, 0x144u, 0x212u, 0x242u, 0x244u, 0x404u};
+    0x142u, 0x144u, 0x212u, 0x216u, 0x21Au, 0x242u, 0x244u, 0x404u};
 
 // ponytail: fixed list; vertex-program shaders and unlisted FVFs still compile on first use.
 void precompileDrawShaders(const std::atomic<bool> *stop)
