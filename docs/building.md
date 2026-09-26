@@ -31,7 +31,7 @@ The runner icon is optional and kept out of git. Place it at
 `private/doaxbv.ico` and the build embeds it; without it, the runner uses
 the default Windows icon.
 
-The **DOAXBV-0.4.5-Beta** ZIP bundles Python, Capstone, MinGit, CMake and the
+The **DOAXBV-0.4.6-Beta** ZIP bundles Python, Capstone, MinGit, CMake and the
 tagged extractor. Setup prefers the bundled Git and CMake for its own process;
 it does not change the system PATH. Extract the whole ZIP into a new folder
 with a short path before setup
@@ -122,7 +122,7 @@ not build a playable game runner and do not require game files. The fixture
 tests guest memory, registers, and dispatch at the generated-function seam. It
 does not contain generated game code or prove game parity.
 
-The named 0.4.5 Beta ZIP includes the ISO setup workflow and bundled
+The named 0.4.6 Beta ZIP includes the ISO setup workflow and bundled
 Python, Capstone, MinGit, CMake and extractor. GitHub's automatic source archives contain
 the same project source and recipe but require separately installed tools.
 Neither download includes generated game code or a prebuilt game runner.
