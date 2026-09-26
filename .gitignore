@@ -15,7 +15,6 @@ recomp_dispatch.c
 recomp_funcs.h
 tools/artifacts/
 tools/disasm/output/
-reference/native-host-frozen/
 
 # Game and console artifacts
 *.xbe
