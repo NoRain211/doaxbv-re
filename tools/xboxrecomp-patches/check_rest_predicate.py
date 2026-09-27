@@ -49,6 +49,7 @@ for owner in owners:
     yes, no, end = owner + 0x26, owner + 0x2C, owner + 0x2F
     # Without the recovery, the lifter can only give the stray arm its own entry.
     check.assertEqual(broken.func_db[yes]['detection_method'], 'jump_table_arm')
+    check.assertNotIn(yes, fixed.func_db)
     check.assertNotIn(f'loc_{yes:08X}:', broken.translate_single(owner))
     check.assertEqual(fixed.func_db[owner]['end'], end)
     check.assertNotIn(no, fixed.func_db)

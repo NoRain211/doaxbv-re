@@ -50,11 +50,13 @@ python -m unittest discover -s tools -p 'test_*.py'
 ```
 
 The lifter is the `tools/xboxrecomp` submodule at fork revision
-`6255fd6a35ea73fbad3d0685672438f6906e4837` (branch `codex/doaxbv-recipe`): upstream
+`7adaf210a89814c5ca4444e4876fccb51b938878` (branch `codex/doaxbv-recipe`): upstream
 `32da23872a552b12b4a932c9d5a6e952bb3f24bb` plus the preserved working local lifter,
 including the explicit x87 destination correction used by camera
 calculations, the cross-block carry fix, the jump-table slot-one retry and the
-LOOP/LOOPE/LOOPNE lift. It is not an upgrade to the latest upstream release:
+LOOP/LOOPE/LOOPNE lift. It also gives switch arms that fall outside their split
+owner their own `jump_table_arm` entry, such as the collection screen exit (#64).
+It is not an upgrade to the latest upstream release:
 the fork's `main` follows upstream, and pinning it froze player movement
 animation, broke an island map texture and sent the hotel to the pool scene.
 
