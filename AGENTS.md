@@ -3,12 +3,14 @@
 ## Goal
 
 Produce readable, hand-written source for a native PC port of DOAXBV. The
-whole-program recomp is a temporary scaffold: first make the program run using
-native kernel, input, audio, and D3D8 replacements, then replace game-owned
-generated functions in coherent clusters.
+whole-program recomp is a temporary scaffold: generated game code runs on a
+hand-written runtime with native kernel, input, audio, and D3D8 replacements.
 
-`docs/public-status.md` states what the public tree currently proves.
-`docs/building.md` defines the public and authenticated local build routes.
+The 0.4 Beta runner is fully playable. Current work fixes the remaining known
+issues, replaces game-owned generated functions in coherent clusters, and
+modernizes presentation. `docs/public-status.md` states what the public tree
+and local builds currently prove. `docs/building.md` defines the public and
+authenticated local build routes.
 
 ## Architecture
 
@@ -21,6 +23,9 @@ D3D8 is statically linked into the game image. Replace it at the API level
 through `recomp_lookup_manual()`. Keep device models callable as plain
 functions, independent of interception. Do not build an NV2A emulator beneath
 the game.
+
+Host presentation is D3D11 on a render worker thread. A new backend, such as
+D3D12 ray tracing or Vulkan, must leave D3D11 working as the fallback.
 
 ## Decomp loop
 
@@ -45,6 +50,9 @@ function that owns it.
 5. Keep models separable from interception and host delivery details.
 6. Replace library code such as D3D8, XAPI, CRT, and middleware wholesale;
    decompile only game-owned logic.
+7. Base every public branch on `origin/main`. A local branch that does not
+   contain the public root commit `ef3bc2e` carries private history: never
+   push it or merge it into a public branch. Port the change onto `main`.
 
 ## Progress and verification
 
@@ -52,28 +60,67 @@ A runtime iteration is bounded when its observable completes in under a
 minute. It is forward when the program reaches a later natural event. A test,
 receipt, refactor, or crash-free run alone is not gameplay progress.
 
-Public-only changes must configure without private inputs and pass the tracked
-CTest suite. Changes tested with local generated code must also preserve the
-authenticated SHA and manifest failures and report the observed frontier.
+Public-only changes must configure without private inputs. Before pushing a
+public change, run the `public-ci` checks. The `tools` tests need the
+`tools/xboxrecomp` submodule and Capstone 5.0.9.
+
+```powershell
+python -m unittest discover -s tools -p "test_*.py"
+python tools/public_export.py verify --require-public-tree
+cmake -S recomp-runtime -B build/recomp-runtime
+cmake --build build/recomp-runtime --config Debug
+ctest --test-dir build/recomp-runtime -C Debug --output-on-failure
+```
+
+Changes tested with local generated code must also preserve the authenticated
+SHA and manifest failures and report the observed frontier.
+
+The user's play test of a named build accepts gameplay, rendering, and audio
+fixes. An agent smoke run shows only that the build starts and presents
+frames; report it that way.
 
 After two attempts stop before the same required event, stop varying runtime
 runs. Compare both receipts, identify the earliest divergence, state one
 falsifiable mechanism, and test the smallest safe change.
 
+## Lifter
+
+Builds use only the `tools/xboxrecomp` submodule, pinned to a commit on the
+`codex/doaxbv-recipe` branch of `NoRain211/xboxrecomp`. Other local lifter
+checkouts do not feed the build. Lifter fixes are commits on that branch.
+
+Move the pin only with `tools/update_lifter_pin.py`. It regenerates the old
+and new programs, updates the recipe, `LIFTER_REVISION` and the submodule
+together, and lists the changed game functions. Play-test the new program
+before committing.
+
+Take `sp00nznet/xboxrecomp` changes one fix at a time when a game bug calls
+for it. Moving the pin onto the upstream line in September 2026 broke player
+animation, a texture and hotel routing. Offer general fixes upstream as
+focused pull requests. Do not vendor `xboxrecomp` source or generated output
+into this repository.
+
 ## Tool routing
 
-- Translation or regeneration: use the pinned `tools/xboxrecomp` submodule and
-  keep its generated output ignored.
 - Static addresses, xrefs, or function bounds: use one bounded Ghidra query and
   record the binary identity.
 - Real kernel or hardware behavior: use xemu as a live oracle.
 - XDK or NV2A semantics: consult public Cxbx, nxdk, or public headers, then
   implement independently.
 
-Do not vendor `xboxrecomp` source or generated output into this repository.
-Lifter fixes are commits on the `codex/doaxbv-recipe` branch of
-`NoRain211/xboxrecomp`; move the submodule, `LIFTER_REVISION` and the recipe
-together. Offer general fixes upstream as focused pull requests.
+## Branches, pull requests, and releases
+
+- When reporting work, say where each change lives: a merged PR, a pushed
+  branch, or an uncommitted worktree.
+- Keep extra worktrees under `private/` or the Codex worktree directory.
+  Remove a branch or worktree only after its tip is reachable from
+  `origin/main` or a pushed branch and its uncommitted changes are accounted
+  for.
+- Before merging, address valid review comments and wait for `public-ci` to
+  pass. Recent PRs land as GitHub merge commits.
+- Release notes and `CHANGELOG.md` name each real fix with its issue or PR.
+  Update `docs/public-status.md` with what the release proves.
+- The `readme-media` release hosts the README images. Keep it.
 
 ## Agent skills
 
@@ -89,8 +136,8 @@ Use `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, and
 
 ### Domain docs
 
-This is a single-context repository: use root `CONTEXT.md` and system-wide ADRs
-under `docs/adr/`. See `docs/agents/domain.md`.
+This is a single-context repository: use root `CONTEXT.md` and, when present,
+system-wide ADRs under `docs/adr/`. See `docs/agents/domain.md`.
 
 ## Governance
 
