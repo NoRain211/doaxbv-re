@@ -123,6 +123,35 @@ static void update_controller_settings(void)
         recomp_stop(1, "controls:write-preference");
     }
 }
+
+/* 0x000C9CC0: init of task 0x13, the hotel room menu's View Collection
+   (#64). Only a data store at 0x000DFDED references it, so the lifter never
+   found it. It points three UI slots at the task's handlers and hands each
+   the caller's context. */
+static void enter_collection_screen(void)
+{
+    static const struct {
+        uint32_t slot_offset;
+        uint32_t handler;
+    } slots[] = {
+        {0x65cu, 0x000ca0f0u},
+        {0x640u, 0x000c9d10u},
+        {0x64cu, 0x000c9d20u},
+    };
+    uint32_t context = kernel_arg(2);
+    uint32_t ui = *recomp_memory_u32(*recomp_memory_u32(0x00317764u) + 0xcu);
+
+    for (size_t i = 0; i < sizeof slots / sizeof slots[0]; ++i) {
+        uint32_t slot = *recomp_memory_u32(ui + slots[i].slot_offset);
+
+        *recomp_memory_u32(slot + 4u) = slots[i].handler;
+        *recomp_memory_u32(slot + 8u) = context;
+    }
+    /* Leave the scratch registers as the original does. */
+    recomp_runtime.registers.ecx = *recomp_memory_u32(ui + 0x640u);
+    recomp_runtime.registers.edx = context;
+    kernel_return_caller_cleanup(1u);
+}
 #endif
 
 RecompFunction recomp_lookup_manual(uint32_t guest_address)
@@ -182,6 +211,9 @@ RecompFunction recomp_lookup_manual(uint32_t guest_address)
     }
     if (function == NULL && guest_address == 0x0011f250u) {
         function = recomp_view_entry_adapter;
+    }
+    if (function == NULL && guest_address == 0x000c9cc0u) {
+        function = enter_collection_screen;
     }
 #endif
     if (function == NULL && guest_address == 0x0018322du) {
