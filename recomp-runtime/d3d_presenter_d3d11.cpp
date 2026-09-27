@@ -471,6 +471,10 @@ struct RecompD3dPresenter {
     double last_present_ms = 0.0;
     double present_call_max_ms = 0.0;
     std::vector<double> present_gaps;
+    // Display refreshes each present stayed on screen (DXGI statistics), 1..8+.
+    unsigned refresh_holds[9]{};
+    UINT last_stat_present = 0u, last_stat_refresh = 0u;
+    UINT sync_interval = 1u;
     bool first_present_reported = false;
     unsigned frame_dump_count = 0u;
     ULONGLONG next_frame_dump_ms = 0u;
@@ -777,6 +781,12 @@ HRESULT createGraphics(RecompD3dPresenter *presenter)
         presenter->driver_name = "warp";
         presenter->create_result = warp_result;
         std::fprintf(stderr, "recomp d3d presenter: using WARP driver\n");
+    }
+    // One queued frame: vsync back-pressure paces the game without adding input lag.
+    IDXGIDevice1 *dxgi_device = nullptr;
+    if (SUCCEEDED(presenter->device->QueryInterface(IID_PPV_ARGS(&dxgi_device)))) {
+        dxgi_device->SetMaximumFrameLatency(1u);
+        releaseCom(dxgi_device);
     }
 
     ID3D11Texture2D *back_buffer = nullptr;
@@ -3006,6 +3016,29 @@ bool renderOutput(RecompD3dPresenter *presenter, ID3D11RenderTargetView *output)
     return true;
 }
 
+/* The guest runs at 60 Hz. On a 120 or 240 Hz display, interval 1 shows its
+   frames for an uneven 1-3 or 3-5 refreshes (judder); hold each for exactly
+   refresh/60. Rechecked each second, as the window can change monitors.
+   ponytail: other rates keep interval 1; only VRR can pace 60 Hz evenly there. */
+UINT syncInterval(RecompD3dPresenter *presenter)
+{
+    if (presenter->present_count % 60u == 0u) {
+        MONITORINFOEXW monitor{};
+        monitor.cbSize = sizeof monitor;
+        DEVMODEW mode{};
+        mode.dmSize = sizeof mode;
+        UINT interval = 1u;
+        if (GetMonitorInfoW(MonitorFromWindow(presenter->window, MONITOR_DEFAULTTONEAREST), &monitor) &&
+            EnumDisplaySettingsW(monitor.szDevice, ENUM_CURRENT_SETTINGS, &mode)) {
+            // Integer rates such as 239 stand for 239.76 Hz.
+            const DWORD hz = mode.dmDisplayFrequency, k = (hz + 30u) / 60u;
+            if (k >= 2u && k <= 4u && hz + 1u >= 60u * k && hz <= 60u * k + 1u) interval = k;
+        }
+        presenter->sync_interval = interval;
+    }
+    return presenter->sync_interval;
+}
+
 RecompD3dPresenterError submitPresent(
     RecompD3dPresenter *presenter,
     const RecompD3dPresenterPresentCommand &present)
@@ -3051,7 +3084,7 @@ RecompD3dPresenterError submitPresent(
     };
     const double present_start_ms = presenter->performance_counter ? clock_ms() : 0.0;
     const HRESULT present_result = presenter->swap_chain->Present(
-        immediate_present ? 0u : 1u,
+        immediate_present ? 0u : syncInterval(presenter),
         immediate_present ? DXGI_PRESENT_DO_NOT_WAIT : 0u);
     if (FAILED(present_result)) {
         std::fprintf(
@@ -3077,6 +3110,16 @@ RecompD3dPresenterError submitPresent(
             presenter->present_gaps.push_back(present_end_ms - presenter->last_present_ms);
         }
         presenter->last_present_ms = present_end_ms;
+        DXGI_FRAME_STATISTICS stats{};
+        if (SUCCEEDED(presenter->swap_chain->GetFrameStatistics(&stats))) {
+            if (presenter->last_stat_present != 0u &&
+                stats.PresentCount == presenter->last_stat_present + 1u) {
+                const UINT hold = stats.PresentRefreshCount - presenter->last_stat_refresh;
+                ++presenter->refresh_holds[(std::min)(hold, 8u)];
+            }
+            presenter->last_stat_present = stats.PresentCount;
+            presenter->last_stat_refresh = stats.PresentRefreshCount;
+        }
         double fps, frame_ms;
         const ULONGLONG now = GetTickCount64();
         if (sampleFrameRate(presenter->frame_rate, now, fps, frame_ms)) {
@@ -3091,9 +3134,13 @@ RecompD3dPresenterError submitPresent(
                 late += gap > frame_ms * 1.5;
             }
             std::fprintf(stderr, "recomp performance: tick_ms=%llu present=%u fps=%.2f frame_ms=%.3f "
-                "max_ms=%.1f late=%u present_max_ms=%.1f\n",
+                "max_ms=%.1f late=%u present_max_ms=%.1f holds=%u,%u,%u,%u,%u,%u,%u,%u,%u\n",
                 static_cast<unsigned long long>(now), presenter->present_count, fps, frame_ms,
-                max_ms, late, presenter->present_call_max_ms);
+                max_ms, late, presenter->present_call_max_ms,
+                presenter->refresh_holds[0], presenter->refresh_holds[1], presenter->refresh_holds[2],
+                presenter->refresh_holds[3], presenter->refresh_holds[4], presenter->refresh_holds[5],
+                presenter->refresh_holds[6], presenter->refresh_holds[7], presenter->refresh_holds[8]);
+            std::fill(std::begin(presenter->refresh_holds), std::end(presenter->refresh_holds), 0u);
             presenter->present_gaps.clear();
             presenter->present_call_max_ms = 0.0;
         }
