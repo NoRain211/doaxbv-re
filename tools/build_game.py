@@ -16,8 +16,8 @@ from build_prerequisites import ensure_prerequisites, prefer_bundled_tools
 ROOT = Path(__file__).resolve().parents[1]
 LIFTER = ROOT / "tools/xboxrecomp"
 LIFTER_REPOSITORY = "https://github.com/NoRain211/xboxrecomp.git"
-LIFTER_REVISION = "6255fd6a35ea73fbad3d0685672438f6906e4837"
-RECIPE_SHA256 = "7fe385ce02a148b014b936acf3c42c19ca2828b450002efadd0da687c42bf589"
+LIFTER_REVISION = "7adaf210a89814c5ca4444e4876fccb51b938878"
+RECIPE_SHA256 = "482fc0d8c5ced2c486b0d74daf47c4c952c37d80ee093d6e3e5925ecbacab0a4"
 SUPPORTED_XBE_SHA256 = "053d44e885fa33c1d15d909a533f39dfbd976e97eeaf67e4fdef8438ea7e5c54"
 
 
