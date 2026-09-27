@@ -11,6 +11,12 @@ extern "C" {
 
 bool recomp_input_host_sample(RecompInputGamepad *gamepad);
 
+void recomp_input_host_set_vibration(
+    uint32_t port,
+    uint16_t left_motor,
+    uint16_t right_motor);
+void recomp_input_host_stop_vibration(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -23,6 +23,39 @@ static bool pressed(int key)
     return (GetAsyncKeyState(key) & 0x8000) != 0;
 }
 
+static XINPUT_VIBRATION sent_vibration[XUSER_MAX_COUNT];
+
+void recomp_input_host_set_vibration(
+    uint32_t port,
+    uint16_t left_motor,
+    uint16_t right_motor)
+{
+    XINPUT_VIBRATION vibration = {left_motor, right_motor};
+    DWORD status;
+
+    /* The game resends every port's motors each frame; forward changes. */
+    if (port >= XUSER_MAX_COUNT ||
+        (sent_vibration[port].wLeftMotorSpeed == left_motor &&
+         sent_vibration[port].wRightMotorSpeed == right_motor)) {
+        return;
+    }
+    status = XInputSetState(port, &vibration);
+    sent_vibration[port] = vibration;
+    if (getenv("RECOMP_INPUT_TRACE") != NULL) {
+        fprintf(stderr,
+            "recomp input: vibration port=%u left=%u right=%u status=%lu\n",
+            (unsigned)port, (unsigned)left_motor, (unsigned)right_motor,
+            (unsigned long)status);
+    }
+}
+
+void recomp_input_host_stop_vibration(void)
+{
+    for (uint32_t port = 0u; port < XUSER_MAX_COUNT; ++port) {
+        recomp_input_host_set_vibration(port, 0u, 0u);
+    }
+}
+
 static void trace_sample(
     const RecompInputGamepad *pad, const XINPUT_STATE *host,
     DWORD host_status, DWORD foreground_process)

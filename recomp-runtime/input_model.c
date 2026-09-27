@@ -117,6 +117,11 @@ void recomp_input_close(RecompInputModel *model, uint32_t handle)
     }
 }
 
+bool recomp_input_handle_port(uint32_t handle, uint32_t *port)
+{
+    return port != NULL && port_for_handle(handle, port);
+}
+
 bool recomp_input_set_gamepad(
     RecompInputModel *model,
     uint32_t handle,

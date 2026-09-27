@@ -812,6 +812,8 @@ std::vector<AnalogPulse> inputAnalogPulses;
     recomp_audio_output_initialize();
     recomp_fiber_adapter_reset();
     recomp_input_adapter_reset();
+    recomp_input_adapter_set_feedback_sink(recomp_input_host_set_vibration);
+    std::atexit(recomp_input_host_stop_vibration);
     /* The guest Swap seam paces updates independently of the host
        monitor. --vsync additionally synchronizes presentation to scanout. */
     recomp_d3d_presenter_set_immediate_present(!vsyncPresent);

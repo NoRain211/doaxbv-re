@@ -16,6 +16,8 @@ enum {
     XINPUT_SET_STATE_ADDRESS = 0x002330fbu,
     XAPI_GAMEPAD_DEVICE_TYPE = 0x00231e54u,
     XINPUT_CAPABILITIES_SIZE = 25u,
+    XINPUT_CAPABILITIES_RUMBLE_OFFSET = 0x15u,
+    XINPUT_CAPABILITIES_RUMBLE_SIZE = 4u,
     XINPUT_STATE_SIZE = 22u,
     XINPUT_FEEDBACK_LEFT_MOTOR_OFFSET = 0x42u,
     XINPUT_FEEDBACK_RIGHT_MOTOR_OFFSET = 0x44u,
@@ -25,6 +27,7 @@ enum {
 };
 
 static RecompInputModel input_model;
+static RecompInputFeedbackSink feedback_sink;
 static RecompInputSampleSource input_source;
 static bool input_open_reported;
 
@@ -48,6 +51,7 @@ void recomp_input_adapter_reset(void)
 {
     /* A neutral port-0 pad is the bring-up policy even without a host source. */
     recomp_input_reset(&input_model, 1u);
+    feedback_sink = NULL;
     input_source = NULL;
     input_open_reported = false;
 }
@@ -55,6 +59,11 @@ void recomp_input_adapter_reset(void)
 void recomp_input_adapter_set_source(RecompInputSampleSource source)
 {
     input_source = source;
+}
+
+void recomp_input_adapter_set_feedback_sink(RecompInputFeedbackSink sink)
+{
+    feedback_sink = sink;
 }
 
 const RecompInputModel *recomp_input_adapter_model(void)
@@ -146,6 +155,12 @@ static void xinput_get_capabilities_adapter(void)
             &input_model, handle, &packet, &gamepad)) {
         recomp_guest_memset(output, 0, XINPUT_CAPABILITIES_SIZE);
         *(uint8_t *)(void *)recomp_memory_i8(output) = 1u;
+        /* Report both motors as a real pad does. Controller Settings turns
+           vibration off for a pad whose rumble capability reads zero. */
+        recomp_guest_memset(
+            output + XINPUT_CAPABILITIES_RUMBLE_OFFSET,
+            0xff,
+            XINPUT_CAPABILITIES_RUMBLE_SIZE);
         result = ERROR_SUCCESS;
     }
     finish(entry_esp, 2u, result);
@@ -200,6 +215,7 @@ static void xinput_set_state_adapter(void)
     uint32_t entry_esp = recomp_runtime.registers.esp;
     uint32_t handle = stack_argument(entry_esp, 0u);
     uint32_t feedback = stack_argument(entry_esp, 1u);
+    uint32_t port;
     uint32_t result = ERROR_INVALID_PARAMETER;
 
     if (feedback != 0u) {
@@ -212,6 +228,10 @@ static void xinput_set_state_adapter(void)
             &input_model, handle, left, right)
             ? ERROR_SUCCESS
             : ERROR_DEVICE_NOT_CONNECTED;
+        if (result == ERROR_SUCCESS && feedback_sink != NULL &&
+            recomp_input_handle_port(handle, &port)) {
+            feedback_sink(port, left, right);
+        }
     }
     finish(entry_esp, 2u, result);
 }
