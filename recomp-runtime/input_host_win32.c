@@ -40,7 +40,9 @@ void recomp_input_host_set_vibration(
         return;
     }
     status = XInputSetState(port, &vibration);
-    sent_vibration[port] = vibration;
+    if (status == ERROR_SUCCESS) {
+        sent_vibration[port] = vibration;
+    }
     if (getenv("RECOMP_INPUT_TRACE") != NULL) {
         fprintf(stderr,
             "recomp input: vibration port=%u left=%u right=%u status=%lu\n",

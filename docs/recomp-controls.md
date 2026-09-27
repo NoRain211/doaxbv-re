@@ -60,7 +60,7 @@ is not established as its cause or complete fix.
 ## Vibration
 
 The game's rumble reaches the XInput controller on the same port and stops
-when the game exits. Earlier builds reported controllers without motors, and
-Controller Settings turns Vibration off for such a controller. A save made
-after opening that menu in an earlier build can keep Vibration off; turn it
-back on in Controller Settings.
+when the game exits normally. Earlier builds reported controllers without
+motors, and Controller Settings turns Vibration off for such a controller. A
+save made after opening that menu in an earlier build can keep Vibration off;
+turn it back on in Controller Settings.
