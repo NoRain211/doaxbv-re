@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.4.7 Beta — 2026-09-26
+
+This release fixes the crash when viewing your collection. It updates the
+generation recipe, so download the new ZIP and run `BuildGame.cmd` again to
+get the fix; keep your existing saves.
+
+### Fixed
+
+- **View Collection crash** (#64, #66). Choosing View Collection in the hotel
+  room menu stopped the game, and so did leaving the collection screen. Both
+  now work. The lifter now gives switch cases outside their function their
+  own entry, which also covers 14 similar cases elsewhere in the game.
+
+### Unchanged
+
+- The known Hopping Game loading issue (#54), pool transition flash (#55)
+  and possible underwater texture issue (#56) remain.
+
 ## 0.4.6 Beta — 2026-09-26
 
 This release fixes swimsuits whose fabric did not render. The generation

@@ -4,8 +4,9 @@
 
 0.4.5 Beta packages the same generation recipe with bundled Git and CMake and
 an installation offer for missing Microsoft build tools. 0.4.6 Beta fixes
-swimsuits, such as Diamond, whose fabric did not render (#62). Neither
-release expands the play-test coverage below.
+swimsuits, such as Diamond, whose fabric did not render (#62). 0.4.7 Beta
+fixes the View Collection crash in the hotel room menu (#64) with a new
+generation recipe. None of these releases expands the play-test coverage below.
 
 The local build published as 0.4 Beta (tag `v0.4`, commit `3848a67`,
 generated-program manifest `9558380…`) is fully playable. Long player
