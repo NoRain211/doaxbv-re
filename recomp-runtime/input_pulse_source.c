@@ -141,7 +141,7 @@ bool recomp_input_pulse_source_sample(
     }
     if (source->base == NULL) {
         *gamepad = (RecompInputGamepad){0};
-    } else if (!source->base(gamepad)) {
+    } else if (!source->base(0u, gamepad)) {
         return false;
     }
     ++source->sample_count;

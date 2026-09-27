@@ -191,8 +191,12 @@ void samplePausedAnalogFile()
     std::cerr << " script_poll=" << inputPulseSource.sample_count << '\n';
 }
 
-bool sampleInputPulse(RecompInputGamepad *gamepad)
+bool sampleInputPulse(std::uint32_t port, RecompInputGamepad *gamepad)
 {
+    /* Scripts drive port 0 only; keep the other ports empty. */
+    if (port != 0u) {
+        return false;
+    }
     if (inputWaitAfterPoll != 0u &&
         inputPulseSource.sample_count >= inputWaitAfterPoll) {
         if (!inputPulseSource.paused) {

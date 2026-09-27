@@ -44,6 +44,7 @@ bool recomp_input_get_device_changes(
     uint32_t *removals);
 uint32_t recomp_input_open(RecompInputModel *model, uint32_t port);
 void recomp_input_close(RecompInputModel *model, uint32_t handle);
+bool recomp_input_handle_port(uint32_t handle, uint32_t *port);
 bool recomp_input_set_gamepad(
     RecompInputModel *model,
     uint32_t handle,

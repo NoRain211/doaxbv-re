@@ -6,8 +6,9 @@
 static RecompInputGamepad base_gamepad;
 static int base_fail_count;
 
-static bool sample_base(RecompInputGamepad *gamepad)
+static bool sample_base(uint32_t port, RecompInputGamepad *gamepad)
 {
+    (void)port;
     if (base_fail_count > 0) {
         --base_fail_count;
         return false;

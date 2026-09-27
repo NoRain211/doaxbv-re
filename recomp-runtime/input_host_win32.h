@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-bool recomp_input_host_sample(RecompInputGamepad *gamepad);
+bool recomp_input_host_sample(uint32_t port, RecompInputGamepad *gamepad);
 
 #ifdef __cplusplus
 }
