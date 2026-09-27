@@ -135,8 +135,14 @@ static void xinput_open_adapter(void)
 static void xinput_close_adapter(void)
 {
     uint32_t entry_esp = recomp_runtime.registers.esp;
+    uint32_t handle = stack_argument(entry_esp, 0u);
+    uint32_t port;
 
-    recomp_input_close(&input_model, stack_argument(entry_esp, 0u));
+    recomp_input_close(&input_model, handle);
+    /* A closed port no longer receives feedback, so stop its motors. */
+    if (feedback_sink != NULL && recomp_input_handle_port(handle, &port)) {
+        feedback_sink(port, 0u, 0u);
+    }
     finish(entry_esp, 1u, ERROR_SUCCESS);
 }
 
