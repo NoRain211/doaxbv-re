@@ -191,6 +191,8 @@ int recomp_input_model_test(void)
     passed &= expect_u32("Close open flag", model->ports[0].open, 0u);
     passed &= expect_u32("Close stops motors", feedback_motors, 0u);
     passed &= expect_u32(
+        "Close clears stored motors", model->ports[0].left_motor, 0u);
+    passed &= expect_u32(
         "Close ESP", recomp_runtime.registers.esp, TEST_ENTRY_ESP + 8u);
 
     if (recomp_lookup_manual(0x00232dc0u) == NULL ||

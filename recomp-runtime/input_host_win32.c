@@ -136,6 +136,9 @@ bool recomp_input_host_sample(RecompInputGamepad *gamepad)
         gamepad->thumb_ly = state.Gamepad.sThumbLY;
         gamepad->thumb_rx = state.Gamepad.sThumbRX;
         gamepad->thumb_ry = state.Gamepad.sThumbRY;
+    } else {
+        /* A replugged pad starts with its motors off. */
+        memset(&sent_vibration[0], 0, sizeof sent_vibration[0]);
     }
     DWORD foreground_process = 0;
     GetWindowThreadProcessId(GetForegroundWindow(), &foreground_process);
