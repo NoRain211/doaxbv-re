@@ -7,6 +7,7 @@
 
 #include <d3d11.h>
 #include <dxgi.h>
+#include <dxgi1_5.h>
 #include <d3dcompiler.h>
 
 #include <cmath>
@@ -475,6 +476,7 @@ struct RecompD3dPresenter {
     unsigned refresh_holds[9]{};
     UINT last_stat_present = 0u, last_stat_refresh = 0u;
     UINT sync_interval = 1u;
+    bool vrr = false;           // RECOMP_D3D_VRR=1: the game's 60 Hz timer paces a VRR display
     bool first_present_reported = false;
     unsigned frame_dump_count = 0u;
     ULONGLONG next_frame_dump_ms = 0u;
@@ -738,6 +740,8 @@ HRESULT createDeviceWithDriver(
     swap_chain_desc.Windowed = TRUE;
     swap_chain_desc.SwapEffect = immediate_present
         ? DXGI_SWAP_EFFECT_DISCARD : DXGI_SWAP_EFFECT_FLIP_DISCARD;
+    swap_chain_desc.Flags = presenter->vrr && !immediate_present
+        ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0u;
 
     return D3D11CreateDeviceAndSwapChain(
         nullptr,
@@ -3084,8 +3088,9 @@ RecompD3dPresenterError submitPresent(
     };
     const double present_start_ms = presenter->performance_counter ? clock_ms() : 0.0;
     const HRESULT present_result = presenter->swap_chain->Present(
-        immediate_present ? 0u : syncInterval(presenter),
-        immediate_present ? DXGI_PRESENT_DO_NOT_WAIT : 0u);
+        immediate_present || presenter->vrr ? 0u : syncInterval(presenter),
+        immediate_present ? DXGI_PRESENT_DO_NOT_WAIT
+            : presenter->vrr ? DXGI_PRESENT_ALLOW_TEARING : 0u);
     if (FAILED(present_result)) {
         std::fprintf(
             stderr,
@@ -3219,6 +3224,19 @@ RecompD3dPresenterError d3d11_backend_create(
     }
     const char *smaa = std::getenv("RECOMP_D3D_SMAA");
     created->smaa = smaa != nullptr && std::strcmp(smaa, "0") != 0;
+    /* VRR shows each frame when it is presented, so any VRR display paces 60 Hz
+       evenly. DXGI cannot tell whether VRR is active; without it this tears. */
+    const char *vrr = std::getenv("RECOMP_D3D_VRR");
+    if (vrr != nullptr && std::strcmp(vrr, "1") == 0) {
+        IDXGIFactory5 *factory = nullptr;
+        BOOL tearing = FALSE;
+        if (SUCCEEDED(CreateDXGIFactory1(IID_PPV_ARGS(&factory)))) {
+            factory->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING, &tearing, sizeof tearing);
+            factory->Release();
+        }
+        created->vrr = tearing != FALSE;
+        std::fprintf(stderr, "recomp d3d presenter: vrr %s\n", created->vrr ? "on" : "unsupported");
+    }
     created->owner_thread = GetCurrentThreadId();
     if (!createWindow(created)) {
         releasePresenter(created);
