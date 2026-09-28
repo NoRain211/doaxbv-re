@@ -69,13 +69,34 @@ int main(void)
     CHECK(pad.thumb_rx == 1000);
     CHECK(pad.thumb_ry == 0);
 
-    /* A second pad takes port 1 and gets its own input and rumble. */
+    /* A second pad takes port 1 and gets its own input and rumble. It covers
+       the mappings the first pad leaves unpressed. */
     SDL_Joystick *second = attach(1u, &second_id);
     CHECK(second != NULL);
     SDL_SetJoystickVirtualButton(second, SDL_GAMEPAD_BUTTON_BACK, true);
+    SDL_SetJoystickVirtualButton(second, SDL_GAMEPAD_BUTTON_WEST, true);
+    SDL_SetJoystickVirtualButton(second, SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER, true);
+    SDL_SetJoystickVirtualButton(second, SDL_GAMEPAD_BUTTON_LEFT_STICK, true);
+    SDL_SetJoystickVirtualAxis(second, SDL_GAMEPAD_AXIS_LEFTX, -1000);
+    SDL_SetJoystickVirtualAxis(second, SDL_GAMEPAD_AXIS_RIGHTY, 2000);
     CHECK(recomp_input_host_sample(1u, &pad));
+    SDL_SetJoystickVirtualAxis(second, SDL_GAMEPAD_AXIS_LEFT_TRIGGER, SDL_JOYSTICK_AXIS_MAX);
     CHECK(recomp_input_host_sample(1u, &pad));
-    CHECK(pad.buttons == 0x0020u);
+    CHECK(pad.buttons == 0x0060u); /* BACK | LEFT_THUMB */
+    CHECK(pad.analog_buttons[RECOMP_INPUT_ANALOG_X] == 0xffu);
+    CHECK(pad.analog_buttons[RECOMP_INPUT_ANALOG_A] == 0u);
+    CHECK(pad.analog_buttons[RECOMP_INPUT_ANALOG_WHITE] == 0xffu);
+    CHECK(pad.analog_buttons[RECOMP_INPUT_ANALOG_BLACK] == 0u);
+    CHECK(pad.analog_buttons[RECOMP_INPUT_ANALOG_LTRIG] == 0xffu);
+    CHECK(pad.thumb_lx == -1000 && pad.thumb_ry == -2000);
+    SDL_SetJoystickVirtualButton(second, SDL_GAMEPAD_BUTTON_WEST, false);
+    SDL_SetJoystickVirtualButton(second, SDL_GAMEPAD_BUTTON_EAST, true);
+    SDL_SetJoystickVirtualButton(second, SDL_GAMEPAD_BUTTON_LEFT_STICK, false);
+    SDL_SetJoystickVirtualButton(second, SDL_GAMEPAD_BUTTON_RIGHT_STICK, true);
+    CHECK(recomp_input_host_sample(1u, &pad));
+    CHECK(pad.buttons == 0x00a0u); /* BACK | RIGHT_THUMB */
+    CHECK(pad.analog_buttons[RECOMP_INPUT_ANALOG_B] == 0xffu);
+    CHECK(pad.analog_buttons[RECOMP_INPUT_ANALOG_X] == 0u);
     recomp_input_host_set_vibration(1u, 0x1234u, 0x5678u);
     CHECK(rumbled[1] == 0x12345678u && rumbled[0] == 0u);
     recomp_input_host_stop_vibration();
@@ -86,7 +107,7 @@ int main(void)
     CHECK(SDL_DetachVirtualJoystick(first_id));
     CHECK(recomp_input_host_sample(0u, &pad));
     CHECK(pad.buttons == 0u && pad.analog_buttons[RECOMP_INPUT_ANALOG_A] == 0u);
-    CHECK(recomp_input_host_sample(1u, &pad) && pad.buttons == 0x0020u);
+    CHECK(recomp_input_host_sample(1u, &pad) && pad.buttons == 0x00a0u);
 
     SDL_CloseJoystick(second);
     CHECK(SDL_DetachVirtualJoystick(second_id));

@@ -111,16 +111,18 @@ void recomp_input_host_stop_vibration(void)
 }
 
 static void trace_sample(
-    const RecompInputGamepad *pad, const char *host_name, DWORD foreground_process)
+    const RecompInputGamepad *pad, SDL_Gamepad *host, DWORD foreground_process)
 {
     static bool seen;
     static unsigned lines;
     static RecompInputGamepad previous;
-    static const char *previous_name;
+    static SDL_JoystickID previous_id;
     static DWORD previous_foreground;
     if (!trace_enabled() || lines >= 4096u) return;
+    SDL_JoystickID id = host != NULL ? SDL_GetGamepadID(host) : 0;
     if (seen && memcmp(&previous, pad, sizeof previous) == 0 &&
-        previous_name == host_name && previous_foreground == foreground_process) return;
+        previous_id == id && previous_foreground == foreground_process) return;
+    const char *host_name = host != NULL ? SDL_GetGamepadName(host) : NULL;
     fprintf(stderr,
         "[DEBUG-r501-input] tick_ms=%llu pad='%s' focused=%u"
         " digital=%04x analog=%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x"
@@ -132,7 +134,7 @@ static void trace_sample(
         pad->analog_buttons[5], pad->analog_buttons[6], pad->analog_buttons[7],
         pad->thumb_lx, pad->thumb_ly, pad->thumb_rx, pad->thumb_ry);
     previous = *pad;
-    previous_name = host_name;
+    previous_id = id;
     previous_foreground = foreground_process;
     seen = true;
     ++lines;
@@ -203,11 +205,10 @@ bool recomp_input_host_sample(uint32_t port, RecompInputGamepad *gamepad)
         /* The keyboard drives port 0 only. */
         return host != NULL;
     }
-    const char *host_name = host != NULL ? SDL_GetGamepadName(host) : NULL;
     DWORD foreground_process = 0;
     GetWindowThreadProcessId(GetForegroundWindow(), &foreground_process);
     if (foreground_process != GetCurrentProcessId()) {
-        trace_sample(gamepad, host_name, foreground_process);
+        trace_sample(gamepad, host, foreground_process);
         return true;
     }
 
@@ -226,6 +227,6 @@ bool recomp_input_host_sample(uint32_t port, RecompInputGamepad *gamepad)
     if (pressed('W')) gamepad->analog_buttons[RECOMP_INPUT_ANALOG_BLACK] = 0xffu;
     if (pressed('E')) gamepad->analog_buttons[RECOMP_INPUT_ANALOG_LTRIG] = 0xffu;
     if (pressed('R')) gamepad->analog_buttons[RECOMP_INPUT_ANALOG_RTRIG] = 0xffu;
-    trace_sample(gamepad, host_name, foreground_process);
+    trace_sample(gamepad, host, foreground_process);
     return true;
 }
