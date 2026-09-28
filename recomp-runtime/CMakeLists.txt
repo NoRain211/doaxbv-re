@@ -9,6 +9,20 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# Official SDL3 VC build; SDL3.dll is copied beside each target that uses it.
+include(FetchContent)
+FetchContent_Declare(SDL3
+    URL https://github.com/libsdl-org/SDL/releases/download/release-3.4.16/SDL3-devel-3.4.16-VC.zip
+    URL_HASH SHA256=1a784cb2a5c64d56fe7a62090fe9d242d9865f235e4ea9678f1a6ba4e693e7de
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+FetchContent_MakeAvailable(SDL3)
+find_package(SDL3 3.4 CONFIG REQUIRED PATHS "${sdl3_SOURCE_DIR}/cmake" NO_DEFAULT_PATH)
+function(recomp_use_sdl3 target)
+    target_link_libraries(${target} PRIVATE SDL3::SDL3)
+    add_custom_command(TARGET ${target} POST_BUILD COMMAND "${CMAKE_COMMAND}" -E
+        copy_if_different "$<TARGET_FILE:SDL3::SDL3>" "$<TARGET_FILE_DIR:${target}>")
+endfunction()
+
 # Optional SMAA from the third_party/smaa submodule; without it RECOMP_D3D_SMAA
 # reports unavailable. The shader source is embedded as a byte list.
 set(_smaa_dir "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/smaa")
@@ -476,7 +490,8 @@ if(RECOMP_PROGRAM_DIR)
         "${_recomp_program_dir}"
         "${CMAKE_CURRENT_SOURCE_DIR}/../xbe")
     target_link_libraries(recomp_program_runner PRIVATE
-        bcrypt dbghelp d3d11 d3dcompiler dxgi user32 xinput9_1_0 xaudio2 ole32)
+        bcrypt dbghelp d3d11 d3dcompiler dxgi user32 xaudio2 ole32)
+    recomp_use_sdl3(recomp_program_runner)
 
     # The binary .ico stays out of git; see docs/building.md.
     set(RECOMP_APP_ICON "" CACHE FILEPATH "Optional .ico embedded as the runner icon")
@@ -507,6 +522,9 @@ if(WIN32)
     target_link_libraries(recomp_d3d_presenter_thread_test PRIVATE
         d3d11 d3dcompiler dxgi user32)
     add_executable(recomp_audio_output_xaudio2_test audio_output_xaudio2_test.cpp)
+    add_executable(recomp_input_host_test input_host_win32.c input_host_win32_test.c)
+    target_link_libraries(recomp_input_host_test PRIVATE user32)
+    recomp_use_sdl3(recomp_input_host_test)
 endif()
 
 add_executable(recomp_d3d_presenter_capture_test
@@ -524,6 +542,9 @@ add_test(NAME recomp-runtime-movie-color COMMAND recomp_movie_color_test)
 add_test(NAME recomp-runtime-xbox-adpcm COMMAND recomp_xbox_adpcm_test)
 if(TARGET recomp_audio_output_xaudio2_test)
     add_test(NAME recomp-runtime-audio-output COMMAND recomp_audio_output_xaudio2_test)
+endif()
+if(TARGET recomp_input_host_test)
+    add_test(NAME recomp-runtime-input-host-sdl COMMAND recomp_input_host_test)
 endif()
 add_test(NAME recomp-runtime-save-transaction COMMAND recomp_save_transaction_test)
 add_test(NAME recomp-runtime-d3d-presenter-capture COMMAND recomp_d3d_presenter_capture_test)
