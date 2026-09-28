@@ -48,6 +48,15 @@ static bool sample_gamepad(RecompInputGamepad *gamepad)
     return true;
 }
 
+static uint32_t feedback_port;
+static uint32_t feedback_motors;
+
+static void record_feedback(uint32_t port, uint16_t left, uint16_t right)
+{
+    feedback_port = port;
+    feedback_motors = (uint32_t)left << 16 | right;
+}
+
 int recomp_input_model_test(void)
 {
     static uint8_t static_memory[TEST_STATIC_SIZE];
@@ -91,6 +100,7 @@ int recomp_input_model_test(void)
     recomp_runtime_init(regions, 2u, NULL, 0u, NULL, 0u);
     recomp_input_adapter_reset();
     recomp_input_adapter_set_source(sample_gamepad);
+    recomp_input_adapter_set_feedback_sink(record_feedback);
     model = recomp_input_adapter_model();
 
     args[0] = args[1] = 0u;
@@ -127,7 +137,11 @@ int recomp_input_model_test(void)
     passed &= expect_u32(
         "Capabilities subtype", *recomp_memory_i8(TEST_OUTPUT), 1u);
     passed &= expect_u32(
-        "Capabilities tail", *recomp_memory_i8(TEST_OUTPUT + 24u), 0u);
+        "Capabilities input tail", *recomp_memory_i8(TEST_OUTPUT + 0x14u), 0u);
+    passed &= expect_u32(
+        "Capabilities rumble",
+        *recomp_memory_u32(TEST_OUTPUT + 0x15u),
+        0xffffffffu);
 
     sampled_gamepad.buttons = 0x10u;
     sampled_gamepad.analog_buttons[0] = 0xffu;
@@ -150,6 +164,7 @@ int recomp_input_model_test(void)
 
     *recomp_memory_u16(TEST_OUTPUT + 0x42u) = 0x1234u;
     *recomp_memory_u16(TEST_OUTPUT + 0x44u) = 0x5678u;
+    feedback_port = UINT32_MAX;
     prepare_call(2u, args);
     recomp_input_lookup_manual(0x002330fbu)();
     passed &= expect_u32("SetState status", recomp_runtime.registers.eax, 0u);
@@ -157,6 +172,8 @@ int recomp_input_model_test(void)
         "SetState left motor", model->ports[0].left_motor, 0x1234u);
     passed &= expect_u32(
         "SetState right motor", model->ports[0].right_motor, 0x5678u);
+    passed &= expect_u32("SetState sink port", feedback_port, 0u);
+    passed &= expect_u32("SetState sink motors", feedback_motors, 0x12345678u);
 
     args[0] = TEST_GAMEPAD_TYPE;
     args[1] = TEST_OUTPUT + 0x100u;
@@ -172,6 +189,9 @@ int recomp_input_model_test(void)
     prepare_call(1u, args);
     recomp_input_lookup_manual(0x00232ea5u)();
     passed &= expect_u32("Close open flag", model->ports[0].open, 0u);
+    passed &= expect_u32("Close stops motors", feedback_motors, 0u);
+    passed &= expect_u32(
+        "Close clears stored motors", model->ports[0].left_motor, 0u);
     passed &= expect_u32(
         "Close ESP", recomp_runtime.registers.esp, TEST_ENTRY_ESP + 8u);
 

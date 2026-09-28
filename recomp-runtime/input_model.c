@@ -114,7 +114,14 @@ void recomp_input_close(RecompInputModel *model, uint32_t handle)
 
     if (model != NULL && port_for_handle(handle, &port)) {
         model->ports[port].open = false;
+        model->ports[port].left_motor = 0u;
+        model->ports[port].right_motor = 0u;
     }
+}
+
+bool recomp_input_handle_port(uint32_t handle, uint32_t *port)
+{
+    return port != NULL && port_for_handle(handle, port);
 }
 
 bool recomp_input_set_gamepad(
