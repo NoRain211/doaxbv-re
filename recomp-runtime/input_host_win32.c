@@ -146,7 +146,7 @@ bool recomp_input_host_sample(uint32_t port, RecompInputGamepad *gamepad)
         gamepad->thumb_ry = state.Gamepad.sThumbRY;
     } else {
         /* A replugged pad starts with its motors off. */
-        memset(&sent_vibration[0], 0, sizeof sent_vibration[0]);
+        memset(&sent_vibration[port], 0, sizeof sent_vibration[port]);
     }
     if (port != 0u) {
         /* The keyboard drives port 0 only. */
