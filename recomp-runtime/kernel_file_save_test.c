@@ -332,6 +332,45 @@ int recomp_kernel_file_save_test(void)
     passed &= expect("required NtOpenFile failure aborts success end", !recomp_save_end(0u, true));
     passed &= expect("required NtOpenFile failure rolls back earlier write", file_equals(path, "abXY"));
 
+    uint32_t profile_root = open_for_delete(
+        "\\Device\\Harddisk0\\partition1\\UDATA", GENERIC_READ, &passed);
+    for (unsigned api = 0; api < 2u; ++api) {
+        const uint32_t rights[] = {DELETE, FILE_WRITE_ATTRIBUTES, GENERIC_WRITE, GENERIC_READ};
+        const char *invalid[] = {"../profile.dat", "nested/../profile.dat"};
+        for (unsigned i = 0; i < sizeof rights / sizeof rights[0]; ++i) {
+            const bool mutation = rights[i] != GENERIC_READ;
+            for (unsigned j = 0; j < 2u; ++j) {
+                passed &= expect("begin rejected relative open", recomp_save_begin(0u));
+                if (mutation) {
+                    handle = create_file(guest_file, GENERIC_WRITE, 1u, &status, &passed);
+                    passed &= expect("write before relative open rejection", status == 0u &&
+                        write_file(handle, "zz", 2u, &passed) == 0u);
+                    passed &= close_file(handle, &passed);
+                }
+                set_path(invalid[j]);
+                *recomp_memory_u32(TEST_ATTRIBUTES) = profile_root;
+                const uint32_t open_args[] = {TEST_HANDLE, rights[i], TEST_ATTRIBUTES,
+                    TEST_IOSB, 7u, 0u};
+                const uint32_t create_args[] = {TEST_HANDLE, rights[i], TEST_ATTRIBUTES,
+                    TEST_IOSB, 0u, 0u, 7u, 1u, 0u};
+                status = api == 0u ? invoke(202u, open_args, 6u, &passed)
+                                   : invoke(190u, create_args, 9u, &passed);
+                passed &= expect("relative validation returns failure without a handle",
+                    status == 0xc000000du && *recomp_memory_u32(TEST_IOSB) == status &&
+                    *recomp_memory_u32(TEST_HANDLE) == 0u);
+                passed &= expect("relative mutation failure aborts; optional read does not",
+                    recomp_save_end(0u, true) == !mutation);
+                passed &= expect("relative rejection preserves earlier payload", file_equals(path, "abXY"));
+                /* Keep cases independent if the failed operation wrongly committed. */
+                handle = create_file(guest_file, GENERIC_WRITE, 1u, &status, &passed);
+                passed &= expect("restore relative-open fixture", status == 0u &&
+                    write_file(handle, "abXY", 4u, &passed) == 0u);
+                passed &= close_file(handle, &passed);
+            }
+        }
+    }
+    passed &= close_file(profile_root, &passed);
+
     for (unsigned api = 0; api < 2u; ++api) {
         const uint32_t rights[] = {DELETE, FILE_WRITE_ATTRIBUTES};
         for (unsigned i = 0; i < 2u; ++i) {

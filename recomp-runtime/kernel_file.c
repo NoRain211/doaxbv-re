@@ -777,7 +777,7 @@ static uint32_t build_directory_relative_path(
         }
         strcpy(host_path, entry->host_path);
         if (!append_relative_path(relative, host_path, MAX_PATH_LEN)) {
-            host_path[0] = '\0';
+            /* Keep the validated prefix for profile failure accounting. */
             return RECOMP_STATUS_INVALID_PARAMETER;
         }
         *out_is_writable = entry->is_writable;
