@@ -135,7 +135,9 @@ static uint32_t register_file_handle(
     const bool profile_path = kind != FILE_HANDLE_PSEUDO &&
         host_path != NULL && is_profile_path(host_path);
     uint32_t sharing_access = 0u;
-    if ((desired_access & (GENERIC_READ | 0x1u | 0x20u)) != 0u) sharing_access |= FILE_SHARE_READ;
+    if ((desired_access & (GENERIC_READ | GENERIC_EXECUTE | 0x1u | 0x20u)) != 0u) {
+        sharing_access |= FILE_SHARE_READ;
+    }
     if ((desired_access & (GENERIC_WRITE | 0x2u | 0x4u)) != 0u) sharing_access |= FILE_SHARE_WRITE;
     if ((desired_access & DELETE) != 0u) sharing_access |= FILE_SHARE_DELETE;
     share_access &= FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
@@ -1107,7 +1109,14 @@ static void bridge_nt_create_file(void)
         recomp_stop(2, "save:unexpected-write-path-or-owner");
     }
 
-    if (is_writable && (create_options & 1u) != 0u) {
+    if (profile_path && (create_options & 0x00001000u) != 0u &&
+        (desired_access & DELETE) == 0u) {
+        /* Reject before any create or truncate can touch the file. */
+        if (host_handle != INVALID_HANDLE_VALUE) CloseHandle(host_handle);
+        status = RECOMP_STATUS_INVALID_PARAMETER;
+        guest_handle = 0u;
+        policy = "delete-on-close-without-delete-access";
+    } else if (is_writable && (create_options & 1u) != 0u) {
         if (host_handle != INVALID_HANDLE_VALUE) {
             CloseHandle(host_handle);
         }

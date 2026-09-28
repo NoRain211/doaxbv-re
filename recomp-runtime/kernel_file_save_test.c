@@ -164,6 +164,8 @@ int recomp_kernel_file_save_test(void)
     char readonly_file_path[MAX_PATH] = {0};
     char delete_directory_path[MAX_PATH] = {0};
     char directory_child_path[MAX_PATH] = {0};
+    char on_close_path[MAX_PATH] = {0};
+    char created_path[MAX_PATH] = {0};
     uint32_t status, handle;
     int passed = 1;
 
@@ -532,7 +534,6 @@ int recomp_kernel_file_save_test(void)
         set_information(handle, 13u, 0u, 1u, &passed) == 0u);
     passed &= close_file(handle, &passed);
     {
-        char on_close_path[MAX_PATH];
         snprintf(on_close_path, sizeof on_close_path, "%s\\on-close.dat", live);
         for (unsigned api = 0; api < 2u; ++api) {
             HANDLE created = CreateFileA(on_close_path, GENERIC_WRITE,
@@ -554,9 +555,23 @@ int recomp_kernel_file_save_test(void)
             passed &= expect("delete-on-close removes file on close",
                 GetFileAttributesA(on_close_path) == INVALID_FILE_ATTRIBUTES);
         }
+        HANDLE kept = CreateFileA(on_close_path, GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+            CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+        DWORD written = 0u;
+        passed &= expect("create file for rejected overwrite",
+            kept != INVALID_HANDLE_VALUE &&
+            WriteFile(kept, "keep", 4u, &written, NULL) != 0 && written == 4u);
+        if (kept != INVALID_HANDLE_VALUE) CloseHandle(kept);
+        const uint32_t overwrite_args[] = {TEST_HANDLE, GENERIC_WRITE, TEST_ATTRIBUTES,
+            TEST_IOSB, 0u, 0u, 7u, 5u, 0x1000u};
+        set_path("\\Device\\Harddisk0\\partition1\\UDATA\\on-close.dat");
+        status = invoke(190u, overwrite_args, 9u, &passed);
+        passed &= expect("delete-on-close overwrite without delete access rejected",
+            status == 0xc000000du && *recomp_memory_u32(TEST_HANDLE) == 0u);
+        passed &= expect("rejected overwrite keeps contents", file_equals(on_close_path, "keep"));
     }
     {
-        char created_path[MAX_PATH];
         const uint32_t args[] = {TEST_HANDLE, FILE_WRITE_ATTRIBUTES, TEST_ATTRIBUTES,
             TEST_IOSB, 0u, 0u, 7u, 3u, 0u};
         snprintf(created_path, sizeof created_path, "%s\\metadata-create.dat", live);
@@ -876,6 +891,11 @@ cleanup:
     }
     if (delete_file_path[0] != '\0') DeleteFileA(delete_file_path);
     if (transaction_file_path[0] != '\0') DeleteFileA(transaction_file_path);
+    if (on_close_path[0] != '\0') DeleteFileA(on_close_path);
+    if (created_path[0] != '\0') {
+        SetFileAttributesA(created_path, FILE_ATTRIBUTE_NORMAL);
+        DeleteFileA(created_path);
+    }
     if (delete_directory_path[0] != '\0') {
         if (directory_child_path[0] != '\0') DeleteFileA(directory_child_path);
         RemoveDirectoryA(delete_directory_path);
