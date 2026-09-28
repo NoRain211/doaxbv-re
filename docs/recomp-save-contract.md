@@ -21,11 +21,11 @@ The game's three Vacation slots provide profile selection and separation. The ho
 
 The supported reload scope is the same game/runtime build. There is no cross-build compatibility or migration promise, and the host does not enforce a build identifier inside game payloads. The game's own validator remains responsible for accepting its profile data.
 
-The host journal has its own version, independent of the game schema. Unknown versions or malformed journal contents stop startup before guest execution; they are not silently discarded or migrated.
+The host journal has its own version, independent of the game schema. The previous known undo image version is recovered and upgraded on startup. Unknown versions or malformed journal contents stop startup before guest execution; they are not silently discarded or migrated.
 
 ## Process-interruption protection
 
-The full-profile and profile-region save hooks in `save_adapter.c` wrap the original game routines. Each outer operation backs up the entire existing `UDATA` tree, with file times, into one `undo` file in the journal before allowing its writes. Nested saves from the same guest fiber join that operation. This protects all slots in the tree as one unit, rather than committing individual files independently.
+The full-profile and profile-region save hooks in `save_adapter.c` wrap the original game routines. Each outer operation backs up the entire existing `UDATA` tree, with file attributes and times, into one `undo` file in the journal before allowing its writes. Nested saves from the same guest fiber join that operation. This protects all slots in the tree as one unit, rather than committing individual files independently.
 
 The operation commits only after the original routine reports success, required file operations have succeeded, and its writable profile handles are closed. Short writes and required open, seek, truncate, flush or close failures mark the operation failed. A nested failure also aborts the outer save even if its caller ignores the return value. The adapter stops guest execution when the transaction cannot complete successfully.
 

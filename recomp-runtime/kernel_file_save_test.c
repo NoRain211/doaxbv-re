@@ -93,6 +93,30 @@ static uint32_t set_information(uint32_t handle, uint32_t kind,
     return status;
 }
 
+static uint32_t set_file_attributes(uint32_t handle, uint32_t attributes,
+    int *passed)
+{
+    const uint32_t args[] = {handle, TEST_IOSB, TEST_INFORMATION, 0x28u, 4u};
+    memset(recomp_memory_i8(TEST_INFORMATION), 0, 0x28u);
+    *recomp_memory_u32(TEST_INFORMATION + 0x20u) = attributes;
+    uint32_t status = invoke(226u, args, 5u, passed);
+    *passed &= expect("set-attributes IOSB status",
+        *recomp_memory_u32(TEST_IOSB) == status);
+    return status;
+}
+
+static uint32_t open_for_delete(const char *guest_path,
+    uint32_t desired_access, int *passed)
+{
+    const uint32_t args[] = {TEST_HANDLE, desired_access, TEST_ATTRIBUTES,
+        TEST_IOSB, 7u, 0u};
+    set_path(guest_path);
+    uint32_t status = invoke(202u, args, 6u, passed);
+    *passed &= expect("open for delete status", status == 0u &&
+        *recomp_memory_u32(TEST_HANDLE) != 0u);
+    return *recomp_memory_u32(TEST_HANDLE);
+}
+
 static int close_file(uint32_t handle, int *passed)
 {
     return expect("close status", invoke(187u, &handle, 1u, passed) == 0u);
@@ -121,6 +145,11 @@ int recomp_kernel_file_save_test(void)
     const char *old_root = recomp_disc_root_path;
     const char guest_file[] = "\\Device\\Harddisk0\\partition1\\UDATA\\profile.dat";
     char temporary[MAX_PATH], root[MAX_PATH], live[MAX_PATH], path[MAX_PATH];
+    char delete_file_path[MAX_PATH] = {0};
+    char transaction_file_path[MAX_PATH] = {0};
+    char readonly_file_path[MAX_PATH] = {0};
+    char delete_directory_path[MAX_PATH] = {0};
+    char directory_child_path[MAX_PATH] = {0};
     uint32_t status, handle;
     int passed = 1;
 
@@ -258,11 +287,151 @@ int recomp_kernel_file_save_test(void)
     passed &= expect("pseudo write failure aborts", !recomp_save_end(0u, true));
     passed &= expect("pseudo failure preserves payload", file_equals(path, "abXY"));
 
+    snprintf(delete_file_path, sizeof delete_file_path,
+        "%s\\delete.dat", live);
+    HANDLE deletion_file = CreateFileA(delete_file_path, GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+        CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    passed &= expect("create file for disposition",
+        deletion_file != INVALID_HANDLE_VALUE);
+    if (deletion_file != INVALID_HANDLE_VALUE) CloseHandle(deletion_file);
+    handle = open_for_delete(
+        "\\Device\\Harddisk0\\partition1\\UDATA\\delete.dat",
+        0x00110000u, &passed);
+    passed &= expect("set file disposition",
+        set_information(handle, 13u, 1u, 1u, &passed) == 0u);
+    passed &= expect("file remains until close",
+        GetFileAttributesA(delete_file_path) != INVALID_FILE_ATTRIBUTES);
+    passed &= close_file(handle, &passed);
+    passed &= expect("file removed on close",
+        GetFileAttributesA(delete_file_path) == INVALID_FILE_ATTRIBUTES);
+
+    snprintf(transaction_file_path, sizeof transaction_file_path,
+        "%s\\transaction-delete.dat", live);
+    deletion_file = CreateFileA(transaction_file_path, GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+        CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    passed &= expect("create transactional delete file",
+        deletion_file != INVALID_HANDLE_VALUE);
+    if (deletion_file != INVALID_HANDLE_VALUE) {
+        DWORD written = 0u;
+        passed &= expect("write transactional delete file",
+            WriteFile(deletion_file, "before", 6u, &written, NULL) != 0 &&
+                written == 6u);
+        CloseHandle(deletion_file);
+    }
+    DWORD transaction_file_attributes = GetFileAttributesA(
+        transaction_file_path);
+    passed &= expect("query transactional delete attributes",
+        transaction_file_attributes != INVALID_FILE_ATTRIBUTES);
+    passed &= expect("begin delete transaction", recomp_save_begin(0u));
+    handle = open_for_delete(
+        "\\Device\\Harddisk0\\partition1\\UDATA\\transaction-delete.dat",
+        0x00110100u, &passed);
+    passed &= expect("set attributes inside transaction",
+        set_file_attributes(handle, FILE_ATTRIBUTE_READONLY, &passed) == 0u);
+    passed &= expect("transaction applies attributes",
+        (GetFileAttributesA(transaction_file_path) & FILE_ATTRIBUTE_READONLY) != 0u);
+    passed &= expect("clear attributes inside transaction",
+        set_file_attributes(handle, FILE_ATTRIBUTE_NORMAL, &passed) == 0u);
+    passed &= expect("set transactional disposition",
+        set_information(handle, 13u, 1u, 1u, &passed) == 0u);
+    passed &= expect("pending deletion blocks transaction end",
+        !recomp_kernel_save_handles_closed(0u));
+    passed &= close_file(handle, &passed);
+    passed &= expect("closed deletion handle allows transaction end",
+        recomp_kernel_save_handles_closed(0u));
+    passed &= expect("transactional delete takes effect",
+        GetFileAttributesA(transaction_file_path) == INVALID_FILE_ATTRIBUTES);
+    passed &= expect("rollback restores transactional delete",
+        !recomp_save_end(0u, false) &&
+            file_equals(transaction_file_path, "before") &&
+            GetFileAttributesA(transaction_file_path) == transaction_file_attributes);
+
+    snprintf(readonly_file_path, sizeof readonly_file_path,
+        "%s\\readonly.dat", live);
+    deletion_file = CreateFileA(readonly_file_path, GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+        CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    passed &= expect("create read-only file for disposition",
+        deletion_file != INVALID_HANDLE_VALUE);
+    if (deletion_file != INVALID_HANDLE_VALUE) CloseHandle(deletion_file);
+    passed &= expect("mark host file read-only",
+        SetFileAttributesA(readonly_file_path, FILE_ATTRIBUTE_READONLY) != 0);
+    handle = open_for_delete(
+        "\\Device\\Harddisk0\\partition1\\UDATA\\readonly.dat",
+        0x00110100u, &passed);
+    passed &= expect("read-only disposition rejected",
+        set_information(handle, 13u, 1u, 1u, &passed) == 0xc0000121u);
+    passed &= expect("read-only file retained",
+        GetFileAttributesA(readonly_file_path) != INVALID_FILE_ATTRIBUTES);
+    passed &= expect("clear read-only attribute for delete",
+        set_file_attributes(handle, FILE_ATTRIBUTE_NORMAL, &passed) == 0u);
+    passed &= expect("set read-only file disposition",
+        set_information(handle, 13u, 1u, 1u, &passed) == 0u);
+    passed &= close_file(handle, &passed);
+    passed &= expect("read-only file removed on close",
+        GetFileAttributesA(readonly_file_path) == INVALID_FILE_ATTRIBUTES);
+
+    snprintf(delete_directory_path, sizeof delete_directory_path,
+        "%s\\delete-directory", live);
+    passed &= expect("create directory for disposition",
+        CreateDirectoryA(delete_directory_path, NULL) != 0);
+    snprintf(directory_child_path, sizeof directory_child_path,
+        "%s\\child.dat", delete_directory_path);
+    deletion_file = CreateFileA(directory_child_path, GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+        CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    passed &= expect("create child in directory for disposition",
+        deletion_file != INVALID_HANDLE_VALUE);
+    if (deletion_file != INVALID_HANDLE_VALUE) CloseHandle(deletion_file);
+    handle = open_for_delete(
+        "\\Device\\Harddisk0\\partition1\\UDATA\\delete-directory",
+        0x00110000u, &passed);
+    passed &= expect("non-empty directory disposition rejected",
+        set_information(handle, 13u, 1u, 1u, &passed) == 0xc0000101u);
+    passed &= close_file(handle, &passed);
+    passed &= expect("non-empty directory retained",
+        GetFileAttributesA(delete_directory_path) != INVALID_FILE_ATTRIBUTES);
+    passed &= expect("remove directory child", DeleteFileA(directory_child_path) != 0);
+    passed &= expect("mark directory read-only",
+        SetFileAttributesA(delete_directory_path, FILE_ATTRIBUTE_READONLY) != 0);
+    handle = open_for_delete(
+        "\\Device\\Harddisk0\\partition1\\UDATA\\delete-directory",
+        0x00110000u, &passed);
+    passed &= expect("read-only directory disposition rejected",
+        set_information(handle, 13u, 1u, 1u, &passed) == 0xc0000121u);
+    passed &= close_file(handle, &passed);
+    passed &= expect("read-only directory retained",
+        GetFileAttributesA(delete_directory_path) != INVALID_FILE_ATTRIBUTES);
+    passed &= expect("clear directory read-only attribute",
+        SetFileAttributesA(delete_directory_path, FILE_ATTRIBUTE_NORMAL) != 0);
+    handle = open_for_delete(
+        "\\Device\\Harddisk0\\partition1\\UDATA\\delete-directory",
+        0x00110000u, &passed);
+    passed &= expect("set directory disposition",
+        set_information(handle, 13u, 1u, 1u, &passed) == 0u);
+    passed &= expect("directory remains until close",
+        GetFileAttributesA(delete_directory_path) != INVALID_FILE_ATTRIBUTES);
+    passed &= close_file(handle, &passed);
+    passed &= expect("directory removed on close",
+        GetFileAttributesA(delete_directory_path) == INVALID_FILE_ATTRIBUTES);
+
 cleanup:
     /* Reinitialization releases the documented lifetime journal lock. A null
        root leaves the backend disabled after this fixture. */
     passed &= expect("release backend ownership", !recomp_save_initialize(NULL));
     recomp_disc_root_path = old_root;
+    if (readonly_file_path[0] != '\0') {
+        SetFileAttributesA(readonly_file_path, FILE_ATTRIBUTE_NORMAL);
+        DeleteFileA(readonly_file_path);
+    }
+    if (delete_file_path[0] != '\0') DeleteFileA(delete_file_path);
+    if (transaction_file_path[0] != '\0') DeleteFileA(transaction_file_path);
+    if (delete_directory_path[0] != '\0') {
+        if (directory_child_path[0] != '\0') DeleteFileA(directory_child_path);
+        RemoveDirectoryA(delete_directory_path);
+    }
     DeleteFileA(path);
     RemoveDirectoryA(live);
     snprintf(path, sizeof path, "%s\\.recomp-storage\\partition1", root);

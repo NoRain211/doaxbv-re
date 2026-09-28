@@ -20,19 +20,27 @@ namespace {
 fs::path storage, live, journal, undo;
 bool ready, failed;
 uint32_t active_owner, depth;
-const char version[] = "recomp-save-undo-v1\n";
+const char legacy_version[] = "recomp-save-undo-v1\n";
+const char version[] = "recomp-save-undo-v2\n";
 /* journal/undo holds the whole UDATA tree as it was before the operation, as
    one file so a save costs a few file operations. Its header records the
    image size: an image cut short by an interruption never reached live data
    and is discarded. Deleting it commits the operation. */
-const char undo_magic[8] = {'r', 's', 'u', 'n', 'd', 'o', '0', '1'};
+const char undo_magic_v1[8] = {'r', 's', 'u', 'n', 'd', 'o', '0', '1'};
+const char undo_magic[8] = {'r', 's', 'u', 'n', 'd', 'o', '0', '2'};
 constexpr size_t undo_header = sizeof undo_magic + sizeof(uint64_t);
 #ifdef _WIN32
 HANDLE journal_lock = INVALID_HANDLE_VALUE;
 #endif
 
 struct Times { uint64_t creation, access, write; };
-struct Node { Times times; fs::path path; bool directory; std::string_view data; };
+struct Node {
+    Times times;
+    fs::path path;
+    bool directory;
+    uint32_t attributes;
+    std::string_view data;
+};
 
 void require(bool condition)
 {
@@ -78,6 +86,23 @@ void check_tree(const fs::path &path)
 void remove_tree(const fs::path &path)
 {
     check_tree(path);
+#ifdef _WIN32
+    auto clear_readonly = [&](auto &&self, const fs::path &entry) -> void {
+        DWORD attributes = GetFileAttributesW(entry.c_str());
+        require(attributes != INVALID_FILE_ATTRIBUTES);
+        if ((attributes & FILE_ATTRIBUTE_DIRECTORY) != 0u) {
+            for (const auto &child : fs::directory_iterator(entry))
+                self(self, child.path());
+        }
+        if ((attributes & FILE_ATTRIBUTE_READONLY) != 0u) {
+            DWORD writable = attributes & ~(FILE_ATTRIBUTE_READONLY |
+                FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT);
+            if (writable == 0u) writable = FILE_ATTRIBUTE_NORMAL;
+            require(SetFileAttributesW(entry.c_str(), writable) != 0);
+        }
+    };
+    if (exists_plain(path)) clear_readonly(clear_readonly, path);
+#endif
     fs::remove_all(path);
 }
 
@@ -121,13 +146,6 @@ std::string read_file(const fs::path &path)
     return data;
 }
 
-void check_marker(const fs::path &path, const std::string &expected)
-{
-    require(exists_plain(path) && fs::is_regular_file(path));
-    require(fs::file_size(path) == expected.size());
-    require(read_file(path) == expected);
-}
-
 void put(std::string &out, uint64_t value)
 {
     out.append(reinterpret_cast<const char *>(&value), sizeof value);
@@ -154,10 +172,12 @@ FILETIME filetime(uint64_t ticks)
 void save_node(std::string &out, const fs::path &path, const fs::path &relative)
 {
     Times times{};
+    uint32_t saved_attributes = 0u;
 #ifdef _WIN32
     WIN32_FILE_ATTRIBUTE_DATA attributes;
     require(GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &attributes) != 0);
     require((attributes.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0);
+    saved_attributes = attributes.dwFileAttributes;
     const bool directory = (attributes.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
     times = {ticks(attributes.ftCreationTime), ticks(attributes.ftLastAccessTime),
         ticks(attributes.ftLastWriteTime)};
@@ -171,6 +191,7 @@ void save_node(std::string &out, const fs::path &path, const fs::path &relative)
     put(out, times.creation);
     put(out, times.access);
     put(out, times.write);
+    put(out, uint64_t(saved_attributes));
     const auto &name = relative.native();
     put(out, std::string_view(reinterpret_cast<const char *>(name.data()),
         name.size() * sizeof(fs::path::value_type)));
@@ -233,6 +254,17 @@ void set_times(const Node &node)
 #endif
 }
 
+void set_attributes(const Node &node)
+{
+#ifdef _WIN32
+    DWORD attributes = node.attributes &
+        ~(FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT);
+    if (attributes != 0u) require(SetFileAttributesW(node.path.c_str(), attributes) != 0);
+#else
+    (void)node;
+#endif
+}
+
 /* A name as the filesystem compares it: Windows ignores case and separator style. */
 fs::path::string_type name_key(const fs::path &path)
 {
@@ -249,6 +281,8 @@ void restore(std::string_view image)
 {
     Reader in{image};
     std::vector<Node> nodes;
+    const bool has_attributes = std::memcmp(
+        image.data(), undo_magic, sizeof undo_magic) == 0;
     std::set<fs::path::string_type> seen, directories;
     while (in.at != image.size()) {
         Node node{};
@@ -258,6 +292,14 @@ void restore(std::string_view image)
         node.times.creation = in.number();
         node.times.access = in.number();
         node.times.write = in.number();
+        if (has_attributes) {
+            const uint64_t attributes = in.number();
+            require(attributes <= (std::numeric_limits<uint32_t>::max)());
+            node.attributes = static_cast<uint32_t>(attributes);
+#ifdef _WIN32
+            require((node.attributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0u);
+#endif
+        }
         const auto name = in.take(in.number());
         require(name.size() % sizeof(fs::path::value_type) == 0);
         fs::path::string_type native(name.size() / sizeof(fs::path::value_type), 0);
@@ -284,11 +326,15 @@ void restore(std::string_view image)
         } else {
             write_file(node.path, node.data);
             set_times(node);
+            set_attributes(node);
         }
     }
     /* Creating children updates directory times, so restore them last. */
     for (auto it = nodes.rbegin(); it != nodes.rend(); ++it) {
-        if (it->directory) set_times(*it);
+        if (it->directory) {
+            set_times(*it);
+            set_attributes(*it);
+        }
     }
 }
 
@@ -297,8 +343,10 @@ void recover()
     if (!exists_plain(undo)) return;
     require(fs::is_regular_file(undo));
     const std::string image = read_file(undo);
-    if (image.size() >= sizeof undo_magic)
-        require(std::memcmp(image.data(), undo_magic, sizeof undo_magic) == 0);
+    if (image.size() >= sizeof undo_magic) {
+        require(std::memcmp(image.data(), undo_magic, sizeof undo_magic) == 0 ||
+            std::memcmp(image.data(), undo_magic_v1, sizeof undo_magic_v1) == 0);
+    }
     uint64_t size = 0;
     if (image.size() >= undo_header) std::memcpy(&size, image.data() + sizeof undo_magic, sizeof size);
     /* Only an image shorter than its recorded size is discardable; anything
@@ -310,10 +358,13 @@ void recover()
     remove_file(undo);
 }
 
-void check_journal()
+bool check_journal()
 {
     require(exists_plain(journal) && fs::is_directory(journal));
-    check_marker(journal / "version", version);
+    const auto version_path = journal / "version";
+    require(exists_plain(version_path) && fs::is_regular_file(version_path));
+    const std::string marker = read_file(version_path);
+    require(marker == version || marker == legacy_version);
     for (const auto &entry : fs::directory_iterator(journal)) {
         const auto name = entry.path().filename();
         if (name == "staging" || name == "pending" || name == "committed") {
@@ -323,6 +374,7 @@ void check_journal()
         require(name == "version" || name == "lock" || name == "undo");
         require(exists_plain(entry.path()) && fs::is_regular_file(entry.path()));
     }
+    return marker == legacy_version;
 }
 }
 
@@ -350,6 +402,7 @@ extern "C" bool recomp_save_initialize(const char *disc_root)
         fs::create_directories(storage);
         check_parents(live.parent_path());
         bool created = false;
+        bool upgrade_version = false;
         if (!exists_plain(journal)) created = fs::create_directory(journal);
         require(exists_plain(journal) && fs::is_directory(journal));
 #ifdef _WIN32
@@ -366,8 +419,9 @@ extern "C" bool recomp_save_initialize(const char *disc_root)
         if (created) {
             write_file(journal / "version", version);
         }
-        check_journal();
+        upgrade_version = check_journal();
         recover();
+        if (upgrade_version) write_file(journal / "version", version);
         check_tree(live);
         ready = true;
         return true;

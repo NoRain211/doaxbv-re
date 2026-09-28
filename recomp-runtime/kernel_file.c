@@ -41,7 +41,12 @@ typedef struct FileHandleEntry {
     FileHandleKind kind;
     int active;
     int save_write;
+    int delete_access;
+    int write_attributes;
+    int delete_on_close;
     uint32_t save_owner;
+    uint32_t delete_owner;
+    char host_path[MAX_PATH_LEN];
 } FileHandleEntry;
 
 static FileHandleEntry file_handles[MAX_FILE_HANDLES];
@@ -88,8 +93,10 @@ static uint32_t current_save_owner(void)
 bool recomp_kernel_save_handles_closed(uint32_t owner)
 {
     for (size_t i = 0; i < MAX_FILE_HANDLES; ++i) {
-        if (file_handles[i].active && file_handles[i].save_write &&
-            file_handles[i].save_owner == owner) {
+        if (file_handles[i].active &&
+            ((file_handles[i].save_write && file_handles[i].save_owner == owner) ||
+             (file_handles[i].delete_on_close &&
+              file_handles[i].delete_owner == owner))) {
             return false;
         }
     }
@@ -113,24 +120,38 @@ static bool save_write_allowed(const FileHandleEntry *entry)
 static uint32_t register_file_handle(
     HANDLE host_handle,
     FileHandleKind kind,
-    const char *directory_path)
+    const char *host_path,
+    uint32_t desired_access)
 {
     for (size_t i = 0; i < MAX_FILE_HANDLES; ++i) {
         if (!file_handles[i].active) {
             file_handles[i].active = 1;
             file_handles[i].save_write = 0;
+            file_handles[i].delete_access =
+                (desired_access & 0x00010000u) != 0u;
+            file_handles[i].write_attributes =
+                (desired_access & 0x00000100u) != 0u;
+            file_handles[i].delete_on_close = 0;
             file_handles[i].save_owner = 0u;
+            file_handles[i].delete_owner = 0u;
             file_handles[i].host_handle = host_handle;
             file_handles[i].guest_handle = next_guest_handle;
             file_handles[i].cursor = 0u;
             recomp_directory_reset(&file_handles[i].directory);
             file_handles[i].kind = kind;
-            if (kind == FILE_HANDLE_DIRECTORY && directory_path != NULL) {
+            file_handles[i].host_path[0] = '\0';
+            if (host_path != NULL) {
+                strncpy(file_handles[i].host_path, host_path,
+                    sizeof file_handles[i].host_path - 1u);
+                file_handles[i].host_path[
+                    sizeof file_handles[i].host_path - 1u] = '\0';
+            }
+            if (kind == FILE_HANDLE_DIRECTORY && host_path != NULL) {
                 char pattern[MAX_PATH_LEN];
                 WIN32_FIND_DATAA data;
                 HANDLE find;
 
-                snprintf(pattern, sizeof pattern, "%s\\*", directory_path);
+                snprintf(pattern, sizeof pattern, "%s\\*", host_path);
                 find = FindFirstFileA(pattern, &data);
                 if (find != INVALID_HANDLE_VALUE) {
                     do {
@@ -465,6 +486,12 @@ static HANDLE create_host_file(
     if ((desired_access & 0x40000000u) != 0u) {
         host_access |= GENERIC_WRITE;
     }
+    if ((desired_access & 0x00010000u) != 0u && is_profile_path(path)) {
+        host_access |= DELETE;
+    }
+    if ((desired_access & 0x00000100u) != 0u && is_profile_path(path)) {
+        host_access |= FILE_WRITE_ATTRIBUTES;
+    }
     if (host_access == 0u) {
         host_access = GENERIC_READ;
     }
@@ -473,6 +500,9 @@ static HANDLE create_host_file(
     }
     if ((share_access & 2u) != 0u) {
         host_share |= FILE_SHARE_WRITE;
+    }
+    if ((share_access & 4u) != 0u && is_profile_path(path)) {
+        host_share |= FILE_SHARE_DELETE;
     }
 
     switch (create_disposition) {
@@ -560,15 +590,36 @@ static int find_only_child_directory(const char *root, char *child, size_t child
     return found;
 }
 
-static int try_open_host_file(char *host_path, size_t host_path_size, HANDLE *out_handle)
+static int try_open_host_file(
+    char *host_path,
+    size_t host_path_size,
+    HANDLE *out_handle,
+    uint32_t desired_access,
+    uint32_t share_access)
 {
+    DWORD host_access = GENERIC_READ;
+    DWORD host_share = FILE_SHARE_READ;
+
+    if ((desired_access & 0x00010000u) != 0u && is_profile_path(host_path)) {
+        host_access |= DELETE;
+    }
+    if ((desired_access & 0x00000100u) != 0u && is_profile_path(host_path)) {
+        host_access |= FILE_WRITE_ATTRIBUTES;
+    }
+    if ((share_access & 2u) != 0u && is_profile_path(host_path)) {
+        host_share |= FILE_SHARE_WRITE;
+    }
+    if ((share_access & 4u) != 0u && is_profile_path(host_path)) {
+        host_share |= FILE_SHARE_DELETE;
+    }
+
     DWORD attributes = GetFileAttributesA(host_path);
     if (attributes != INVALID_FILE_ATTRIBUTES &&
         (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0) {
         HANDLE h = CreateFileA(
             host_path,
-            GENERIC_READ,
-            FILE_SHARE_READ,
+            host_access,
+            host_share,
             NULL,
             OPEN_EXISTING,
             FILE_ATTRIBUTE_NORMAL,
@@ -604,8 +655,8 @@ static int try_open_host_file(char *host_path, size_t host_path_size, HANDLE *ou
         (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0) {
         HANDLE h = CreateFileA(
             nested,
-            GENERIC_READ,
-            FILE_SHARE_READ,
+            host_access,
+            host_share,
             NULL,
             OPEN_EXISTING,
             FILE_ATTRIBUTE_NORMAL,
@@ -658,6 +709,25 @@ static int try_open_host_directory(char *host_path, size_t host_path_size)
     return 0;
 }
 
+static int host_directory_is_empty(const char *path)
+{
+    char pattern[MAX_PATH_LEN];
+    WIN32_FIND_DATAA data;
+    snprintf(pattern, sizeof pattern, "%s\\*", path);
+    HANDLE find = FindFirstFileA(pattern, &data);
+    if (find == INVALID_HANDLE_VALUE) return -1;
+    int empty = 1;
+    do {
+        if (strcmp(data.cFileName, ".") != 0 &&
+            strcmp(data.cFileName, "..") != 0) {
+            empty = 0;
+            break;
+        }
+    } while (FindNextFileA(find, &data));
+    FindClose(find);
+    return empty;
+}
+
 /* Resolve a guest object-attributes name to a host disc path and open it the
    way the native host does: a real read-only handle for a disc file, a
    registered directory handle for a directory, or a not-found status. Returns
@@ -667,6 +737,8 @@ static const char *resolve_and_open(
     uint32_t object_attributes,
     char *guest_path,
     char *host_path,
+    uint32_t desired_access,
+    uint32_t share_access,
     HANDLE *out_host_handle,
     int *out_is_directory,
     int *out_is_writable,
@@ -717,7 +789,8 @@ static const char *resolve_and_open(
         if (is_save_root_path(path)) {
             (void)create_directory_tree(host_path);
         }
-        if (try_open_host_file(host_path, MAX_PATH_LEN, out_host_handle)) {
+        if (try_open_host_file(host_path, MAX_PATH_LEN, out_host_handle,
+                desired_access, share_access)) {
             return "host-save-file-open";
         }
         if (try_open_host_directory(host_path, MAX_PATH_LEN)) {
@@ -740,7 +813,8 @@ static const char *resolve_and_open(
         return "pseudo-handle-open";
     }
 
-    if (try_open_host_file(host_path, MAX_PATH_LEN, out_host_handle)) {
+    if (try_open_host_file(host_path, MAX_PATH_LEN, out_host_handle,
+            desired_access, share_access)) {
         return "host-disc-file-open";
     }
     if (try_open_host_directory(host_path, MAX_PATH_LEN)) {
@@ -770,7 +844,7 @@ static void bridge_nt_open_file(void)
     char host_path[MAX_PATH_LEN] = {0};
 
     policy = resolve_and_open(
-        object_attributes, guest_path, host_path,
+        object_attributes, guest_path, host_path, desired_access, share_access,
         &host_handle, &is_directory, &is_writable, &status);
     uint32_t save_owner = current_save_owner();
     bool requested_write = (desired_access & 0x40000000u) != 0u;
@@ -792,14 +866,14 @@ static void bridge_nt_open_file(void)
 
     if (host_handle != INVALID_HANDLE_VALUE) {
         guest_handle = register_file_handle(
-            host_handle, FILE_HANDLE_HOST_FILE, NULL);
+            host_handle, FILE_HANDLE_HOST_FILE, host_path, desired_access);
         if (guest_handle == 0u) {
             CloseHandle(host_handle);
             status = RECOMP_STATUS_NO_MEMORY;
         }
     } else if (is_directory) {
         guest_handle = register_file_handle(
-            INVALID_HANDLE_VALUE, FILE_HANDLE_DIRECTORY, host_path);
+            INVALID_HANDLE_VALUE, FILE_HANDLE_DIRECTORY, host_path, desired_access);
         if (guest_handle == 0u) {
             status = RECOMP_STATUS_NO_MEMORY;
         }
@@ -807,7 +881,7 @@ static void bridge_nt_open_file(void)
         guest_handle = 0u;
     } else {
         guest_handle = register_file_handle(
-            INVALID_HANDLE_VALUE, FILE_HANDLE_PSEUDO, NULL);
+            INVALID_HANDLE_VALUE, FILE_HANDLE_PSEUDO, NULL, desired_access);
         if (guest_handle == 0u) {
             status = RECOMP_STATUS_NO_MEMORY;
         }
@@ -874,7 +948,7 @@ static void bridge_nt_create_file(void)
     char host_path[MAX_PATH_LEN] = {0};
 
     policy = resolve_and_open(
-        object_attributes, guest_path, host_path,
+        object_attributes, guest_path, host_path, desired_access, share_access,
         &host_handle, &is_directory, &is_writable, &status);
 
     uint32_t save_owner = current_save_owner();
@@ -904,7 +978,7 @@ static void bridge_nt_create_file(void)
             (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
             status = RECOMP_STATUS_SUCCESS;
             guest_handle = register_file_handle(
-                INVALID_HANDLE_VALUE, FILE_HANDLE_DIRECTORY, host_path);
+                INVALID_HANDLE_VALUE, FILE_HANDLE_DIRECTORY, host_path, desired_access);
             policy = "host-save-directory-open";
             if (guest_handle == 0u) {
                 status = RECOMP_STATUS_NO_MEMORY;
@@ -926,7 +1000,7 @@ static void bridge_nt_create_file(void)
         if (host_handle != INVALID_HANDLE_VALUE) {
             status = RECOMP_STATUS_SUCCESS;
             guest_handle = register_file_handle(
-                host_handle, FILE_HANDLE_HOST_FILE, NULL);
+                host_handle, FILE_HANDLE_HOST_FILE, host_path, desired_access);
             policy = "host-save-file-open";
             if (guest_handle == 0u) {
                 CloseHandle(host_handle);
@@ -947,7 +1021,7 @@ static void bridge_nt_create_file(void)
         } else {
             status = RECOMP_STATUS_SUCCESS;
             guest_handle = register_file_handle(
-                INVALID_HANDLE_VALUE, FILE_HANDLE_PSEUDO, NULL);
+                INVALID_HANDLE_VALUE, FILE_HANDLE_PSEUDO, NULL, desired_access);
             policy = "pseudo-handle-create";
             if (guest_handle == 0u) {
                 status = RECOMP_STATUS_NO_MEMORY;
@@ -960,7 +1034,7 @@ static void bridge_nt_create_file(void)
             CloseHandle(host_handle);
         }
         guest_handle = register_file_handle(
-            INVALID_HANDLE_VALUE, FILE_HANDLE_PSEUDO, NULL);
+            INVALID_HANDLE_VALUE, FILE_HANDLE_PSEUDO, NULL, desired_access);
         if (guest_handle == 0u) {
             status = RECOMP_STATUS_NO_MEMORY;
         } else {
@@ -968,14 +1042,14 @@ static void bridge_nt_create_file(void)
         }
     } else if (host_handle != INVALID_HANDLE_VALUE) {
         guest_handle = register_file_handle(
-            host_handle, FILE_HANDLE_HOST_FILE, NULL);
+            host_handle, FILE_HANDLE_HOST_FILE, host_path, desired_access);
         if (guest_handle == 0u) {
             CloseHandle(host_handle);
             status = RECOMP_STATUS_NO_MEMORY;
         }
     } else if (is_directory) {
         guest_handle = register_file_handle(
-            INVALID_HANDLE_VALUE, FILE_HANDLE_DIRECTORY, host_path);
+            INVALID_HANDLE_VALUE, FILE_HANDLE_DIRECTORY, host_path, desired_access);
         if (guest_handle == 0u) {
             status = RECOMP_STATUS_NO_MEMORY;
         }
@@ -1103,20 +1177,119 @@ static void bridge_nt_query_information_file(void)
     kernel_return(5u, status);
 }
 
+static bool handle_profile_mutation_information(
+    FileHandleEntry *entry,
+    uint32_t file_information_class,
+    uint32_t file_information,
+    uint32_t length,
+    bool *required_save_io,
+    uint32_t *status,
+    const char **policy)
+{
+    const uint32_t FILE_BASIC_INFORMATION = 4u;
+    const uint32_t FILE_DISPOSITION_INFORMATION = 13u;
+    const uint32_t STATUS_UNSUCCESSFUL = 0xc0000001u;
+    const uint32_t STATUS_INFO_LENGTH_MISMATCH = 0xc0000004u;
+    const uint32_t STATUS_ACCESS_DENIED = 0xc0000022u;
+    const uint32_t STATUS_CANNOT_DELETE = 0xc0000121u;
+    const uint32_t STATUS_DIRECTORY_NOT_EMPTY = 0xc0000101u;
+
+    if (file_information_class != FILE_BASIC_INFORMATION &&
+        file_information_class != FILE_DISPOSITION_INFORMATION) {
+        return false;
+    }
+
+    const bool profile_path = is_profile_path(entry->host_path);
+    *required_save_io = entry->save_write || profile_path;
+    if (profile_path && recomp_save_pending() &&
+        (!recomp_save_active(current_save_owner()) ||
+         (entry->save_write && entry->save_owner != current_save_owner()))) {
+        *status = STATUS_UNSUCCESSFUL;
+        *policy = "save-profile-mutation-owner-rejected";
+        return true;
+    }
+    if (*required_save_io && !profile_path && !save_write_allowed(entry)) {
+        *status = STATUS_UNSUCCESSFUL;
+        *policy = "save-write-owner-rejected";
+        return true;
+    }
+
+    if (file_information_class == FILE_BASIC_INFORMATION) {
+        if (length < 0x24u || file_information == 0u) {
+            *status = STATUS_INFO_LENGTH_MISMATCH;
+            *policy = "basic-information-length-mismatch";
+        } else if (!profile_path) {
+            *status = RECOMP_STATUS_SUCCESS;
+            *policy = "basic-information-accepted-without-action";
+        } else {
+            uint32_t attributes = *recomp_memory_u32(file_information + 0x20u);
+            if (attributes == 0u || !entry->write_attributes) {
+                *status = attributes == 0u
+                    ? RECOMP_STATUS_SUCCESS : STATUS_ACCESS_DENIED;
+                *policy = attributes == 0u
+                    ? "basic-information-attributes-unchanged"
+                    : "profile-attributes-access-denied";
+            } else if (SetFileAttributesA(entry->host_path, attributes)) {
+                *status = RECOMP_STATUS_SUCCESS;
+                *policy = "profile-attributes-set";
+            } else {
+                *status = STATUS_ACCESS_DENIED;
+                *policy = "profile-attributes-set-failed";
+            }
+        }
+        return true;
+    }
+
+    if (!profile_path) {
+        *status = RECOMP_STATUS_SUCCESS;
+        *policy = "class-accepted-without-action";
+    } else if (file_information == 0u || length < 1u) {
+        *status = STATUS_INFO_LENGTH_MISMATCH;
+        *policy = "disposition-length-mismatch";
+    } else if (!entry->delete_access) {
+        *status = STATUS_ACCESS_DENIED;
+        *policy = "profile-delete-access-denied";
+    } else if (*recomp_memory_i8(file_information) == 0) {
+        entry->delete_on_close = 0;
+        entry->delete_owner = 0u;
+        *status = RECOMP_STATUS_SUCCESS;
+        *policy = "profile-delete-cancelled";
+    } else {
+        DWORD attributes = GetFileAttributesA(entry->host_path);
+        if (attributes == INVALID_FILE_ATTRIBUTES) {
+            *status = RECOMP_STATUS_OBJECT_NAME_NOT_FOUND;
+            *policy = "profile-delete-path-missing";
+        } else if ((attributes & FILE_ATTRIBUTE_READONLY) != 0u) {
+            *status = STATUS_CANNOT_DELETE;
+            *policy = "profile-path-read-only";
+        } else if (entry->kind == FILE_HANDLE_DIRECTORY) {
+            const int empty = host_directory_is_empty(entry->host_path);
+            if (empty == 0) {
+                *status = STATUS_DIRECTORY_NOT_EMPTY;
+                *policy = "profile-directory-not-empty";
+            } else if (empty < 0) {
+                *status = STATUS_ACCESS_DENIED;
+                *policy = "profile-directory-enumeration-failed";
+            } else {
+                entry->delete_on_close = 1;
+                entry->delete_owner = current_save_owner();
+                *status = RECOMP_STATUS_SUCCESS;
+                *policy = "profile-delete-pending";
+            }
+        } else {
+            entry->delete_on_close = 1;
+            entry->delete_owner = current_save_owner();
+            *status = RECOMP_STATUS_SUCCESS;
+            *policy = "profile-delete-pending";
+        }
+    }
+    return true;
+}
+
 /* NtSetInformationFile(FileHandle, IoStatusBlock, FileInformation, Length,
-   FileInformationClass) is stdcall with five arguments.
-
-   The frozen native host answered every class with an unconditional success
-   and touched nothing. That is not safe here: the title calls this while
-   writing its save, and the two classes it needs - moving the file pointer
-   and setting end-of-file - change what a following NtWriteFile does. Claiming
-   success without applying them writes correct bytes to the wrong offset, and
-   the corruption only shows up when the save is read back.
-
-   Classes outside the two below are reported as succeeding, which matches the
-   frozen host, because a title commonly sets attributes or timestamps it never
-   reads back. Each one is logged with its class so an unhandled class that
-   does matter is visible rather than silent. */
+   FileInformationClass) is stdcall with five arguments. Position and EOF
+   updates affect subsequent reads and writes. Other unhandled classes preserve
+   the frozen host's successful no-op behavior. */
 static void bridge_nt_set_information_file(void)
 {
     const uint32_t FILE_POSITION_INFORMATION = 14u;
@@ -1142,6 +1315,12 @@ static void bridge_nt_set_information_file(void)
         if (!file_handles[i].active ||
             file_handles[i].guest_handle != guest_handle) {
             continue;
+        }
+
+        if (handle_profile_mutation_information(
+                &file_handles[i], file_information_class, file_information,
+                length, &required_save_io, &status, &policy)) {
+            break;
         }
 
         required_save_io = file_handles[i].save_write ||
@@ -1809,6 +1988,8 @@ static void bridge_nt_close(void)
 {
     uint32_t guest_handle = kernel_arg(1u);
     uint32_t status = RECOMP_STATUS_SUCCESS;
+    const uint32_t RECOMP_STATUS_UNSUCCESSFUL = 0xc0000001u;
+    const uint32_t RECOMP_STATUS_ACCESS_DENIED = 0xc0000022u;
 
     ensure_symbolic_links_initialized();
     (void)recomp_symbolic_link_close(&symbolic_links, guest_handle);
@@ -1817,23 +1998,40 @@ static void bridge_nt_close(void)
         if (!entry->active || entry->guest_handle != guest_handle) {
             continue;
         }
+        bool delete_on_close = entry->delete_on_close != 0;
+        if (delete_on_close && recomp_save_pending() &&
+            (!recomp_save_active(current_save_owner()) ||
+             entry->delete_owner != current_save_owner() ||
+             (entry->save_write &&
+              entry->save_owner != current_save_owner()))) {
+            status = RECOMP_STATUS_UNSUCCESSFUL;
+            delete_on_close = false;
+        }
         if (entry->host_handle != INVALID_HANDLE_VALUE) {
             if (entry->save_write && !save_write_allowed(entry)) {
-                status = 0xc0000001u;
+                status = RECOMP_STATUS_UNSUCCESSFUL;
             }
             if (entry->save_write && !FlushFileBuffers(entry->host_handle)) {
-                status = 0xc0000001u;
+                status = RECOMP_STATUS_UNSUCCESSFUL;
             }
             if (!CloseHandle(entry->host_handle)) {
-                status = 0xc0000001u;
+                status = RECOMP_STATUS_UNSUCCESSFUL;
             } else {
                 entry->active = 0;
             }
         } else {
             entry->active = 0;
         }
-        if (entry->save_write && status != RECOMP_STATUS_SUCCESS) {
-            recomp_save_note_failure(entry->save_owner);
+        if (delete_on_close && !entry->active) {
+            BOOL removed = entry->kind == FILE_HANDLE_DIRECTORY
+                ? RemoveDirectoryA(entry->host_path)
+                : DeleteFileA(entry->host_path);
+            if (!removed) status = RECOMP_STATUS_ACCESS_DENIED;
+        }
+        if ((entry->save_write || entry->delete_on_close) &&
+            status != RECOMP_STATUS_SUCCESS) {
+            recomp_save_note_failure(entry->save_write
+                ? entry->save_owner : current_save_owner());
         }
         break;
     }

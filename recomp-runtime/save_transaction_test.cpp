@@ -41,6 +41,24 @@ static std::string get(const fs::path &path)
     return std::string(std::istreambuf_iterator<char>(file), {});
 }
 
+static void append_u64(std::string &image, uint64_t value)
+{
+    image.append(reinterpret_cast<const char *>(&value), sizeof value);
+}
+
+static std::string empty_legacy_image()
+{
+    std::string image("rsundo01", 8u);
+    append_u64(image, 49u);
+    image.push_back('D');
+    append_u64(image, 0u);
+    append_u64(image, 0u);
+    append_u64(image, 0u);
+    append_u64(image, 0u);
+    assert(image.size() == 49u);
+    return image;
+}
+
 int main()
 {
     const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
@@ -79,6 +97,17 @@ int main()
     assert(recomp_save_end(7, true));
     assert(get(payload) == "first complete save");
     assert(!fs::exists(journal / "undo"));
+
+#ifdef _WIN32
+    const DWORD original_attributes = GetFileAttributesW(payload.c_str());
+    assert(original_attributes != INVALID_FILE_ATTRIBUTES);
+    assert(recomp_save_begin(7));
+    const DWORD changed_attributes =
+        (original_attributes & ~FILE_ATTRIBUTE_NORMAL) | FILE_ATTRIBUTE_READONLY;
+    assert(SetFileAttributesW(payload.c_str(), changed_attributes));
+    assert(!recomp_save_end(7, false));
+    assert(GetFileAttributesW(payload.c_str()) == original_attributes);
+#endif
 
     assert(recomp_save_begin(7));
     assert(!recomp_save_begin(9));
@@ -171,6 +200,15 @@ int main()
     assert(get(payload) == "newer than the image");
     fs::remove(journal / "unknown");
     assert(recomp_save_initialize(root_name.c_str()));
+
+    /* Recover the previous known image format, then upgrade its marker. */
+    put(journal / "version", "recomp-save-undo-v1\n");
+    put(journal / "undo", empty_legacy_image());
+    assert(recomp_save_initialize(root_name.c_str()));
+    assert(fs::is_directory(live));
+    assert(!fs::exists(payload));
+    assert(get(journal / "version") == "recomp-save-undo-v2\n");
+    assert(!fs::exists(journal / "undo"));
 
     const auto outside = root / "outside";
     put(outside / "untouched", "outside data");
