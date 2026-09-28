@@ -419,6 +419,12 @@ struct RecompD3dPresenter {
     IDXGISwapChain *swap_chain = nullptr;
     ID3D11RenderTargetView *render_target_view = nullptr;
     ID3D11RenderTargetView *present_target_view = nullptr;
+    // VRR only: main-sized output, downscaled into the window-sized swap chain.
+    ID3D11RenderTargetView *vrr_target_view = nullptr;
+    ID3D11ShaderResourceView *vrr_source = nullptr;
+    ID3D11VertexShader *vrr_vs = nullptr;
+    ID3D11PixelShader *vrr_ps = nullptr;
+    ID3D11SamplerState *vrr_sampler = nullptr;
     ID3D11VertexShader *gamma_vertex_shader = nullptr;
     ID3D11PixelShader *gamma_pixel_shader = nullptr;
     ID3D11Buffer *gamma_buffer = nullptr;
@@ -518,6 +524,15 @@ uint32_t windowHeight(const RecompD3dPresenter *presenter)
         mainHeight(presenter), static_cast<uint32_t>(GetSystemMetrics(SM_CYSCREEN)));
 }
 
+/* VRR needs direct flip, which a DWM-scaled swap chain loses; with VRR the
+   swap chain matches the window and the presenter scales into it itself. */
+bool vrrScaled(const RecompD3dPresenter *presenter)
+{
+    return presenter->vrr && !immediate_present &&
+        (mainWidth(presenter) != presentClientWidth(presenter, windowHeight(presenter)) ||
+         mainHeight(presenter) != windowHeight(presenter));
+}
+
 LRESULT CALLBACK presenterWindowProc(
     HWND window,
     UINT message,
@@ -566,6 +581,11 @@ void releaseGraphics(RecompD3dPresenter *presenter)
         presenter->context->Flush();
     }
     releaseCom(presenter->present_target_view);
+    releaseCom(presenter->vrr_target_view);
+    releaseCom(presenter->vrr_source);
+    releaseCom(presenter->vrr_vs);
+    releaseCom(presenter->vrr_ps);
+    releaseCom(presenter->vrr_sampler);
     releaseCom(presenter->gamma_vertex_shader);
     releaseCom(presenter->gamma_pixel_shader);
     releaseCom(presenter->gamma_buffer);
@@ -727,8 +747,10 @@ HRESULT createDeviceWithDriver(
     };
     D3D_FEATURE_LEVEL selected_feature_level{};
 
-    swap_chain_desc.BufferDesc.Width = mainWidth(presenter);
-    swap_chain_desc.BufferDesc.Height = mainHeight(presenter);
+    swap_chain_desc.BufferDesc.Width = vrrScaled(presenter)
+        ? presentClientWidth(presenter, windowHeight(presenter)) : mainWidth(presenter);
+    swap_chain_desc.BufferDesc.Height = vrrScaled(presenter)
+        ? windowHeight(presenter) : mainHeight(presenter);
     swap_chain_desc.BufferDesc.RefreshRate.Numerator = 0u;
     swap_chain_desc.BufferDesc.RefreshRate.Denominator = 1u;
     swap_chain_desc.BufferDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
@@ -824,6 +846,8 @@ HRESULT createGraphics(RecompD3dPresenter *presenter)
     if (SUCCEEDED(result)) {
         D3D11_TEXTURE2D_DESC desc{};
         back_buffer->GetDesc(&desc);
+        desc.Width = mainWidth(presenter);
+        desc.Height = mainHeight(presenter);
         desc.BindFlags = D3D11_BIND_RENDER_TARGET;
         desc.MiscFlags = 0u;
         desc.SampleDesc.Count = presenter->msaa;
@@ -834,6 +858,47 @@ HRESULT createGraphics(RecompD3dPresenter *presenter)
                 guest_buffer, nullptr, &presenter->render_target_view);
         }
         releaseCom(guest_buffer);
+    }
+    if (SUCCEEDED(result) && vrrScaled(presenter)) {
+        D3D11_TEXTURE2D_DESC desc{};
+        desc.Width = mainWidth(presenter);
+        desc.Height = mainHeight(presenter);
+        desc.MipLevels = desc.ArraySize = 1u;
+        desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+        desc.SampleDesc.Count = 1u;
+        desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+        ID3D11Texture2D *output = nullptr;
+        result = presenter->device->CreateTexture2D(&desc, nullptr, &output);
+        if (SUCCEEDED(result)) result = presenter->device->CreateRenderTargetView(
+            output, nullptr, &presenter->vrr_target_view);
+        if (SUCCEEDED(result)) result = presenter->device->CreateShaderResourceView(
+            output, nullptr, &presenter->vrr_source);
+        releaseCom(output);
+        static const char shader[] =
+            "Texture2D pixels : register(t0);\n"
+            "SamplerState bilinear : register(s0);\n"
+            "float4 vs(uint id : SV_VertexID, out float2 uv : TEXCOORD0) : SV_Position {\n"
+            " uv = float2((id << 1) & 2, id & 2);\n"
+            " return float4(uv * float2(2,-2) + float2(-1,1), 0, 1); }\n"
+            "float4 ps(float4 p : SV_Position, float2 uv : TEXCOORD0) : SV_Target {\n"
+            " return pixels.SampleLevel(bilinear, uv, 0); }\n";
+        ID3DBlob *vertex = nullptr, *pixel = nullptr;
+        if (SUCCEEDED(result)) result = D3DCompile(shader, sizeof shader - 1u, nullptr,
+            nullptr, nullptr, "vs", "vs_4_0", 0u, 0u, &vertex, nullptr);
+        if (SUCCEEDED(result)) result = D3DCompile(shader, sizeof shader - 1u, nullptr,
+            nullptr, nullptr, "ps", "ps_4_0", 0u, 0u, &pixel, nullptr);
+        if (SUCCEEDED(result)) result = presenter->device->CreateVertexShader(
+            vertex->GetBufferPointer(), vertex->GetBufferSize(), nullptr, &presenter->vrr_vs);
+        if (SUCCEEDED(result)) result = presenter->device->CreatePixelShader(
+            pixel->GetBufferPointer(), pixel->GetBufferSize(), nullptr, &presenter->vrr_ps);
+        releaseCom(vertex);
+        releaseCom(pixel);
+        D3D11_SAMPLER_DESC sampler{};
+        sampler.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+        sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+        sampler.MaxLOD = D3D11_FLOAT32_MAX;
+        if (SUCCEEDED(result)) result = presenter->device->CreateSamplerState(
+            &sampler, &presenter->vrr_sampler);
     }
     releaseCom(back_buffer);
     if (FAILED(result)) {
@@ -3076,8 +3141,30 @@ RecompD3dPresenterError submitPresent(
        unconditionally meant the throttled path was never actually throttled:
        every frame was retired immediately and only the blocking behaviour
        changed. Pace to one refresh unless immediate presenting is asked for. */
-    if (!renderOutput(presenter, presenter->present_target_view)) {
+    if (!renderOutput(presenter, presenter->vrr_target_view != nullptr
+            ? presenter->vrr_target_view : presenter->present_target_view)) {
         return RECOMP_D3D_PRESENTER_HOST_FAILURE;
+    }
+    if (presenter->vrr_target_view != nullptr) {
+        auto *context = presenter->context;
+        D3D11_TEXTURE2D_DESC window{};
+        ID3D11Texture2D *back_buffer = nullptr;
+        presenter->swap_chain->GetBuffer(0u, IID_PPV_ARGS(&back_buffer));
+        if (back_buffer == nullptr) return RECOMP_D3D_PRESENTER_HOST_FAILURE;
+        back_buffer->GetDesc(&window);
+        releaseCom(back_buffer);
+        const D3D11_VIEWPORT viewport = {0.0f, 0.0f,
+            static_cast<float>(window.Width), static_cast<float>(window.Height), 0.0f, 1.0f};
+        context->ClearState();
+        context->RSSetViewports(1u, &viewport);
+        context->OMSetRenderTargets(1u, &presenter->present_target_view, nullptr);
+        context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        context->VSSetShader(presenter->vrr_vs, nullptr, 0u);
+        context->PSSetShader(presenter->vrr_ps, nullptr, 0u);
+        context->PSSetSamplers(0u, 1u, &presenter->vrr_sampler);
+        context->PSSetShaderResources(0u, 1u, &presenter->vrr_source);
+        context->Draw(3u, 0u);
+        context->ClearState();
     }
     // Capture the rendered buffer before flip presentation releases it.
     dumpBackBufferOnce(presenter, presenter->present_count + 1u);
