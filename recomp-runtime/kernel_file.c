@@ -617,20 +617,19 @@ static int try_open_host_file(
     uint32_t desired_access,
     uint32_t share_access)
 {
-    DWORD host_access = GENERIC_READ;
-    DWORD host_share = FILE_SHARE_READ;
+    const bool profile_path = is_profile_path(host_path);
+    const bool metadata_open = profile_path &&
+        (desired_access & (DELETE | FILE_WRITE_ATTRIBUTES)) != 0u;
+    /* Preserve requested read rights without granting untracked data writes. */
+    DWORD host_access = metadata_open
+        ? desired_access & (GENERIC_READ | FILE_GENERIC_READ) : GENERIC_READ;
+    DWORD host_share = profile_path ? share_access & 7u : FILE_SHARE_READ;
 
-    if ((desired_access & 0x00010000u) != 0u && is_profile_path(host_path)) {
+    if ((desired_access & DELETE) != 0u && profile_path) {
         host_access |= DELETE;
     }
-    if ((desired_access & 0x00000100u) != 0u && is_profile_path(host_path)) {
+    if ((desired_access & FILE_WRITE_ATTRIBUTES) != 0u && profile_path) {
         host_access |= FILE_WRITE_ATTRIBUTES;
-    }
-    if ((share_access & 2u) != 0u && is_profile_path(host_path)) {
-        host_share |= FILE_SHARE_WRITE;
-    }
-    if ((share_access & 4u) != 0u && is_profile_path(host_path)) {
-        host_share |= FILE_SHARE_DELETE;
     }
 
     DWORD attributes = GetFileAttributesA(host_path);
@@ -2055,7 +2054,12 @@ uint32_t recomp_kernel_close_file(uint32_t guest_handle, uint32_t owner)
             BOOL removed = entry->kind == FILE_HANDLE_DIRECTORY
                 ? RemoveDirectoryA(entry->host_path)
                 : DeleteFileA(entry->host_path);
-            if (!removed) status = RECOMP_STATUS_ACCESS_DENIED;
+            if (!removed) {
+                DWORD error = GetLastError();
+                if (error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND) {
+                    status = RECOMP_STATUS_ACCESS_DENIED;
+                }
+            }
         }
         if ((entry->save_owned || entry->delete_on_close) &&
             status != RECOMP_STATUS_SUCCESS) {

@@ -372,6 +372,61 @@ int recomp_kernel_file_save_test(void)
     passed &= close_file(profile_root, &passed);
 
     for (unsigned api = 0; api < 2u; ++api) {
+        const uint32_t rights[] = {DELETE, FILE_WRITE_ATTRIBUTES,
+            DELETE | READ_CONTROL | SYNCHRONIZE,
+            FILE_WRITE_ATTRIBUTES | FILE_READ_ATTRIBUTES | SYNCHRONIZE};
+        for (unsigned i = 0; i < sizeof rights / sizeof rights[0]; ++i) {
+            passed &= expect("begin compatible metadata open", recomp_save_begin(0u));
+            HANDLE writer = CreateFileA(path, GENERIC_WRITE, FILE_SHARE_DELETE,
+                NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+            passed &= expect("open writer without read sharing", writer != INVALID_HANDLE_VALUE);
+            status = open_existing(guest_file, rights[i], FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                api, 0u, &passed);
+            passed &= expect("metadata open does not request data reads", status == 0u);
+            if (status == 0u) passed &= close_file(*recomp_memory_u32(TEST_HANDLE), &passed);
+            if (writer != INVALID_HANDLE_VALUE) CloseHandle(writer);
+            passed &= expect("compatible metadata open permits commit", recomp_save_end(0u, true));
+        }
+        status = open_existing(guest_file, DELETE, FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            api, 0u, &passed);
+        handle = *recomp_memory_u32(TEST_HANDLE);
+        passed &= expect("open delete handle denying read sharing", status == 0u);
+        HANDLE reader = CreateFileA(path, GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+        passed &= expect("delete handle preserves guest read-sharing denial",
+            reader == INVALID_HANDLE_VALUE && GetLastError() == ERROR_SHARING_VIOLATION);
+        if (reader != INVALID_HANDLE_VALUE) CloseHandle(reader);
+        if (status == 0u) passed &= close_file(handle, &passed);
+
+        status = open_existing(guest_file, DELETE | GENERIC_READ, 7u, api, 0u, &passed);
+        handle = *recomp_memory_u32(TEST_HANDLE);
+        passed &= expect("open metadata handle with requested read access", status == 0u);
+        const uint32_t read_args[] = {handle, 0u, 0u, 0u, TEST_IOSB, TEST_BUFFER, 4u, 0u};
+        passed &= expect("explicit metadata read access preserved",
+            invoke(219u, read_args, 8u, &passed) == 0u &&
+            memcmp(recomp_memory_i8(TEST_BUFFER), "abXY", 4u) == 0);
+        if (status == 0u) passed &= close_file(handle, &passed);
+
+        status = open_existing(guest_file, DELETE | FILE_WRITE_DATA, 7u, api, 0u, &passed);
+        handle = *recomp_memory_u32(TEST_HANDLE);
+        passed &= expect("open metadata handle without untracked write rights", status == 0u);
+        passed &= expect("metadata mask does not grant untracked data writes",
+            write_file(handle, "lost", 4u, &passed) != 0u);
+        if (status == 0u) passed &= close_file(handle, &passed);
+        passed &= expect("denied untracked write preserves payload", file_equals(path, "abXY"));
+
+        status = open_existing(guest_file, GENERIC_READ, FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            api, 0u, &passed);
+        handle = *recomp_memory_u32(TEST_HANDLE);
+        passed &= expect("open reader denying read sharing", status == 0u);
+        passed &= expect("save refuses an unreadable snapshot", !recomp_save_begin(0u));
+        if (status == 0u) passed &= close_file(handle, &passed);
+        passed &= expect("closed reader permits reinitialization", recomp_save_initialize(root));
+        passed &= expect("failed snapshot leaves payload intact", file_equals(path, "abXY"));
+    }
+
+    for (unsigned api = 0; api < 2u; ++api) {
         const uint32_t rights[] = {DELETE, FILE_WRITE_ATTRIBUTES};
         for (unsigned i = 0; i < 2u; ++i) {
             passed &= expect("begin required metadata open", recomp_save_begin(0u));
@@ -381,9 +436,10 @@ int recomp_kernel_file_save_test(void)
             passed &= close_file(handle, &passed);
             HANDLE blocker = CreateFileA(path, GENERIC_READ, 0, NULL,
                 OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-            passed &= expect("block metadata open with real sharing denial",
+            passed &= expect("open native sharing blocker",
                 blocker != INVALID_HANDLE_VALUE);
-            set_path(guest_file);
+            /* Attribute access alone is exempt from native sharing restrictions. */
+            set_path(i == 0u ? guest_file : "\\Device\\Harddisk0\\partition1\\UDATA\\missing.dat");
             const uint32_t open_args[] = {TEST_HANDLE, rights[i], TEST_ATTRIBUTES,
                 TEST_IOSB, 7u, 0u};
             const uint32_t create_args[] = {TEST_HANDLE, rights[i], TEST_ATTRIBUTES,
@@ -698,6 +754,42 @@ int recomp_kernel_file_save_test(void)
     passed &= close_file(handle, &passed);
     passed &= expect("directory removed on close",
         GetFileAttributesA(delete_directory_path) == INVALID_FILE_ATTRIBUTES);
+
+    passed &= expect("begin real close failure", recomp_save_begin(0u));
+    handle = open_for_delete("\\Device\\Harddisk0\\partition1\\UDATA\\transaction-delete.dat",
+        DELETE, &passed);
+    passed &= expect("mark delete before host rejection", set_information(handle, 13u, 1u, 1u, &passed) == 0u);
+    passed &= expect("make pending delete read-only",
+        SetFileAttributesA(transaction_file_path, FILE_ATTRIBUTE_READONLY) != 0);
+    passed &= expect("real delete error still fails close", invoke(187u, &handle, 1u, &passed) != 0u);
+    passed &= expect("real delete error aborts save", !recomp_save_end(0u, true));
+    passed &= expect("real delete error restores original file", file_equals(transaction_file_path, "before"));
+
+    for (unsigned directory = 0; directory < 2u; ++directory) {
+        const char *guest_path = directory
+            ? "\\Device\\Harddisk0\\partition1\\UDATA\\delete-directory"
+            : "\\Device\\Harddisk0\\partition1\\UDATA\\transaction-delete.dat";
+        const char *host_path = directory ? delete_directory_path : transaction_file_path;
+        if (directory) passed &= expect("create duplicate-delete directory", CreateDirectoryA(host_path, NULL) != 0);
+        for (unsigned commit = 0; commit < 2u; ++commit) {
+            uint32_t handles[2];
+            passed &= expect("begin duplicate delete", recomp_save_begin(0u));
+            for (unsigned api = 0; api < 2u; ++api) {
+                status = open_existing(guest_path, DELETE, 7u, api, directory, &passed);
+                handles[api] = *recomp_memory_u32(TEST_HANDLE);
+                passed &= expect("open duplicate delete handle", status == 0u);
+            }
+            for (unsigned i = 0; i < 2u; ++i)
+                passed &= expect("mark duplicate delete", set_information(handles[i], 13u, 1u, 1u, &passed) == 0u);
+            passed &= close_file(handles[0], &passed);
+            passed &= expect("remaining delete handle blocks commit", !recomp_kernel_save_handles_closed(0u));
+            passed &= close_file(handles[1], &passed);
+            passed &= expect("duplicate delete handles released", recomp_kernel_save_handles_closed(0u));
+            passed &= expect("duplicate delete preserves transaction outcome", recomp_save_end(0u, commit != 0u) == (commit != 0u));
+            passed &= expect("duplicate delete rollback or commit preserved",
+                (GetFileAttributesA(host_path) == INVALID_FILE_ATTRIBUTES) == (commit != 0u));
+        }
+    }
 
 cleanup:
     /* Reinitialization releases the documented lifetime journal lock. A null
