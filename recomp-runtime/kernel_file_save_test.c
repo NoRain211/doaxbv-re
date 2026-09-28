@@ -66,6 +66,20 @@ static uint32_t create_file(const char *path, uint32_t access,
     return *recomp_memory_u32(TEST_HANDLE);
 }
 
+static uint32_t open_existing(const char *path, uint32_t access, uint32_t share,
+    unsigned api, uint32_t options, int *passed)
+{
+    const uint32_t open_args[] = {TEST_HANDLE, access, TEST_ATTRIBUTES,
+        TEST_IOSB, share, options};
+    const uint32_t create_args[] = {TEST_HANDLE, access, TEST_ATTRIBUTES,
+        TEST_IOSB, 0u, 0u, share, 1u, options};
+    set_path(path);
+    uint32_t status = api == 0u ? invoke(202u, open_args, 6u, passed)
+                               : invoke(190u, create_args, 9u, passed);
+    *passed &= expect("open-existing IOSB status", *recomp_memory_u32(TEST_IOSB) == status);
+    return status;
+}
+
 static uint32_t write_file(uint32_t handle, const char *bytes,
     uint32_t length, int *passed)
 {
@@ -198,6 +212,51 @@ int recomp_kernel_file_save_test(void)
     passed &= expect("commit complete writes", recomp_save_end(0u, true));
     passed &= expect("committed bytes and EOF", file_equals(path, "abXY"));
     passed &= expect("commit clears operation", !recomp_save_pending());
+
+    status = open_existing("\\Device\\Harddisk0\\partition1\\UDATA",
+        GENERIC_READ, 3u, 0u, 1u, &passed);
+    uint32_t reader = *recomp_memory_u32(TEST_HANDLE);
+    passed &= expect("open directory before rollback", status == 0u);
+    passed &= expect("begin rollback with directory reader", recomp_save_begin(0u));
+    handle = create_file(guest_file, GENERIC_WRITE, 1u, &status, &passed);
+    passed &= expect("write before directory-reader rollback", status == 0u &&
+        write_file(handle, "zz", 2u, &passed) == 0u);
+    passed &= close_file(handle, &passed);
+    passed &= expect("abort with directory reader", !recomp_save_end(0u, false));
+    passed &= expect("directory reader allows full rollback", file_equals(path, "abXY"));
+    passed &= close_file(reader, &passed);
+    bool ready_after_rollback = recomp_save_begin(0u);
+    passed &= expect("rollback leaves store ready", ready_after_rollback);
+    if (ready_after_rollback) passed &= expect("commit after rollback", recomp_save_end(0u, true));
+    else passed &= expect("recover failed fixture", recomp_save_initialize(root));
+
+    handle = open_for_delete(guest_file, FILE_WRITE_ATTRIBUTES, &passed);
+    passed &= expect("begin while unrelated metadata handle exists", recomp_save_begin(7u));
+    passed &= close_file(handle, &passed);
+    passed &= expect("unrelated metadata close permits commit", recomp_save_end(7u, true));
+
+    for (unsigned api = 0; api < 2u; ++api) {
+        for (unsigned directory = 0; directory < 2u; ++directory) {
+            const uint32_t rights[] = {DELETE, FILE_WRITE_ATTRIBUTES, GENERIC_WRITE, GENERIC_READ};
+            for (unsigned i = 0; i < sizeof rights / sizeof rights[0]; ++i) {
+                passed &= expect("begin handle ownership check", recomp_save_begin(0u));
+                status = open_existing(directory
+                    ? "\\Device\\Harddisk0\\partition1\\UDATA" : guest_file,
+                    rights[i], 7u, api, directory, &passed);
+                handle = *recomp_memory_u32(TEST_HANDLE);
+                passed &= expect("open ownership-check handle", status == 0u && handle != 0u);
+                passed &= expect("mutation-capable handle blocks commit before mutation",
+                    recomp_kernel_save_handles_closed(0u) == (i == 3u));
+                if (rights[i] == DELETE) {
+                    passed &= expect("cancel unused deletion", set_information(handle, 13u, 0u, 1u, &passed) == 0u);
+                    passed &= expect("cancellation retains save ownership", !recomp_kernel_save_handles_closed(0u));
+                }
+                passed &= close_file(handle, &passed);
+                passed &= expect("close releases save ownership", recomp_kernel_save_handles_closed(0u));
+                passed &= expect("metadata close does not require data flush", recomp_save_end(0u, true));
+            }
+        }
+    }
 
     {
         const char *invalid_paths[] = {
@@ -487,6 +546,26 @@ int recomp_kernel_file_save_test(void)
         "%s\\delete-directory", live);
     passed &= expect("create directory for disposition",
         CreateDirectoryA(delete_directory_path, NULL) != 0);
+    for (unsigned first_api = 0; first_api < 2u; ++first_api) {
+        for (unsigned second_api = 0; second_api < 2u; ++second_api) {
+            for (unsigned reverse = 0; reverse < 2u; ++reverse) {
+                status = open_existing("\\Device\\Harddisk0\\partition1\\UDATA\\delete-directory",
+                    reverse ? DELETE : GENERIC_READ, reverse ? 7u : 3u, first_api, 1u, &passed);
+                handle = *recomp_memory_u32(TEST_HANDLE);
+                passed &= expect("open first shared directory", status == 0u && handle != 0u);
+                status = open_existing("\\Device\\Harddisk0\\partition1\\UDATA\\DELETE-DIRECTORY",
+                    reverse ? GENERIC_READ : DELETE, reverse ? 3u : 7u, second_api, 1u, &passed);
+                passed &= expect("directory delete sharing is symmetric", status == 0xc0000043u &&
+                    *recomp_memory_u32(TEST_HANDLE) == 0u);
+                if (status == 0u) passed &= close_file(*recomp_memory_u32(TEST_HANDLE), &passed);
+                passed &= close_file(handle, &passed);
+                status = open_existing("\\Device\\Harddisk0\\partition1\\UDATA\\delete-directory",
+                    reverse ? GENERIC_READ : DELETE, reverse ? 3u : 7u, second_api, 1u, &passed);
+                passed &= expect("directory close releases sharing constraint", status == 0u);
+                if (status == 0u) passed &= close_file(*recomp_memory_u32(TEST_HANDLE), &passed);
+            }
+        }
+    }
     snprintf(directory_child_path, sizeof directory_child_path,
         "%s\\child.dat", delete_directory_path);
     deletion_file = CreateFileA(directory_child_path, GENERIC_WRITE,

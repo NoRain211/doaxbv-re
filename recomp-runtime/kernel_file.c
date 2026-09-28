@@ -43,8 +43,10 @@ typedef struct FileHandleEntry {
     FileHandleKind kind;
     int active;
     int is_writable;
-    int save_write;
+    int save_owned; /* Profile mutation handles block transaction end. */
+    int save_write; /* Data writers also need flushing on close. */
     int delete_access;
+    int share_delete;
     int write_attributes;
     int delete_on_close;
     uint32_t save_owner;
@@ -56,6 +58,7 @@ static FileHandleEntry file_handles[MAX_FILE_HANDLES];
 static uint32_t next_guest_handle = 1u;
 static RecompSymbolicLinkModel symbolic_links;
 static int symbolic_links_initialized;
+static bool is_profile_path(const char *path);
 
 static void ensure_symbolic_links_initialized(void)
 {
@@ -97,7 +100,7 @@ bool recomp_kernel_save_handles_closed(uint32_t owner)
 {
     for (size_t i = 0; i < MAX_FILE_HANDLES; ++i) {
         if (file_handles[i].active &&
-            ((file_handles[i].save_write && file_handles[i].save_owner == owner) ||
+            ((file_handles[i].save_owned && file_handles[i].save_owner == owner) ||
              (file_handles[i].delete_on_close &&
               file_handles[i].delete_owner == owner))) {
             return false;
@@ -124,19 +127,40 @@ static uint32_t register_file_handle(
     FileHandleKind kind,
     const char *host_path,
     uint32_t desired_access,
-    int is_writable)
+    uint32_t share_access,
+    int is_writable,
+    uint32_t *status)
 {
+    const bool profile_path = kind != FILE_HANDLE_PSEUDO &&
+        host_path != NULL && is_profile_path(host_path);
+    /* Keep directories virtual so rollback can rebuild the tree beneath readers. */
+    if (kind == FILE_HANDLE_DIRECTORY && profile_path) {
+        for (size_t i = 0; i < MAX_FILE_HANDLES; ++i) {
+            const FileHandleEntry *entry = &file_handles[i];
+            if (entry->active && entry->kind == FILE_HANDLE_DIRECTORY &&
+                _stricmp(entry->host_path, host_path) == 0 &&
+                (((desired_access & DELETE) != 0u && !entry->share_delete) ||
+                 (entry->delete_access && (share_access & FILE_SHARE_DELETE) == 0u))) {
+                *status = 0xc0000043u; /* STATUS_SHARING_VIOLATION */
+                return 0u;
+            }
+        }
+    }
     for (size_t i = 0; i < MAX_FILE_HANDLES; ++i) {
         if (!file_handles[i].active) {
             file_handles[i].active = 1;
             file_handles[i].is_writable = is_writable;
-            file_handles[i].save_write = 0;
+            file_handles[i].save_write = profile_path && kind == FILE_HANDLE_HOST_FILE &&
+                (desired_access & GENERIC_WRITE) != 0u;
             file_handles[i].delete_access =
                 (desired_access & 0x00010000u) != 0u;
+            file_handles[i].share_delete = (share_access & FILE_SHARE_DELETE) != 0u;
             file_handles[i].write_attributes =
                 (desired_access & (GENERIC_WRITE | FILE_WRITE_ATTRIBUTES)) != 0u;
+            file_handles[i].save_owned = profile_path &&
+                (file_handles[i].delete_access || file_handles[i].write_attributes);
             file_handles[i].delete_on_close = 0;
-            file_handles[i].save_owner = 0u;
+            file_handles[i].save_owner = file_handles[i].save_owned ? current_save_owner() : 0u;
             file_handles[i].delete_owner = 0u;
             file_handles[i].host_handle = host_handle;
             file_handles[i].guest_handle = next_guest_handle;
@@ -194,9 +218,11 @@ static uint32_t register_file_handle(
                 }
             }
             next_guest_handle += 4u;
+            *status = RECOMP_STATUS_SUCCESS;
             return file_handles[i].guest_handle;
         }
     }
+    *status = RECOMP_STATUS_NO_MEMORY;
     return 0u;
 }
 
@@ -904,37 +930,22 @@ static void bridge_nt_open_file(void)
 
     if (host_handle != INVALID_HANDLE_VALUE) {
         guest_handle = register_file_handle(
-            host_handle, FILE_HANDLE_HOST_FILE, host_path, desired_access, is_writable);
+            host_handle, FILE_HANDLE_HOST_FILE, host_path,
+            desired_access, share_access, is_writable, &status);
         if (guest_handle == 0u) {
             CloseHandle(host_handle);
-            status = RECOMP_STATUS_NO_MEMORY;
         }
     } else if (is_directory) {
         guest_handle = register_file_handle(
-            INVALID_HANDLE_VALUE, FILE_HANDLE_DIRECTORY, host_path, desired_access, is_writable);
-        if (guest_handle == 0u) {
-            status = RECOMP_STATUS_NO_MEMORY;
-        }
+            INVALID_HANDLE_VALUE, FILE_HANDLE_DIRECTORY, host_path,
+            desired_access, share_access, is_writable, &status);
     } else if (status != RECOMP_STATUS_SUCCESS) {
         guest_handle = 0u;
     } else {
         guest_handle = register_file_handle(
-            INVALID_HANDLE_VALUE, FILE_HANDLE_PSEUDO, NULL, desired_access, 0);
-        if (guest_handle == 0u) {
-            status = RECOMP_STATUS_NO_MEMORY;
-        }
+            INVALID_HANDLE_VALUE, FILE_HANDLE_PSEUDO, NULL, desired_access, share_access, 0, &status);
     }
 
-    if (requested_write && profile_path && status == RECOMP_STATUS_SUCCESS) {
-        for (size_t i = 0; i < MAX_FILE_HANDLES; ++i) {
-            if (file_handles[i].active && file_handles[i].guest_handle == guest_handle &&
-                file_handles[i].kind == FILE_HANDLE_HOST_FILE) {
-                file_handles[i].save_write = 1;
-                file_handles[i].save_owner = save_owner;
-                break;
-            }
-        }
-    }
     if (required_save_io && status != RECOMP_STATUS_SUCCESS) {
         recomp_save_note_failure(save_owner);
     }
@@ -1017,11 +1028,9 @@ static void bridge_nt_create_file(void)
             (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
             status = RECOMP_STATUS_SUCCESS;
             guest_handle = register_file_handle(
-                INVALID_HANDLE_VALUE, FILE_HANDLE_DIRECTORY, host_path, desired_access, is_writable);
+                INVALID_HANDLE_VALUE, FILE_HANDLE_DIRECTORY, host_path,
+                desired_access, share_access, is_writable, &status);
             policy = "host-save-directory-open";
-            if (guest_handle == 0u) {
-                status = RECOMP_STATUS_NO_MEMORY;
-            }
         } else {
             status = RECOMP_STATUS_OBJECT_NAME_NOT_FOUND;
             guest_handle = 0u;
@@ -1039,11 +1048,11 @@ static void bridge_nt_create_file(void)
         if (host_handle != INVALID_HANDLE_VALUE) {
             status = RECOMP_STATUS_SUCCESS;
             guest_handle = register_file_handle(
-                host_handle, FILE_HANDLE_HOST_FILE, host_path, desired_access, is_writable);
+                host_handle, FILE_HANDLE_HOST_FILE, host_path,
+                desired_access, share_access, is_writable, &status);
             policy = "host-save-file-open";
             if (guest_handle == 0u) {
                 CloseHandle(host_handle);
-                status = RECOMP_STATUS_NO_MEMORY;
             }
         } else {
             status = RECOMP_STATUS_OBJECT_NAME_NOT_FOUND;
@@ -1061,11 +1070,8 @@ static void bridge_nt_create_file(void)
         } else {
             status = RECOMP_STATUS_SUCCESS;
             guest_handle = register_file_handle(
-                INVALID_HANDLE_VALUE, FILE_HANDLE_PSEUDO, NULL, desired_access, 0);
+                INVALID_HANDLE_VALUE, FILE_HANDLE_PSEUDO, NULL, desired_access, share_access, 0, &status);
             policy = "pseudo-handle-create";
-            if (guest_handle == 0u) {
-                status = RECOMP_STATUS_NO_MEMORY;
-            }
         }
     } else if ((desired_access & GENERIC_WRITE_ACCESS) != 0u) {
         /* A resolved path opened for write becomes a synthetic sink: reads
@@ -1074,38 +1080,21 @@ static void bridge_nt_create_file(void)
             CloseHandle(host_handle);
         }
         guest_handle = register_file_handle(
-            INVALID_HANDLE_VALUE, FILE_HANDLE_PSEUDO, NULL, desired_access, 0);
-        if (guest_handle == 0u) {
-            status = RECOMP_STATUS_NO_MEMORY;
-        } else {
-            policy = "synthetic-disc-write-sink";
-        }
+            INVALID_HANDLE_VALUE, FILE_HANDLE_PSEUDO, NULL, desired_access, share_access, 0, &status);
+        if (guest_handle != 0u) policy = "synthetic-disc-write-sink";
     } else if (host_handle != INVALID_HANDLE_VALUE) {
         guest_handle = register_file_handle(
-            host_handle, FILE_HANDLE_HOST_FILE, host_path, desired_access, is_writable);
+            host_handle, FILE_HANDLE_HOST_FILE, host_path,
+            desired_access, share_access, is_writable, &status);
         if (guest_handle == 0u) {
             CloseHandle(host_handle);
-            status = RECOMP_STATUS_NO_MEMORY;
         }
     } else if (is_directory) {
         guest_handle = register_file_handle(
-            INVALID_HANDLE_VALUE, FILE_HANDLE_DIRECTORY, host_path, desired_access, is_writable);
-        if (guest_handle == 0u) {
-            status = RECOMP_STATUS_NO_MEMORY;
-        }
+            INVALID_HANDLE_VALUE, FILE_HANDLE_DIRECTORY, host_path,
+            desired_access, share_access, is_writable, &status);
     }
 
-    if (profile_path && (desired_access & GENERIC_WRITE_ACCESS) != 0u &&
-        status == RECOMP_STATUS_SUCCESS) {
-        for (size_t i = 0; i < MAX_FILE_HANDLES; ++i) {
-            if (file_handles[i].active && file_handles[i].guest_handle == guest_handle &&
-                file_handles[i].kind == FILE_HANDLE_HOST_FILE) {
-                file_handles[i].save_write = 1;
-                file_handles[i].save_owner = save_owner;
-                break;
-            }
-        }
-    }
     if (mutation && recomp_save_active(save_owner) &&
         (status != RECOMP_STATUS_SUCCESS || guest_handle == 0u)) {
         recomp_save_note_failure(save_owner);
@@ -1243,7 +1232,7 @@ static bool handle_profile_mutation_information(
     *required_save_io = entry->save_write || profile_path;
     if (profile_path && recomp_save_pending() &&
         (!recomp_save_active(current_save_owner()) ||
-         (entry->save_write && entry->save_owner != current_save_owner()))) {
+         (entry->save_owned && entry->save_owner != current_save_owner()))) {
         recomp_save_note_pending_failure();
         *status = STATUS_UNSUCCESSFUL;
         *policy = "save-profile-mutation-owner-rejected";
@@ -2068,10 +2057,10 @@ uint32_t recomp_kernel_close_file(uint32_t guest_handle, uint32_t owner)
                 : DeleteFileA(entry->host_path);
             if (!removed) status = RECOMP_STATUS_ACCESS_DENIED;
         }
-        if ((entry->save_write || entry->delete_on_close) &&
+        if ((entry->save_owned || entry->delete_on_close) &&
             status != RECOMP_STATUS_SUCCESS) {
-            recomp_save_note_failure(entry->save_write
-                ? entry->save_owner : entry->delete_owner);
+            recomp_save_note_failure(entry->save_owner);
+            if (entry->delete_on_close) recomp_save_note_failure(entry->delete_owner);
         }
         break;
     }
