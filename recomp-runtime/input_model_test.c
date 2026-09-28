@@ -17,6 +17,8 @@ enum {
 };
 
 static RecompInputGamepad sampled_gamepad;
+static RecompInputGamepad port1_gamepad;
+static uint32_t source_ports = 1u;
 
 static int expect_u32(const char *field, uint32_t actual, uint32_t expected)
 {
@@ -42,9 +44,12 @@ static void prepare_call(uint32_t argument_count, const uint32_t *arguments)
     recomp_runtime.registers.eax = 0xa5a5a5a5u;
 }
 
-static bool sample_gamepad(RecompInputGamepad *gamepad)
+static bool sample_gamepad(uint32_t port, RecompInputGamepad *gamepad)
 {
-    *gamepad = sampled_gamepad;
+    if ((source_ports & 1u << port) == 0u) {
+        return false;
+    }
+    *gamepad = port == 0u ? sampled_gamepad : port1_gamepad;
     return true;
 }
 
@@ -77,6 +82,7 @@ int recomp_input_model_test(void)
     const RecompInputModel *model;
     uint32_t args[4];
     uint32_t handle;
+    uint32_t port1_handle;
     uint32_t insertions;
     uint32_t removals;
     int passed = 1;
@@ -184,6 +190,38 @@ int recomp_input_model_test(void)
     passed &= expect_u32(
         "Changes insertions", *recomp_memory_u32(args[1]), 0u);
     passed &= expect_u32("Changes removals", *recomp_memory_u32(args[2]), 0u);
+
+    source_ports = 0x3u;
+    port1_gamepad.buttons = 0x20u;
+    prepare_call(3u, args);
+    recomp_input_lookup_manual(0x00232de2u)();
+    passed &= expect_u32("Insert status", recomp_runtime.registers.eax, UINT32_MAX);
+    passed &= expect_u32("Insert mask", *recomp_memory_u32(args[1]), 2u);
+
+    args[0] = TEST_GAMEPAD_TYPE;
+    args[1] = 1u;
+    args[2] = 0u;
+    args[3] = 0u;
+    prepare_call(4u, args);
+    recomp_input_lookup_manual(0x00232e4fu)();
+    port1_handle = recomp_runtime.registers.eax;
+    passed &= expect_u32("Port 1 handle", port1_handle, 0x58490002u);
+
+    args[0] = port1_handle;
+    args[1] = TEST_OUTPUT;
+    prepare_call(2u, args);
+    recomp_input_lookup_manual(0x0023308fu)();
+    passed &= expect_u32(
+        "Port 1 buttons", *recomp_memory_u16(TEST_OUTPUT + 4u), 0x20u);
+
+    source_ports = 1u;
+    args[0] = TEST_GAMEPAD_TYPE;
+    args[1] = TEST_OUTPUT + 0x100u;
+    args[2] = TEST_OUTPUT + 0x104u;
+    prepare_call(3u, args);
+    recomp_input_lookup_manual(0x00232de2u)();
+    passed &= expect_u32("Removal mask", *recomp_memory_u32(args[2]), 2u);
+    passed &= expect_u32("Removed port closed", model->ports[1].open, 0u);
 
     args[0] = handle;
     prepare_call(1u, args);

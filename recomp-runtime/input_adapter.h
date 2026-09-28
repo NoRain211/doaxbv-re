@@ -8,7 +8,10 @@
 extern "C" {
 #endif
 
-typedef bool (*RecompInputSampleSource)(RecompInputGamepad *gamepad);
+/* Returns false when no pad is present on the port. */
+typedef bool (*RecompInputSampleSource)(
+    uint32_t port,
+    RecompInputGamepad *gamepad);
 
 RecompFunction recomp_input_lookup_manual(uint32_t guest_address);
 void recomp_input_adapter_reset(void);

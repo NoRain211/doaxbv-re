@@ -94,15 +94,23 @@ static void trace_sample(
     ++lines;
 }
 
-bool recomp_input_host_sample(RecompInputGamepad *gamepad)
+bool recomp_input_host_sample(uint32_t port, RecompInputGamepad *gamepad)
 {
+    static ULONGLONG retry_empty_at[XUSER_MAX_COUNT];
     XINPUT_STATE state = {0};
+    DWORD host_status = ERROR_DEVICE_NOT_CONNECTED;
+    ULONGLONG now = GetTickCount64();
 
-    if (gamepad == NULL) {
+    if (gamepad == NULL || port >= XUSER_MAX_COUNT) {
         return false;
     }
     memset(gamepad, 0, sizeof *gamepad);
-    DWORD host_status = XInputGetState(0u, &state);
+    /* Probing an empty slot is slow, so recheck one every two seconds. */
+    if (now >= retry_empty_at[port]) {
+        host_status = XInputGetState(port, &state);
+        retry_empty_at[port] =
+            host_status == ERROR_SUCCESS ? 0u : now + 2000u;
+    }
     if (host_status == ERROR_SUCCESS) {
         WORD digital = XINPUT_GAMEPAD_DPAD_UP |
             XINPUT_GAMEPAD_DPAD_DOWN |
@@ -138,7 +146,11 @@ bool recomp_input_host_sample(RecompInputGamepad *gamepad)
         gamepad->thumb_ry = state.Gamepad.sThumbRY;
     } else {
         /* A replugged pad starts with its motors off. */
-        memset(&sent_vibration[0], 0, sizeof sent_vibration[0]);
+        memset(&sent_vibration[port], 0, sizeof sent_vibration[port]);
+    }
+    if (port != 0u) {
+        /* The keyboard drives port 0 only. */
+        return host_status == ERROR_SUCCESS;
     }
     DWORD foreground_process = 0;
     GetWindowThreadProcessId(GetForegroundWindow(), &foreground_process);

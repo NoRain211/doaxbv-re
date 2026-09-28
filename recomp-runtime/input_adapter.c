@@ -29,7 +29,6 @@ enum {
 static RecompInputModel input_model;
 static RecompInputFeedbackSink feedback_sink;
 static RecompInputSampleSource input_source;
-static bool input_open_reported;
 
 static uint32_t stack_argument(uint32_t entry_esp, uint32_t index)
 {
@@ -47,13 +46,25 @@ static void finish(uint32_t entry_esp, uint32_t argument_count, uint32_t result)
     recomp_runtime.registers.esp = entry_esp + 4u + argument_count * 4u;
 }
 
+/* Port 0 stays connected for the keyboard; ports 1-3 follow the source. */
+static void refresh_connections(void)
+{
+    RecompInputGamepad ignored;
+
+    for (uint32_t port = 1u; port < RECOMP_INPUT_PORT_COUNT; ++port) {
+        recomp_input_set_connected(
+            &input_model,
+            port,
+            input_source != NULL && input_source(port, &ignored));
+    }
+}
+
 void recomp_input_adapter_reset(void)
 {
     /* A neutral port-0 pad is the bring-up policy even without a host source. */
     recomp_input_reset(&input_model, 1u);
     feedback_sink = NULL;
     input_source = NULL;
-    input_open_reported = false;
 }
 
 void recomp_input_adapter_set_source(RecompInputSampleSource source)
@@ -77,7 +88,6 @@ static void xinit_devices_adapter(void)
     /* Native XInput owns device allocation; Xbox USB preallocation is unused.
        Retain the host sample source installed by the runner. */
     recomp_input_reset(&input_model, 1u);
-    input_open_reported = false;
     fprintf(stderr, "recomp input: XInitDevices using native input model\n");
     finish(entry_esp, 2u, 0u);
 }
@@ -86,10 +96,12 @@ static void xget_devices_adapter(void)
 {
     uint32_t entry_esp = recomp_runtime.registers.esp;
     uint32_t type = stack_argument(entry_esp, 0u);
-    uint32_t mask = gamepad_type(type)
-        ? recomp_input_get_devices(&input_model)
-        : 0u;
+    uint32_t mask = 0u;
 
+    if (gamepad_type(type)) {
+        refresh_connections();
+        mask = recomp_input_get_devices(&input_model);
+    }
     finish(entry_esp, 1u, mask);
 }
 
@@ -105,6 +117,7 @@ static void xget_device_changes_adapter(void)
 
     if (gamepad_type(type) && insertions_address != 0u &&
         removals_address != 0u) {
+        refresh_connections();
         changed = recomp_input_get_device_changes(
             &input_model, &insertions, &removals);
         *recomp_memory_u32(insertions_address) = insertions;
@@ -123,11 +136,8 @@ static void xinput_open_adapter(void)
         ? recomp_input_open(&input_model, port)
         : 0u;
 
-    if (handle != 0u && !input_open_reported) {
-        fprintf(
-            stderr,
-            "recomp input: connected gamepad port=0 policy=keyboard-or-neutral\n");
-        input_open_reported = true;
+    if (handle != 0u) {
+        fprintf(stderr, "recomp input: opened gamepad port=%u\n", (unsigned)port);
     }
     finish(entry_esp, 4u, handle);
 }
@@ -191,16 +201,17 @@ static void xinput_get_state_adapter(void)
     uint32_t handle = stack_argument(entry_esp, 0u);
     uint32_t output = stack_argument(entry_esp, 1u);
     uint32_t packet;
+    uint32_t port;
     RecompInputGamepad gamepad;
     uint32_t result = ERROR_DEVICE_NOT_CONNECTED;
 
     if (output == 0u) {
         result = ERROR_INVALID_PARAMETER;
     } else {
-        if (input_source != NULL) {
+        if (input_source != NULL && recomp_input_handle_port(handle, &port)) {
             RecompInputGamepad sampled = {0};
 
-            if (input_source(&sampled)) {
+            if (input_source(port, &sampled)) {
                 (void)recomp_input_set_gamepad(
                     &input_model, handle, &sampled);
             }

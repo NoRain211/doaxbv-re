@@ -1,8 +1,10 @@
 # Native controller controls
 
-The Windows host currently reads one XInput controller on port 0. Xbox Series
-controller menu navigation and scored Exhibition play have been observed.
-Physical two-controller play remains unproven.
+The Windows host reads up to four XInput controllers into the game's four
+controller ports, in the order Windows numbers them. The keyboard drives the
+first port. A controller connected while the game runs appears within about
+two seconds. Xbox Series controller menu navigation and scored Exhibition play
+have been observed. Physical two-controller play remains unproven.
 
 The original game contains separate digital and analog control modes, including
 button assignments. The current candidate starts in Digital, including when
