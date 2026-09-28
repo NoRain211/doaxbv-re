@@ -496,7 +496,9 @@ if(RECOMP_PROGRAM_DIR)
         "${CMAKE_CURRENT_SOURCE_DIR}/../xbe")
     target_link_libraries(recomp_program_runner PRIVATE
         bcrypt dbghelp d3d11 d3dcompiler dxgi user32 xaudio2 ole32)
-    recomp_use_sdl3(recomp_program_runner)
+    if(WIN32)
+        recomp_use_sdl3(recomp_program_runner)
+    endif()
 
     # The binary .ico stays out of git; see docs/building.md.
     set(RECOMP_APP_ICON "" CACHE FILEPATH "Optional .ico embedded as the runner icon")
