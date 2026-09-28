@@ -615,7 +615,8 @@ static int try_open_host_file(
     size_t host_path_size,
     HANDLE *out_handle,
     uint32_t desired_access,
-    uint32_t share_access)
+    uint32_t share_access,
+    DWORD *open_error)
 {
     const bool profile_path = is_profile_path(host_path);
     const bool metadata_open = profile_path &&
@@ -632,6 +633,7 @@ static int try_open_host_file(
         host_access |= FILE_WRITE_ATTRIBUTES;
     }
 
+    *open_error = ERROR_SUCCESS;
     DWORD attributes = GetFileAttributesA(host_path);
     if (attributes != INVALID_FILE_ATTRIBUTES &&
         (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0) {
@@ -647,6 +649,7 @@ static int try_open_host_file(
             *out_handle = h;
             return 1;
         }
+        *open_error = GetLastError();
     }
 
     char child[MAX_SEGMENT_LEN];
@@ -785,6 +788,16 @@ static uint32_t build_directory_relative_path(
     return RECOMP_STATUS_INVALID_HANDLE;
 }
 
+/* GENERIC_ALL implies every right tracked for profile paths. Disc paths keep
+   their read-only meaning so they never become write sinks. */
+static uint32_t profile_access(const char *host_path, uint32_t access)
+{
+    if ((access & 0x10000000u) != 0u && is_profile_path(host_path)) {
+        access |= GENERIC_READ | GENERIC_WRITE | DELETE;
+    }
+    return access;
+}
+
 /* Resolve a guest object to a host file or directory. The caller registers
    the returned host handle or directory path as a guest handle. */
 static const char *resolve_and_open(
@@ -874,9 +887,16 @@ static const char *resolve_and_open(
         *out_status = RECOMP_STATUS_DELETE_PENDING;
         return "profile-path-delete-pending";
     }
+    DWORD open_error;
     if (try_open_host_file(host_path, MAX_PATH_LEN, out_host_handle,
-            desired_access, share_access)) {
+            profile_access(host_path, desired_access), share_access, &open_error)) {
         return *out_is_writable ? "host-save-file-open" : "host-disc-file-open";
+    }
+    /* An existing profile file that refused this open is not missing. */
+    if (is_profile_path(host_path) &&
+        (open_error == ERROR_SHARING_VIOLATION || open_error == ERROR_ACCESS_DENIED)) {
+        *out_status = open_error == ERROR_SHARING_VIOLATION ? 0xc0000043u : 0xc0000022u;
+        return "host-save-file-open-rejected";
     }
     if (try_open_host_directory(host_path, MAX_PATH_LEN)) {
         *out_is_directory = 1;
@@ -908,6 +928,7 @@ static void bridge_nt_open_file(void)
         object_attributes, guest_path, host_path, desired_access, share_access,
         &host_handle, &is_directory, &is_writable, &status);
     uint32_t save_owner = current_save_owner();
+    desired_access = profile_access(host_path, desired_access);
     bool requested_write = (desired_access & 0x40000000u) != 0u;
     bool profile_path = is_profile_path(host_path);
     bool required_save_io = requested_write ||
@@ -1001,6 +1022,7 @@ static void bridge_nt_create_file(void)
 
     uint32_t save_owner = current_save_owner();
     bool profile_path = is_profile_path(host_path);
+    desired_access = profile_access(host_path, desired_access);
     bool mutation = (desired_access & GENERIC_WRITE_ACCESS) != 0u ||
         (profile_path && (desired_access & (DELETE | FILE_WRITE_ATTRIBUTES)) != 0u) ||
         create_disposition != FILE_OPEN_DISPOSITION;

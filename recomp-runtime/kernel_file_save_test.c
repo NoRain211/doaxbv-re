@@ -454,6 +454,21 @@ int recomp_kernel_file_save_test(void)
                 file_equals(path, "abXY"));
         }
     }
+    {
+        /* A blocked existing file must not become a placeholder handle. */
+        passed &= expect("begin blocked open-if delete", recomp_save_begin(0u));
+        HANDLE blocker = CreateFileA(path, GENERIC_READ, 0, NULL,
+            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+        const uint32_t args[] = {TEST_HANDLE, DELETE, TEST_ATTRIBUTES,
+            TEST_IOSB, 0u, 0u, 7u, 3u, 0u};
+        set_path(guest_file);
+        status = invoke(190u, args, 9u, &passed);
+        passed &= expect("blocked open-if delete reports sharing violation",
+            status == 0xc0000043u);
+        if (blocker != INVALID_HANDLE_VALUE) CloseHandle(blocker);
+        passed &= expect("blocked open-if delete aborts save", !recomp_save_end(0u, true));
+        passed &= expect("blocked open-if delete keeps file", file_equals(path, "abXY"));
+    }
 
     passed &= expect("begin failed write", recomp_save_begin(0u));
     handle = create_file(guest_file, GENERIC_READ | GENERIC_WRITE, 1u, &status, &passed);
@@ -510,6 +525,12 @@ int recomp_kernel_file_save_test(void)
     passed &= close_file(handle, &passed);
     passed &= expect("access denial retains file",
         GetFileAttributesA(delete_file_path) != INVALID_FILE_ATTRIBUTES);
+    handle = open_for_delete(
+        "\\Device\\Harddisk0\\partition1\\UDATA\\delete.dat", 0x10000000u, &passed);
+    passed &= expect("GENERIC_ALL grants delete access",
+        set_information(handle, 13u, 1u, 1u, &passed) == 0u &&
+        set_information(handle, 13u, 0u, 1u, &passed) == 0u);
+    passed &= close_file(handle, &passed);
     handle = open_for_delete(
         "\\Device\\Harddisk0\\partition1\\UDATA\\delete.dat",
         0x00110000u, &passed);

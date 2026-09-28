@@ -36,6 +36,11 @@ HANDLE journal_lock = INVALID_HANDLE_VALUE;
    these, so a tree using them is refused before any change. */
 constexpr DWORD unsupported_attributes = FILE_ATTRIBUTE_REPARSE_POINT |
     FILE_ATTRIBUTE_COMPRESSED | FILE_ATTRIBUTE_ENCRYPTED | FILE_ATTRIBUTE_SPARSE_FILE;
+/* Rollback restores only what SetFileAttributesW accepts; filesystem-owned
+   states such as ReFS integrity streams would make recovery fail forever. */
+constexpr DWORD settable_attributes = FILE_ATTRIBUTE_READONLY | FILE_ATTRIBUTE_HIDDEN |
+    FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_ARCHIVE | FILE_ATTRIBUTE_NORMAL |
+    FILE_ATTRIBUTE_TEMPORARY | FILE_ATTRIBUTE_OFFLINE | FILE_ATTRIBUTE_NOT_CONTENT_INDEXED;
 #endif
 
 struct Times { uint64_t creation, access, write; };
@@ -262,8 +267,7 @@ void set_times(const Node &node)
 void set_attributes(const Node &node)
 {
 #ifdef _WIN32
-    DWORD attributes = node.attributes &
-        ~(FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT);
+    DWORD attributes = node.attributes & settable_attributes;
     if (attributes != 0u) require(SetFileAttributesW(node.path.c_str(), attributes) != 0);
 #else
     (void)node;
