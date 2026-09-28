@@ -1,16 +1,22 @@
 # Native controller controls
 
-The Windows host reads up to four XInput controllers into the game's four
-controller ports, in the order Windows numbers them. The keyboard drives the
-first port. A controller connected while the game runs appears within about
-two seconds. Xbox Series controller menu navigation and scored Exhibition play
-have been observed. Physical two-controller play remains unproven.
+The Windows host reads up to four gamepads through SDL3 into the game's four
+controller ports. A newly connected gamepad takes the lowest free port and
+keeps it until it disconnects. The keyboard drives the first port. Xbox Series
+controller menu navigation and scored Exhibition play have been observed.
+Physical two-controller play remains unproven.
+
+PlayStation 4 and 5 controllers use SDL's positional mapping
+(Cross/Circle/Square/Triangle as A/B/X/Y, L1/R1 as Black/White, Options as
+Start, Share/Create as Back). Only a virtual-gamepad check covers them so far,
+not physical hardware or a USB/Bluetooth transport. Set `RECOMP_INPUT_TRACE=1`
+to log each gamepad's name, port, changed port-0 samples and vibration.
 
 The original game contains separate digital and analog control modes, including
 button assignments. The current candidate starts in Digital, including when
 loading an older Analog save. An explicit later choice in Controller Settings
 is remembered as a PC preference. A manual restart restored an explicit Analog
-choice, followed by the player selecting and storing Digital. Use its digital mode for an XInput
+choice, followed by the player selecting and storing Digital. Use its digital mode for a physical
 controller: the host's face buttons report released or fully pressed, while
 triggers retain their
 analog values. The original digital volleyball defaults are:
@@ -37,7 +43,7 @@ game states. No distinct medium tier has been found. Button configuration can
 change the defaults above.
 
 The runtime input model and adapter preserve all eight pressure bytes. The
-current Windows XInput backend does not expose analog face-button pressure;
+current Windows SDL3 backend does not expose analog face-button pressure;
 support for a pressure-capable device requires a backend that supplies it.
 
 Scripted game input has selected Digital Control, exited the controller menu,
@@ -61,8 +67,9 @@ is not established as its cause or complete fix.
 
 ## Vibration
 
-The game's rumble reaches the XInput controller on the same port and stops
-when the game exits normally. Vibration defaults to on for new options; the
+The game's rumble reaches the gamepad on the same port. It stops when the game
+exits normally, or within one second if the game stops sending it. Vibration
+defaults to on for new options; the
 retail default is off. Earlier builds reported controllers without
 motors, and Controller Settings turns Vibration off for such a controller. A
 save made after opening that menu in an earlier build can keep Vibration off;

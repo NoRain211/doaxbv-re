@@ -122,6 +122,10 @@ not build a playable game runner and do not require game files. The fixture
 tests guest memory, registers, and dispatch at the generated-function seam. It
 does not contain generated game code or prove game parity.
 
+CMake configuration downloads the official SDL3 3.4.16 Visual C++ package from
+GitHub and checks its SHA-256. The build copies `SDL3.dll` beside the runner
+and the input test; keep it next to `recomp_program_runner.exe` if you move it.
+
 The named 0.4.7 Beta ZIP includes the ISO setup workflow and bundled
 Python, Capstone, MinGit, CMake and extractor. GitHub's automatic source archives contain
 the same project source and recipe but require separately installed tools.
