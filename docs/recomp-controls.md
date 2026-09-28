@@ -73,9 +73,9 @@ is not established as its cause or complete fix.
 ## Vibration
 
 The game's rumble reaches the gamepad on the same port. It stops when the game
-exits normally, or within one second if the game stops sending it. Vibration
-defaults to on for new options; the
-retail default is off. Earlier builds reported controllers without
-motors, and Controller Settings turns Vibration off for such a controller. A
-save made after opening that menu in an earlier build can keep Vibration off;
-turn it back on in Controller Settings.
+exits normally, or within one second if the game stops sending it.
+
+The save stores the Vibration setting. Saves from earlier builds load with it
+off: the retail default is off, and earlier builds also reported controllers
+without motors, which makes Controller Settings turn it off. Turn Vibration on
+once in Controller Settings. The runner defaults it to on for new options.

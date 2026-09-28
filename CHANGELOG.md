@@ -23,10 +23,10 @@ through Steam, turn Steam Input off for it for the same reason.
 - **Up to four controllers** (#68). Each connected controller takes the
   next free player port and keeps it until disconnected. Two physical
   controllers in one match have not been play-tested.
-- **Vibration** (#67). The game's rumble now reaches the controller, and
-  Vibration defaults to on for new options. A save made after opening
-  Controller Settings in an earlier build can keep Vibration off; turn it
-  back on there.
+- **Vibration** (#67). The game's rumble now reaches the controller.
+  **Saves from earlier builds load with Vibration off**; turn it on once in
+  Controller Settings. Confirmed in play: rumble works after switching it
+  on. The runner defaults Vibration to on for new options.
 
 ### Changed
 
