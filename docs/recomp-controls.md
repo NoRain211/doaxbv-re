@@ -12,6 +12,11 @@ Start, Share/Create as Back). Only a virtual-gamepad check covers them so far,
 not physical hardware or a USB/Bluetooth transport. Set `RECOMP_INPUT_TRACE=1`
 to log each gamepad's name, port, changed port-0 samples and vibration.
 
+Do not run DS4Windows while playing. It adds an emulated Xbox controller
+alongside the real one, so one physical pad takes two ports. Connect the
+PlayStation controller directly instead. Steam Input does the same when the
+game is launched through Steam; turn it off for the game.
+
 The original game contains separate digital and analog control modes, including
 button assignments. The current candidate starts in Digital, including when
 loading an older Analog save. An explicit later choice in Controller Settings

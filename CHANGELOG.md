@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.4.8 Beta — 2026-09-28
+
+This release adds native PlayStation 4 and 5 controller support, up to four
+controllers and controller vibration. The generation recipe is unchanged
+from 0.4.7, but the runner changed: download the new ZIP and run
+`BuildGame.cmd` again; keep your existing saves.
+
+**Do not run DS4Windows with this release.** Connect the PlayStation
+controller directly. DS4Windows adds a second, emulated Xbox controller, so
+one pad would appear twice and take two player ports. Close it, or disable
+its controller output, before starting the game. If you launch the game
+through Steam, turn Steam Input off for it for the same reason.
+
+### Added
+
+- **PlayStation 4 and 5 controllers** (#65, #70). Controllers are now read
+  through SDL3, so DualShock 4 and DualSense pads work without DS4Windows.
+  Cross/Circle/Square/Triangle act as A/B/X/Y, L1/R1 as Black/White, Options
+  as Start and Share/Create as Back. The mapping passes automated checks;
+  it has not yet been confirmed on a physical PlayStation controller.
+- **Up to four controllers** (#68). Each connected controller takes the
+  next free player port and keeps it until disconnected. Two physical
+  controllers in one match have not been play-tested.
+- **Vibration** (#67). The game's rumble now reaches the controller, and
+  Vibration defaults to on for new options. A save made after opening
+  Controller Settings in an earlier build can keep Vibration off; turn it
+  back on there.
+
+### Changed
+
+- Setup downloads SDL 3.4.16 from its official GitHub release while
+  building, and places `SDL3.dll` beside the game runner.
+
+### Unchanged
+
+- The known Hopping Game loading issue (#54), pool transition flash (#55)
+  and possible underwater texture issue (#56) remain.
+
 ## 0.4.7 Beta — 2026-09-26
 
 This release fixes the crash when viewing your collection. It updates the

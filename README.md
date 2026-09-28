@@ -63,6 +63,7 @@ running; so far only the startup thread entry has been rewritten.
 | Area | State |
 | --- | --- |
 | Exhibition volleyball, character select | Working, including Xbox Series controllers |
+| PlayStation 4/5 controllers, up to four controllers, vibration | Added in 0.4.8; PlayStation pads not yet confirmed on hardware |
 | Jungle, Beach, Niki Beach, Private Beach | Working |
 | Take a Rest, Hopping Game, Radio Station | Working |
 | Casino, Hotel, full vacation to its end | Working in player sessions |
@@ -81,7 +82,7 @@ Development results do not guarantee every route works in the packaged beta.
 ## Play the beta
 
 **Requirements:** Windows 10/11 x64, a supported USA game ISO and internet
-access. The 0.4.7 Beta ZIP bundles Python, Capstone, Git, CMake and the ISO
+access. The 0.4.8 Beta ZIP bundles Python, Capstone, Git, CMake and the ISO
 extractor. If the Microsoft C++ compiler or Windows SDK is missing, setup
 offers to download and run Microsoft's installer. That installation needs
 administrator approval and several GB of disk space; the full Visual Studio
@@ -104,6 +105,11 @@ automatic source archives are source only; see the
 New and older saves start in Digital control mode until you pick a PC
 control mode; later Analog or Digital choices are remembered. See the
 [controller guide](docs/recomp-controls.md).
+
+Xbox and PlayStation 4/5 controllers work directly. Do not run DS4Windows
+with the game: it adds an emulated Xbox controller, so one pad appears twice
+and takes two player ports. If you launch through Steam, turn Steam Input off
+for the game.
 
 ## Build the tests from source
 

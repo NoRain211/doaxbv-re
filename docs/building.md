@@ -31,7 +31,7 @@ The runner icon is optional and kept out of git. Place it at
 `private/doaxbv.ico` and the build embeds it; without it, the runner uses
 the default Windows icon.
 
-The **DOAXBV-0.4.7-Beta** ZIP bundles Python, Capstone, MinGit, CMake and the
+The **DOAXBV-0.4.8-Beta** ZIP bundles Python, Capstone, MinGit, CMake and the
 tagged extractor. Setup prefers the bundled Git and CMake for its own process;
 it does not change the system PATH. Extract the whole ZIP into a new folder
 with a short path before setup
@@ -126,7 +126,7 @@ CMake configuration downloads the official SDL3 3.4.16 Visual C++ package from
 GitHub and checks its SHA-256. The build copies `SDL3.dll` beside the runner
 and the input test; keep it next to `recomp_program_runner.exe` if you move it.
 
-The named 0.4.7 Beta ZIP includes the ISO setup workflow and bundled
+The named 0.4.8 Beta ZIP includes the ISO setup workflow and bundled
 Python, Capstone, MinGit, CMake and extractor. GitHub's automatic source archives contain
 the same project source and recipe but require separately installed tools.
 Neither download includes generated game code or a prebuilt game runner.
