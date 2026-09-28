@@ -36,7 +36,7 @@ Recovery runs before guest startup and before another outer save:
 - Deleting the `undo` file is the commit point.
 - The undo copy remains available until restoration finishes, so restoration can be retried after another interruption. If validation or restoration fails, startup stops with the journal retained.
 
-Windows holds an exclusive handle to the journal's empty `lock` file for the host's lifetime. A second host cannot initialize the same store while that handle is held. The file remains on disk after ownership ends. Journal and profile-tree checks reject reparse points.
+Windows holds an exclusive handle to the journal's empty `lock` file for the host's lifetime. A second host cannot initialize the same store while that handle is held. The file remains on disk after ownership ends. Journal and profile-tree checks reject reparse points. Save snapshots and recovery images also reject compressed, encrypted, or sparse entries before changing live profiles, because the journal cannot restore those storage attributes.
 
 Deleting the `undo` file retries temporary Windows access, sharing and lock denials against a 500 ms deadline; persistent denial still stops the operation. Builds before 2026-09-24 kept `staging`, `pending` and `committed` directory records instead. If one is present, startup stops; running the build that wrote it once recovers it.
 

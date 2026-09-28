@@ -188,6 +188,8 @@ int recomp_kernel_file_save_test(void)
     passed &= expect("create writable file", status == 0u && handle != 0u);
     passed &= expect("open protected handle blocks commit", !recomp_kernel_save_handles_closed(0u));
     passed &= expect("complete write", write_file(handle, "abcdef", 6u, &passed) == 0u);
+    passed &= expect("generic write grants attribute updates",
+        set_file_attributes(handle, FILE_ATTRIBUTE_ARCHIVE, &passed) == 0u);
     passed &= expect("set position", set_information(handle, 14u, 2u, 8u, &passed) == 0u);
     passed &= expect("write at guest cursor", write_file(handle, "XY", 2u, &passed) == 0u);
     passed &= expect("set EOF", set_information(handle, 20u, 4u, 8u, &passed) == 0u);
@@ -196,6 +198,28 @@ int recomp_kernel_file_save_test(void)
     passed &= expect("commit complete writes", recomp_save_end(0u, true));
     passed &= expect("committed bytes and EOF", file_equals(path, "abXY"));
     passed &= expect("commit clears operation", !recomp_save_pending());
+
+    {
+        const char *invalid_paths[] = {
+            "\\Device\\Harddisk0\\partition1\\UDATA\\bad.",
+            "\\Device\\Harddisk0\\partition1\\UDATA\\bad ",
+            "\\Device\\Harddisk0\\partition1\\UDATA\\..\\bad",
+            "D:\\bad.", "D:\\bad ", "D:\\..\\bad",
+        };
+        for (unsigned i = 0; i < sizeof invalid_paths / sizeof invalid_paths[0]; ++i) {
+            set_path(invalid_paths[i]);
+            const uint32_t args[] = {TEST_HANDLE, GENERIC_READ, TEST_ATTRIBUTES,
+                TEST_IOSB, 7u, 0u};
+            status = invoke(202u, args, 6u, &passed);
+            passed &= expect("malformed absolute open fails", status == 0xc000000du &&
+                *recomp_memory_u32(TEST_HANDLE) == 0u);
+            if (status == 0u) passed &= close_file(*recomp_memory_u32(TEST_HANDLE), &passed);
+            handle = create_file(invalid_paths[i], GENERIC_WRITE, 3u, &status, &passed);
+            passed &= expect("malformed absolute create fails", status == 0xc000000du &&
+                handle == 0u);
+            if (status == 0u) passed &= close_file(handle, &passed);
+        }
+    }
 
     passed &= expect("begin optional lookup", recomp_save_begin(0u));
     set_path("\\Device\\Harddisk0\\partition1\\UDATA\\missing.dat");
@@ -249,6 +273,34 @@ int recomp_kernel_file_save_test(void)
     passed &= expect("required NtOpenFile failure aborts success end", !recomp_save_end(0u, true));
     passed &= expect("required NtOpenFile failure rolls back earlier write", file_equals(path, "abXY"));
 
+    for (unsigned api = 0; api < 2u; ++api) {
+        const uint32_t rights[] = {DELETE, FILE_WRITE_ATTRIBUTES};
+        for (unsigned i = 0; i < 2u; ++i) {
+            passed &= expect("begin required metadata open", recomp_save_begin(0u));
+            handle = create_file(guest_file, GENERIC_READ | GENERIC_WRITE, 1u, &status, &passed);
+            passed &= expect("write before metadata open failure",
+                status == 0u && write_file(handle, "zz", 2u, &passed) == 0u);
+            passed &= close_file(handle, &passed);
+            HANDLE blocker = CreateFileA(path, GENERIC_READ, 0, NULL,
+                OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+            passed &= expect("block metadata open with real sharing denial",
+                blocker != INVALID_HANDLE_VALUE);
+            set_path(guest_file);
+            const uint32_t open_args[] = {TEST_HANDLE, rights[i], TEST_ATTRIBUTES,
+                TEST_IOSB, 7u, 0u};
+            const uint32_t create_args[] = {TEST_HANDLE, rights[i], TEST_ATTRIBUTES,
+                TEST_IOSB, 0u, 0u, 7u, 1u, 0u};
+            status = api == 0u ? invoke(202u, open_args, 6u, &passed)
+                               : invoke(190u, create_args, 9u, &passed);
+            passed &= expect("metadata open failure returned", status != 0u);
+            if (blocker != INVALID_HANDLE_VALUE) CloseHandle(blocker);
+            passed &= expect("metadata open failure aborts success end",
+                !recomp_save_end(0u, true));
+            passed &= expect("metadata open failure rolls back earlier write",
+                file_equals(path, "abXY"));
+        }
+    }
+
     passed &= expect("begin failed write", recomp_save_begin(0u));
     handle = create_file(guest_file, GENERIC_READ | GENERIC_WRITE, 1u, &status, &passed);
     passed &= expect("open for locked write", status == 0u && handle != 0u);
@@ -296,12 +348,41 @@ int recomp_kernel_file_save_test(void)
         deletion_file != INVALID_HANDLE_VALUE);
     if (deletion_file != INVALID_HANDLE_VALUE) CloseHandle(deletion_file);
     handle = open_for_delete(
+        "\\Device\\Harddisk0\\partition1\\UDATA\\delete.dat", GENERIC_READ, &passed);
+    passed &= expect("disposition requires delete access",
+        set_information(handle, 13u, 1u, 1u, &passed) == 0xc0000022u);
+    passed &= expect("zero attributes still require attribute access",
+        set_file_attributes(handle, 0u, &passed) == 0xc0000022u);
+    passed &= close_file(handle, &passed);
+    passed &= expect("access denial retains file",
+        GetFileAttributesA(delete_file_path) != INVALID_FILE_ATTRIBUTES);
+    handle = open_for_delete(
         "\\Device\\Harddisk0\\partition1\\UDATA\\delete.dat",
         0x00110000u, &passed);
     passed &= expect("set file disposition",
         set_information(handle, 13u, 1u, 1u, &passed) == 0u);
     passed &= expect("file remains until close",
         GetFileAttributesA(delete_file_path) != INVALID_FILE_ATTRIBUTES);
+    {
+        set_path("\\Device\\Harddisk0\\partition1\\UDATA\\DELETE.DAT");
+        const uint32_t args[] = {TEST_HANDLE, GENERIC_READ, TEST_ATTRIBUTES,
+            TEST_IOSB, 7u, 0u};
+        status = invoke(202u, args, 6u, &passed);
+        passed &= expect("pending file blocks case-insensitive reopen", status == 0xc0000056u);
+        if (status == 0u) close_file(*recomp_memory_u32(TEST_HANDLE), &passed);
+        const uint32_t create_args[] = {TEST_HANDLE, GENERIC_WRITE, TEST_ATTRIBUTES,
+            TEST_IOSB, 0u, 0u, 7u, 5u, 0u};
+        status = invoke(190u, create_args, 9u, &passed);
+        passed &= expect("pending file blocks overwrite", status == 0xc0000056u);
+        if (status == 0u) close_file(*recomp_memory_u32(TEST_HANDLE), &passed);
+        passed &= expect("cancel pending disposition",
+            set_information(handle, 13u, 0u, 1u, &passed) == 0u);
+        uint32_t reopened = open_for_delete(
+            "\\Device\\Harddisk0\\partition1\\UDATA\\delete.dat", GENERIC_READ, &passed);
+        passed &= close_file(reopened, &passed);
+        passed &= expect("restore pending disposition",
+            set_information(handle, 13u, 1u, 1u, &passed) == 0u);
+    }
     passed &= close_file(handle, &passed);
     passed &= expect("file removed on close",
         GetFileAttributesA(delete_file_path) == INVALID_FILE_ATTRIBUTES);
@@ -347,6 +428,35 @@ int recomp_kernel_file_save_test(void)
         !recomp_save_end(0u, false) &&
             file_equals(transaction_file_path, "before") &&
             GetFileAttributesA(transaction_file_path) == transaction_file_attributes);
+
+    for (unsigned information_class = 0; information_class < 2u; ++information_class) {
+        handle = open_for_delete(
+            "\\Device\\Harddisk0\\partition1\\UDATA\\transaction-delete.dat",
+            FILE_WRITE_ATTRIBUTES, &passed);
+        passed &= expect("begin foreign-owner metadata rejection", recomp_save_begin(7u));
+        status = information_class == 0u
+            ? set_file_attributes(handle, FILE_ATTRIBUTE_READONLY, &passed)
+            : set_information(handle, 13u, 1u, 1u, &passed);
+        passed &= expect("foreign owner metadata update rejected", status == 0xc0000001u);
+        passed &= close_file(handle, &passed);
+        passed &= expect("rejected metadata update poisons pending owner",
+            !recomp_save_end(7u, true));
+        passed &= expect("rejected metadata update preserves file",
+            file_equals(transaction_file_path, "before") &&
+            GetFileAttributesA(transaction_file_path) == transaction_file_attributes);
+    }
+
+    passed &= expect("begin cross-owner delete close", recomp_save_begin(0u));
+    handle = open_for_delete(
+        "\\Device\\Harddisk0\\partition1\\UDATA\\transaction-delete.dat",
+        DELETE, &passed);
+    passed &= expect("mark owner zero delete pending",
+        set_information(handle, 13u, 1u, 1u, &passed) == 0u);
+    passed &= expect("other owner close is rejected",
+        recomp_kernel_close_file(handle, 7u) != 0u);
+    passed &= expect("rejected close poisons the delete owner",
+        !recomp_save_end(0u, true));
+    passed &= expect("rejected close preserves payload", file_equals(transaction_file_path, "before"));
 
     snprintf(readonly_file_path, sizeof readonly_file_path,
         "%s\\readonly.dat", live);
@@ -456,6 +566,17 @@ int recomp_kernel_file_save_test(void)
         set_information(handle, 13u, 1u, 1u, &passed) == 0u);
     passed &= expect("directory remains until close",
         GetFileAttributesA(delete_directory_path) != INVALID_FILE_ATTRIBUTES);
+    {
+        set_path("child.dat");
+        *recomp_memory_u32(TEST_ATTRIBUTES) = handle;
+        const uint32_t args[] = {TEST_HANDLE, GENERIC_WRITE, TEST_ATTRIBUTES,
+            TEST_IOSB, 0u, 0u, 7u, 3u, 1u};
+        passed &= expect("pending directory blocks relative child creation",
+            invoke(190u, args, 9u, &passed) == 0xc0000056u &&
+            *recomp_memory_u32(TEST_HANDLE) == 0u);
+        passed &= expect("pending directory was not repopulated",
+            GetFileAttributesA(directory_child_path) == INVALID_FILE_ATTRIBUTES);
+    }
     passed &= close_file(handle, &passed);
     passed &= expect("directory removed on close",
         GetFileAttributesA(delete_directory_path) == INVALID_FILE_ATTRIBUTES);

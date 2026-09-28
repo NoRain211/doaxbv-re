@@ -22,6 +22,7 @@ bool ready, failed;
 uint32_t active_owner, depth;
 const char legacy_version[] = "recomp-save-undo-v1\n";
 const char version[] = "recomp-save-undo-v2\n";
+static_assert(sizeof legacy_version == sizeof version, "markers share one size");
 /* journal/undo holds the whole UDATA tree as it was before the operation, as
    one file so a save costs a few file operations. Its header records the
    image size: an image cut short by an interruption never reached live data
@@ -31,6 +32,10 @@ const char undo_magic[8] = {'r', 's', 'u', 'n', 'd', 'o', '0', '2'};
 constexpr size_t undo_header = sizeof undo_magic + sizeof(uint64_t);
 #ifdef _WIN32
 HANDLE journal_lock = INVALID_HANDLE_VALUE;
+/* Rollback rebuilds files with SetFileAttributesW, which silently drops
+   these, so a tree using them is refused before any change. */
+constexpr DWORD unsupported_attributes = FILE_ATTRIBUTE_REPARSE_POINT |
+    FILE_ATTRIBUTE_COMPRESSED | FILE_ATTRIBUTE_ENCRYPTED | FILE_ATTRIBUTE_SPARSE_FILE;
 #endif
 
 struct Times { uint64_t creation, access, write; };
@@ -176,7 +181,7 @@ void save_node(std::string &out, const fs::path &path, const fs::path &relative)
 #ifdef _WIN32
     WIN32_FILE_ATTRIBUTE_DATA attributes;
     require(GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &attributes) != 0);
-    require((attributes.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0);
+    require((attributes.dwFileAttributes & unsupported_attributes) == 0);
     saved_attributes = attributes.dwFileAttributes;
     const bool directory = (attributes.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
     times = {ticks(attributes.ftCreationTime), ticks(attributes.ftLastAccessTime),
@@ -297,7 +302,7 @@ void restore(std::string_view image)
             require(attributes <= (std::numeric_limits<uint32_t>::max)());
             node.attributes = static_cast<uint32_t>(attributes);
 #ifdef _WIN32
-            require((node.attributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0u);
+            require((node.attributes & unsupported_attributes) == 0u);
 #endif
         }
         const auto name = in.take(in.number());
@@ -363,18 +368,26 @@ bool check_journal()
     require(exists_plain(journal) && fs::is_directory(journal));
     const auto version_path = journal / "version";
     require(exists_plain(version_path) && fs::is_regular_file(version_path));
-    const std::string marker = read_file(version_path);
+    /* Reading one byte past the marker proves the file ends there. */
+    char buffer[sizeof version];
+    std::ifstream stream(version_path, std::ios::binary);
+    stream.read(buffer, sizeof buffer);
+    require(!stream.bad() && stream.eof() && stream.gcount() == sizeof version - 1);
+    const std::string_view marker(buffer, sizeof version - 1);
     require(marker == version || marker == legacy_version);
+    const bool legacy = marker == legacy_version;
     for (const auto &entry : fs::directory_iterator(journal)) {
         const auto name = entry.path().filename();
         if (name == "staging" || name == "pending" || name == "committed") {
             throw std::runtime_error(
                 "save journal from an older build; run that build once to recover it");
         }
-        require(name == "version" || name == "lock" || name == "undo");
+        /* An upgrade interrupted before its rename leaves version.tmp. */
+        require(name == "version" || name == "lock" || name == "undo" ||
+            (legacy && name == "version.tmp"));
         require(exists_plain(entry.path()) && fs::is_regular_file(entry.path()));
     }
-    return marker == legacy_version;
+    return legacy;
 }
 }
 
@@ -421,7 +434,11 @@ extern "C" bool recomp_save_initialize(const char *disc_root)
         }
         upgrade_version = check_journal();
         recover();
-        if (upgrade_version) write_file(journal / "version", version);
+        if (upgrade_version) {
+            /* Keep the v1 marker valid until the same-directory rename. */
+            write_file(journal / "version.tmp", version);
+            fs::rename(journal / "version.tmp", journal / "version");
+        }
         check_tree(live);
         ready = true;
         return true;
@@ -484,6 +501,11 @@ extern "C" bool recomp_save_end(uint32_t owner, bool success)
 extern "C" void recomp_save_note_failure(uint32_t owner)
 {
     if (depth != 0 && owner == active_owner) failed = true;
+}
+
+extern "C" void recomp_save_note_pending_failure(void)
+{
+    if (depth != 0) failed = true;
 }
 
 extern "C" bool recomp_save_active(uint32_t owner)

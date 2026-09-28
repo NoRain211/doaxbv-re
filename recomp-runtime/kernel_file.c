@@ -18,8 +18,10 @@
 
 static const uint32_t RECOMP_STATUS_SUCCESS = 0x00000000u;
 static const uint32_t RECOMP_STATUS_INVALID_HANDLE = 0xc0000008u;
+static const uint32_t RECOMP_STATUS_INVALID_PARAMETER = 0xc000000du;
 static const uint32_t RECOMP_STATUS_OBJECT_NAME_NOT_FOUND = 0xc0000034u;
 static const uint32_t RECOMP_STATUS_NO_MEMORY = 0xc0000017u;
+static const uint32_t RECOMP_STATUS_DELETE_PENDING = 0xc0000056u;
 
 enum {
     MAX_FILE_HANDLES = 256,
@@ -104,9 +106,8 @@ bool recomp_kernel_save_handles_closed(uint32_t owner)
     return true;
 }
 
-static bool save_write_allowed(const FileHandleEntry *entry)
+static bool save_write_allowed(const FileHandleEntry *entry, uint32_t owner)
 {
-    uint32_t owner = current_save_owner();
     if (entry->save_write && recomp_save_pending() && !recomp_save_active(owner)) {
         recomp_stop(2, "save:non-owner-write");
     }
@@ -133,7 +134,7 @@ static uint32_t register_file_handle(
             file_handles[i].delete_access =
                 (desired_access & 0x00010000u) != 0u;
             file_handles[i].write_attributes =
-                (desired_access & 0x00000100u) != 0u;
+                (desired_access & (GENERIC_WRITE | FILE_WRITE_ATTRIBUTES)) != 0u;
             file_handles[i].delete_on_close = 0;
             file_handles[i].save_owner = 0u;
             file_handles[i].delete_owner = 0u;
@@ -352,6 +353,7 @@ static bool is_profile_path(const char *path)
         (path[length] == '\0' || path[length] == '\\' || path[length] == '/');
 }
 
+/* 0 is another device; -1 is a recognized save path with invalid components. */
 static int build_save_path(
     const char *guest_path,
     char *host_path,
@@ -370,7 +372,7 @@ static int build_save_path(
     copy_root(host_path, host_path_size);
     if (!append_segment(host_path, host_path_size, ".recomp-storage") ||
         !append_segment(host_path, host_path_size, "partition1")) {
-        return 0;
+        return -1;
     }
 
     const char *relative = guest_path + prefix_len;
@@ -378,7 +380,7 @@ static int build_save_path(
         ++relative;
     }
 
-    return append_relative_path(relative, host_path, host_path_size);
+    return append_relative_path(relative, host_path, host_path_size) ? 1 : -1;
 }
 
 static int is_save_root_path(const char *guest_path)
@@ -720,6 +722,21 @@ static int host_directory_is_empty(const char *path)
     return empty;
 }
 
+static bool path_is_delete_pending(const char *path)
+{
+    for (size_t i = 0; i < MAX_FILE_HANDLES; ++i) {
+        const FileHandleEntry *entry = &file_handles[i];
+        if (!entry->active || !entry->delete_on_close) continue;
+        size_t length = strlen(entry->host_path);
+        if (_strnicmp(path, entry->host_path, length) == 0 &&
+            (path[length] == '\0' ||
+             (entry->kind == FILE_HANDLE_DIRECTORY && path[length] == '\\'))) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static uint32_t build_directory_relative_path(
     uint32_t root_directory, const char *relative, char *host_path,
     int *out_is_writable)
@@ -735,7 +752,7 @@ static uint32_t build_directory_relative_path(
         strcpy(host_path, entry->host_path);
         if (!append_relative_path(relative, host_path, MAX_PATH_LEN)) {
             host_path[0] = '\0';
-            return 0xc000000du; /* STATUS_INVALID_PARAMETER */
+            return RECOMP_STATUS_INVALID_PARAMETER;
         }
         *out_is_writable = entry->is_writable;
         return RECOMP_STATUS_SUCCESS;
@@ -798,6 +815,7 @@ static const char *resolve_and_open(
         return "host-raw-partition-open-failed";
     }
 
+    const int save_path = build_save_path(path, host_path, MAX_PATH_LEN);
     /* Drive-qualified names can carry the special DOS-devices root handle. */
     if (root_directory != 0u && guest_path[0] != '\\' &&
         guest_path[0] != '/' && strchr(guest_path, ':') == NULL) {
@@ -806,7 +824,11 @@ static const char *resolve_and_open(
         if (*out_status != RECOMP_STATUS_SUCCESS) {
             return "directory-relative-path-rejected";
         }
-    } else if (build_save_path(path, host_path, MAX_PATH_LEN)) {
+    } else if (save_path != 0) {
+        if (save_path < 0) {
+            *out_status = RECOMP_STATUS_INVALID_PARAMETER;
+            return "invalid-save-path";
+        }
         *out_is_writable = 1;
         if (is_save_root_path(path)) {
             (void)create_directory_tree(host_path);
@@ -816,10 +838,17 @@ static const char *resolve_and_open(
             return "pseudo-handle-open";
         }
         if (!build_host_path(normalized + 2, host_path, MAX_PATH_LEN)) {
-            return "pseudo-handle-open";
+            *out_status = RECOMP_STATUS_INVALID_PARAMETER;
+            return "invalid-disc-path";
         }
     }
 
+    if (path_is_delete_pending(host_path)) {
+        /* Create/open must not retry or synthesize a handle for this path. */
+        *out_is_writable = 0;
+        *out_status = RECOMP_STATUS_DELETE_PENDING;
+        return "profile-path-delete-pending";
+    }
     if (try_open_host_file(host_path, MAX_PATH_LEN, out_host_handle,
             desired_access, share_access)) {
         return *out_is_writable ? "host-save-file-open" : "host-disc-file-open";
@@ -856,7 +885,9 @@ static void bridge_nt_open_file(void)
     uint32_t save_owner = current_save_owner();
     bool requested_write = (desired_access & 0x40000000u) != 0u;
     bool profile_path = is_profile_path(host_path);
-    if (requested_write && recomp_save_pending() &&
+    bool required_save_io = requested_write ||
+        (profile_path && (desired_access & (DELETE | FILE_WRITE_ATTRIBUTES)) != 0u);
+    if (required_save_io && recomp_save_pending() &&
         ((profile_path && !recomp_save_active(save_owner)) ||
          (recomp_save_active(save_owner) && !profile_path))) {
         if (host_handle != INVALID_HANDLE_VALUE) CloseHandle(host_handle);
@@ -904,7 +935,7 @@ static void bridge_nt_open_file(void)
             }
         }
     }
-    if (requested_write && status != RECOMP_STATUS_SUCCESS) {
+    if (required_save_io && status != RECOMP_STATUS_SUCCESS) {
         recomp_save_note_failure(save_owner);
     }
 
@@ -961,6 +992,7 @@ static void bridge_nt_create_file(void)
     uint32_t save_owner = current_save_owner();
     bool profile_path = is_profile_path(host_path);
     bool mutation = (desired_access & GENERIC_WRITE_ACCESS) != 0u ||
+        (profile_path && (desired_access & (DELETE | FILE_WRITE_ATTRIBUTES)) != 0u) ||
         create_disposition != FILE_OPEN_DISPOSITION;
     if (mutation && recomp_save_pending() &&
         ((profile_path && !recomp_save_active(save_owner)) ||
@@ -1212,11 +1244,13 @@ static bool handle_profile_mutation_information(
     if (profile_path && recomp_save_pending() &&
         (!recomp_save_active(current_save_owner()) ||
          (entry->save_write && entry->save_owner != current_save_owner()))) {
+        recomp_save_note_pending_failure();
         *status = STATUS_UNSUCCESSFUL;
         *policy = "save-profile-mutation-owner-rejected";
         return true;
     }
-    if (*required_save_io && !profile_path && !save_write_allowed(entry)) {
+    if (*required_save_io && !profile_path &&
+        !save_write_allowed(entry, current_save_owner())) {
         *status = STATUS_UNSUCCESSFUL;
         *policy = "save-write-owner-rejected";
         return true;
@@ -1231,12 +1265,12 @@ static bool handle_profile_mutation_information(
             *policy = "basic-information-accepted-without-action";
         } else {
             uint32_t attributes = *recomp_memory_u32(file_information + 0x20u);
-            if (attributes == 0u || !entry->write_attributes) {
-                *status = attributes == 0u
-                    ? RECOMP_STATUS_SUCCESS : STATUS_ACCESS_DENIED;
-                *policy = attributes == 0u
-                    ? "basic-information-attributes-unchanged"
-                    : "profile-attributes-access-denied";
+            if (!entry->write_attributes) {
+                *status = STATUS_ACCESS_DENIED;
+                *policy = "profile-attributes-access-denied";
+            } else if (attributes == 0u) {
+                *status = RECOMP_STATUS_SUCCESS;
+                *policy = "basic-information-attributes-unchanged";
             } else if (SetFileAttributesA(entry->host_path, attributes)) {
                 *status = RECOMP_STATUS_SUCCESS;
                 *policy = "profile-attributes-set";
@@ -1333,7 +1367,8 @@ static void bridge_nt_set_information_file(void)
 
         required_save_io = file_handles[i].save_write ||
             file_information_class == FILE_END_OF_FILE_INFORMATION;
-        if (required_save_io && !save_write_allowed(&file_handles[i])) {
+        if (required_save_io &&
+            !save_write_allowed(&file_handles[i], current_save_owner())) {
             status = 0xc0000001u;
             policy = "save-write-owner-rejected";
             break;
@@ -1422,7 +1457,6 @@ static void bridge_nt_set_information_file(void)
 static void bridge_nt_query_directory_file(void)
 
 {
-    const uint32_t RECOMP_STATUS_INVALID_PARAMETER = 0xc000000du;
     const uint32_t RECOMP_STATUS_NO_MORE_FILES = 0x80000006u;
     const uint32_t FILE_DIRECTORY_INFORMATION = 1u;
     const uint32_t DIRECTORY_HEADER_SIZE = 0x40u;
@@ -1557,7 +1591,7 @@ static void bridge_nt_write_file(void)
         }
 
         tracked_handle_seen = 1;
-        if (!save_write_allowed(&file_handles[i])) {
+        if (!save_write_allowed(&file_handles[i], current_save_owner())) {
             status = RECOMP_STATUS_UNSUCCESSFUL;
             policy = "save-write-owner-rejected";
             break;
@@ -1922,7 +1956,6 @@ static void bridge_io_delete_symbolic_link(void)
 
 static void bridge_nt_open_symbolic_link_object(void)
 {
-    const uint32_t RECOMP_STATUS_INVALID_PARAMETER = 0xc000000du;
     uint32_t link_handle = kernel_arg(1u);
     uint32_t object_attributes = kernel_arg(2u);
     uint32_t guest_handle = 0u;
@@ -1950,7 +1983,6 @@ static void bridge_nt_open_symbolic_link_object(void)
 
 static void bridge_nt_query_symbolic_link_object(void)
 {
-    const uint32_t RECOMP_STATUS_INVALID_PARAMETER = 0xc000000du;
     uint32_t guest_handle = kernel_arg(1u);
     uint32_t target_string = kernel_arg(2u);
     uint32_t returned_length = kernel_arg(3u);
@@ -1993,9 +2025,8 @@ static void bridge_nt_query_symbolic_link_object(void)
     kernel_return(3u, status);
 }
 
-static void bridge_nt_close(void)
+uint32_t recomp_kernel_close_file(uint32_t guest_handle, uint32_t owner)
 {
-    uint32_t guest_handle = kernel_arg(1u);
     uint32_t status = RECOMP_STATUS_SUCCESS;
     const uint32_t RECOMP_STATUS_UNSUCCESSFUL = 0xc0000001u;
     const uint32_t RECOMP_STATUS_ACCESS_DENIED = 0xc0000022u;
@@ -2009,15 +2040,15 @@ static void bridge_nt_close(void)
         }
         bool delete_on_close = entry->delete_on_close != 0;
         if (delete_on_close && recomp_save_pending() &&
-            (!recomp_save_active(current_save_owner()) ||
-             entry->delete_owner != current_save_owner() ||
+            (!recomp_save_active(owner) ||
+             entry->delete_owner != owner ||
              (entry->save_write &&
-              entry->save_owner != current_save_owner()))) {
+              entry->save_owner != owner))) {
             status = RECOMP_STATUS_UNSUCCESSFUL;
             delete_on_close = false;
         }
         if (entry->host_handle != INVALID_HANDLE_VALUE) {
-            if (entry->save_write && !save_write_allowed(entry)) {
+            if (entry->save_write && !save_write_allowed(entry, owner)) {
                 status = RECOMP_STATUS_UNSUCCESSFUL;
             }
             if (entry->save_write && !FlushFileBuffers(entry->host_handle)) {
@@ -2040,11 +2071,16 @@ static void bridge_nt_close(void)
         if ((entry->save_write || entry->delete_on_close) &&
             status != RECOMP_STATUS_SUCCESS) {
             recomp_save_note_failure(entry->save_write
-                ? entry->save_owner : current_save_owner());
+                ? entry->save_owner : entry->delete_owner);
         }
         break;
     }
-    kernel_return(1u, status);
+    return status;
+}
+
+static void bridge_nt_close(void)
+{
+    kernel_return(1u, recomp_kernel_close_file(kernel_arg(1u), current_save_owner()));
 }
 
 RecompFunction recomp_kernel_file(uint32_t ordinal)
