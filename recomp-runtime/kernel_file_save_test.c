@@ -531,6 +531,49 @@ int recomp_kernel_file_save_test(void)
         set_information(handle, 13u, 1u, 1u, &passed) == 0u &&
         set_information(handle, 13u, 0u, 1u, &passed) == 0u);
     passed &= close_file(handle, &passed);
+    {
+        char on_close_path[MAX_PATH];
+        snprintf(on_close_path, sizeof on_close_path, "%s\\on-close.dat", live);
+        for (unsigned api = 0; api < 2u; ++api) {
+            HANDLE created = CreateFileA(on_close_path, GENERIC_WRITE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+                CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+            passed &= expect("create delete-on-close file", created != INVALID_HANDLE_VALUE);
+            if (created != INVALID_HANDLE_VALUE) CloseHandle(created);
+            status = open_existing("\\Device\\Harddisk0\\partition1\\UDATA\\on-close.dat",
+                GENERIC_READ, 7u, api, 0x1000u, &passed);
+            passed &= expect("delete-on-close requires delete access",
+                status == 0xc000000du && *recomp_memory_u32(TEST_HANDLE) == 0u);
+            status = open_existing("\\Device\\Harddisk0\\partition1\\UDATA\\on-close.dat",
+                DELETE, 7u, api, 0x1000u, &passed);
+            handle = *recomp_memory_u32(TEST_HANDLE);
+            passed &= expect("open with delete-on-close", status == 0u && handle != 0u);
+            passed &= expect("delete-on-close file remains until close",
+                GetFileAttributesA(on_close_path) != INVALID_FILE_ATTRIBUTES);
+            passed &= close_file(handle, &passed);
+            passed &= expect("delete-on-close removes file on close",
+                GetFileAttributesA(on_close_path) == INVALID_FILE_ATTRIBUTES);
+        }
+    }
+    {
+        char created_path[MAX_PATH];
+        const uint32_t args[] = {TEST_HANDLE, FILE_WRITE_ATTRIBUTES, TEST_ATTRIBUTES,
+            TEST_IOSB, 0u, 0u, 7u, 3u, 0u};
+        snprintf(created_path, sizeof created_path, "%s\\metadata-create.dat", live);
+        passed &= expect("begin metadata-only create", recomp_save_begin(0u));
+        set_path("\\Device\\Harddisk0\\partition1\\UDATA\\metadata-create.dat");
+        status = invoke(190u, args, 9u, &passed);
+        handle = *recomp_memory_u32(TEST_HANDLE);
+        passed &= expect("metadata-only create makes a real file", status == 0u &&
+            GetFileAttributesA(created_path) != INVALID_FILE_ATTRIBUTES);
+        passed &= expect("metadata-only create sets attributes",
+            set_file_attributes(handle, FILE_ATTRIBUTE_HIDDEN, &passed) == 0u &&
+            (GetFileAttributesA(created_path) & FILE_ATTRIBUTE_HIDDEN) != 0u);
+        passed &= close_file(handle, &passed);
+        passed &= expect("abandon metadata-only create", !recomp_save_end(0u, false));
+        passed &= expect("rollback removes metadata-only create",
+            GetFileAttributesA(created_path) == INVALID_FILE_ATTRIBUTES);
+    }
     handle = open_for_delete(
         "\\Device\\Harddisk0\\partition1\\UDATA\\delete.dat",
         0x00110000u, &passed);
@@ -682,6 +725,16 @@ int recomp_kernel_file_save_test(void)
             }
         }
     }
+    status = open_existing("\\Device\\Harddisk0\\partition1\\UDATA\\delete-directory",
+        GENERIC_READ, 1u, 0u, 1u, &passed);
+    handle = *recomp_memory_u32(TEST_HANDLE);
+    passed &= expect("open directory denying write sharing", status == 0u && handle != 0u);
+    status = open_existing("\\Device\\Harddisk0\\partition1\\UDATA\\delete-directory",
+        GENERIC_WRITE, 7u, 1u, 1u, &passed);
+    passed &= expect("directory write sharing enforced", status == 0xc0000043u &&
+        *recomp_memory_u32(TEST_HANDLE) == 0u);
+    if (status == 0u) passed &= close_file(*recomp_memory_u32(TEST_HANDLE), &passed);
+    passed &= close_file(handle, &passed);
     snprintf(directory_child_path, sizeof directory_child_path,
         "%s\\child.dat", delete_directory_path);
     deletion_file = CreateFileA(directory_child_path, GENERIC_WRITE,

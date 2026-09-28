@@ -46,7 +46,8 @@ typedef struct FileHandleEntry {
     int save_owned; /* Profile mutation handles block transaction end. */
     int save_write; /* Data writers also need flushing on close. */
     int delete_access;
-    int share_delete;
+    uint32_t sharing_access; /* FILE_SHARE_* bits this handle's access conflicts with. */
+    uint32_t share_mode;
     int write_attributes;
     int delete_on_close;
     uint32_t save_owner;
@@ -133,14 +134,19 @@ static uint32_t register_file_handle(
 {
     const bool profile_path = kind != FILE_HANDLE_PSEUDO &&
         host_path != NULL && is_profile_path(host_path);
+    uint32_t sharing_access = 0u;
+    if ((desired_access & (GENERIC_READ | 0x1u | 0x20u)) != 0u) sharing_access |= FILE_SHARE_READ;
+    if ((desired_access & (GENERIC_WRITE | 0x2u | 0x4u)) != 0u) sharing_access |= FILE_SHARE_WRITE;
+    if ((desired_access & DELETE) != 0u) sharing_access |= FILE_SHARE_DELETE;
+    share_access &= FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
     /* Keep directories virtual so rollback can rebuild the tree beneath readers. */
     if (kind == FILE_HANDLE_DIRECTORY && profile_path) {
         for (size_t i = 0; i < MAX_FILE_HANDLES; ++i) {
             const FileHandleEntry *entry = &file_handles[i];
             if (entry->active && entry->kind == FILE_HANDLE_DIRECTORY &&
                 _stricmp(entry->host_path, host_path) == 0 &&
-                (((desired_access & DELETE) != 0u && !entry->share_delete) ||
-                 (entry->delete_access && (share_access & FILE_SHARE_DELETE) == 0u))) {
+                ((sharing_access & ~entry->share_mode) != 0u ||
+                 (entry->sharing_access & ~share_access) != 0u)) {
                 *status = 0xc0000043u; /* STATUS_SHARING_VIOLATION */
                 return 0u;
             }
@@ -154,7 +160,8 @@ static uint32_t register_file_handle(
                 (desired_access & GENERIC_WRITE) != 0u;
             file_handles[i].delete_access =
                 (desired_access & 0x00010000u) != 0u;
-            file_handles[i].share_delete = (share_access & FILE_SHARE_DELETE) != 0u;
+            file_handles[i].sharing_access = sharing_access;
+            file_handles[i].share_mode = share_access;
             file_handles[i].write_attributes =
                 (desired_access & (GENERIC_WRITE | FILE_WRITE_ATTRIBUTES)) != 0u;
             file_handles[i].save_owned = profile_path &&
@@ -798,6 +805,69 @@ static uint32_t profile_access(const char *host_path, uint32_t access)
     return access;
 }
 
+/* Mark a profile handle for deletion at close, as a disposition request would. */
+static void request_profile_delete(
+    FileHandleEntry *entry, uint32_t *status, const char **policy)
+{
+    const uint32_t STATUS_ACCESS_DENIED = 0xc0000022u;
+    const uint32_t STATUS_CANNOT_DELETE = 0xc0000121u;
+    const uint32_t STATUS_DIRECTORY_NOT_EMPTY = 0xc0000101u;
+    DWORD attributes = GetFileAttributesA(entry->host_path);
+    int empty = 1;
+
+    if (attributes == INVALID_FILE_ATTRIBUTES) {
+        *status = RECOMP_STATUS_OBJECT_NAME_NOT_FOUND;
+        *policy = "profile-delete-path-missing";
+        return;
+    }
+    if ((attributes & FILE_ATTRIBUTE_READONLY) != 0u) {
+        *status = STATUS_CANNOT_DELETE;
+        *policy = "profile-path-read-only";
+        return;
+    }
+    if (entry->kind == FILE_HANDLE_DIRECTORY) empty = host_directory_is_empty(entry->host_path);
+    if (empty == 0) {
+        *status = STATUS_DIRECTORY_NOT_EMPTY;
+        *policy = "profile-directory-not-empty";
+    } else if (empty < 0) {
+        *status = STATUS_ACCESS_DENIED;
+        *policy = "profile-directory-enumeration-failed";
+    } else {
+        entry->delete_on_close = 1;
+        entry->delete_owner = current_save_owner();
+        *status = RECOMP_STATUS_SUCCESS;
+        *policy = "profile-delete-pending";
+    }
+}
+
+/* FILE_DELETE_ON_CLOSE marks a newly opened profile handle for deletion. A
+   handle that cannot be marked is closed and the open fails. */
+static void apply_delete_on_close_option(
+    uint32_t *guest_handle, uint32_t options, uint32_t *status, const char **policy)
+{
+    if ((options & 0x00001000u) == 0u || *guest_handle == 0u ||
+        *status != RECOMP_STATUS_SUCCESS) {
+        return;
+    }
+    for (size_t i = 0; i < MAX_FILE_HANDLES; ++i) {
+        FileHandleEntry *entry = &file_handles[i];
+        if (!entry->active || entry->guest_handle != *guest_handle) continue;
+        if (!is_profile_path(entry->host_path)) return;
+        if (!entry->delete_access) {
+            *status = RECOMP_STATUS_INVALID_PARAMETER;
+            *policy = "delete-on-close-without-delete-access";
+        } else {
+            request_profile_delete(entry, status, policy);
+        }
+        if (*status != RECOMP_STATUS_SUCCESS) {
+            if (entry->host_handle != INVALID_HANDLE_VALUE) CloseHandle(entry->host_handle);
+            entry->active = 0;
+            *guest_handle = 0u;
+        }
+        return;
+    }
+}
+
 /* Resolve a guest object to a host file or directory. The caller registers
    the returned host handle or directory path as a guest handle. */
 static const char *resolve_and_open(
@@ -913,6 +983,7 @@ static void bridge_nt_open_file(void)
     uint32_t share_access = kernel_arg(5u);
     uint32_t object_attributes = kernel_arg(3u);
     uint32_t io_status_block = kernel_arg(4u);
+    uint32_t open_options = kernel_arg(6u);
 
     uint32_t status;
     uint32_t guest_handle = 1u;
@@ -965,6 +1036,7 @@ static void bridge_nt_open_file(void)
         guest_handle = register_file_handle(
             INVALID_HANDLE_VALUE, FILE_HANDLE_PSEUDO, NULL, desired_access, share_access, 0, &status);
     }
+    apply_delete_on_close_option(&guest_handle, open_options, &status, &policy);
 
     if (required_save_io && status != RECOMP_STATUS_SUCCESS) {
         recomp_save_note_failure(save_owner);
@@ -1057,7 +1129,10 @@ static void bridge_nt_create_file(void)
             guest_handle = 0u;
             policy = "host-save-directory-open-failed";
         }
-    } else if (is_writable && (desired_access & GENERIC_WRITE_ACCESS) != 0u) {
+    } else if (is_writable && ((desired_access & GENERIC_WRITE_ACCESS) != 0u ||
+               (create_disposition != FILE_OPEN_DISPOSITION &&
+                status == RECOMP_STATUS_OBJECT_NAME_NOT_FOUND))) {
+        /* Writers and creates of a missing save path both need a real file. */
         if (host_handle != INVALID_HANDLE_VALUE) {
             CloseHandle(host_handle);
         }
@@ -1115,6 +1190,7 @@ static void bridge_nt_create_file(void)
             INVALID_HANDLE_VALUE, FILE_HANDLE_DIRECTORY, host_path,
             desired_access, share_access, is_writable, &status);
     }
+    apply_delete_on_close_option(&guest_handle, create_options, &status, &policy);
 
     if (mutation && recomp_save_active(save_owner) &&
         (status != RECOMP_STATUS_SUCCESS || guest_handle == 0u)) {
@@ -1241,8 +1317,6 @@ static bool handle_profile_mutation_information(
     const uint32_t STATUS_UNSUCCESSFUL = 0xc0000001u;
     const uint32_t STATUS_INFO_LENGTH_MISMATCH = 0xc0000004u;
     const uint32_t STATUS_ACCESS_DENIED = 0xc0000022u;
-    const uint32_t STATUS_CANNOT_DELETE = 0xc0000121u;
-    const uint32_t STATUS_DIRECTORY_NOT_EMPTY = 0xc0000101u;
 
     if (file_information_class != FILE_BASIC_INFORMATION &&
         file_information_class != FILE_DISPOSITION_INFORMATION) {
@@ -1307,33 +1381,7 @@ static bool handle_profile_mutation_information(
         *status = RECOMP_STATUS_SUCCESS;
         *policy = "profile-delete-cancelled";
     } else {
-        DWORD attributes = GetFileAttributesA(entry->host_path);
-        if (attributes == INVALID_FILE_ATTRIBUTES) {
-            *status = RECOMP_STATUS_OBJECT_NAME_NOT_FOUND;
-            *policy = "profile-delete-path-missing";
-        } else if ((attributes & FILE_ATTRIBUTE_READONLY) != 0u) {
-            *status = STATUS_CANNOT_DELETE;
-            *policy = "profile-path-read-only";
-        } else if (entry->kind == FILE_HANDLE_DIRECTORY) {
-            const int empty = host_directory_is_empty(entry->host_path);
-            if (empty == 0) {
-                *status = STATUS_DIRECTORY_NOT_EMPTY;
-                *policy = "profile-directory-not-empty";
-            } else if (empty < 0) {
-                *status = STATUS_ACCESS_DENIED;
-                *policy = "profile-directory-enumeration-failed";
-            } else {
-                entry->delete_on_close = 1;
-                entry->delete_owner = current_save_owner();
-                *status = RECOMP_STATUS_SUCCESS;
-                *policy = "profile-delete-pending";
-            }
-        } else {
-            entry->delete_on_close = 1;
-            entry->delete_owner = current_save_owner();
-            *status = RECOMP_STATUS_SUCCESS;
-            *policy = "profile-delete-pending";
-        }
+        request_profile_delete(entry, status, policy);
     }
     return true;
 }
