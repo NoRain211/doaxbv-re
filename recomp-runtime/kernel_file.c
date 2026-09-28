@@ -1078,6 +1078,7 @@ static void bridge_nt_create_file(void)
     uint32_t create_options = kernel_arg(9u);
 
     const uint32_t FILE_OPEN_DISPOSITION = 1u;
+    const uint32_t FILE_OPEN_IF_DISPOSITION = 3u;
     const uint32_t GENERIC_WRITE_ACCESS = 0x40000000u;
 
     uint32_t status;
@@ -1140,15 +1141,20 @@ static void bridge_nt_create_file(void)
         }
     } else if (is_writable && ((desired_access & GENERIC_WRITE_ACCESS) != 0u ||
                (create_disposition != FILE_OPEN_DISPOSITION &&
-                status == RECOMP_STATUS_OBJECT_NAME_NOT_FOUND))) {
-        /* Writers and creates of a missing save path both need a real file. */
+                (status == RECOMP_STATUS_OBJECT_NAME_NOT_FOUND ||
+                 (host_handle != INVALID_HANDLE_VALUE &&
+                  create_disposition != FILE_OPEN_IF_DISPOSITION))))) {
+        /* Writers, creates of a missing save path, and create, supersede,
+           or overwrite of an existing one all need the host disposition. */
         if (host_handle != INVALID_HANDLE_VALUE) {
             CloseHandle(host_handle);
         }
         host_handle = INVALID_HANDLE_VALUE;
+        DWORD create_error = ERROR_PATH_NOT_FOUND;
         if (create_parent_directories(host_path)) {
             host_handle = create_host_file(
                 host_path, desired_access, share_access, create_disposition);
+            if (host_handle == INVALID_HANDLE_VALUE) create_error = GetLastError();
         }
         if (host_handle != INVALID_HANDLE_VALUE) {
             status = RECOMP_STATUS_SUCCESS;
@@ -1160,7 +1166,10 @@ static void bridge_nt_create_file(void)
                 CloseHandle(host_handle);
             }
         } else {
-            status = RECOMP_STATUS_OBJECT_NAME_NOT_FOUND;
+            status = create_error == ERROR_FILE_EXISTS ? 0xc0000035u /* NAME_COLLISION */
+                : create_error == ERROR_SHARING_VIOLATION ? 0xc0000043u
+                : create_error == ERROR_ACCESS_DENIED ? 0xc0000022u
+                : RECOMP_STATUS_OBJECT_NAME_NOT_FOUND;
             guest_handle = 0u;
             policy = "host-save-file-open-failed";
         }
@@ -1236,6 +1245,7 @@ static void bridge_nt_query_information_file(void)
 
     const uint32_t FILE_STANDARD_INFORMATION = 5u;
     const uint32_t FILE_NETWORK_OPEN_INFORMATION = 0x22u;
+    const uint32_t FILE_BASIC_INFORMATION = 4u;
     uint32_t status = RECOMP_STATUS_SUCCESS;
     uint64_t file_size = 0u;
     const char *policy = "zero-filled-pseudo-file-information";
@@ -1254,17 +1264,36 @@ static void bridge_nt_query_information_file(void)
             break;
         }
 
-        LARGE_INTEGER size;
-        if (file_handles[i].kind == FILE_HANDLE_DIRECTORY ||
-            file_handles[i].host_handle == INVALID_HANDLE_VALUE ||
-            !GetFileSizeEx(file_handles[i].host_handle, &size)) {
+        const FileHandleEntry *entry = &file_handles[i];
+        const bool directory = entry->kind == FILE_HANDLE_DIRECTORY;
+        /* Profile metadata can change through NtSetInformationFile, so report
+           the host's. Disc files keep the frozen host's answers. */
+        WIN32_FILE_ATTRIBUTE_DATA host;
+        const bool profile_metadata = is_profile_path(entry->host_path) &&
+            GetFileAttributesExA(entry->host_path, GetFileExInfoStandard, &host);
+        LARGE_INTEGER size = {0};
+        if ((directory && !profile_metadata) ||
+            (!directory && (entry->host_handle == INVALID_HANDLE_VALUE ||
+                            !GetFileSizeEx(entry->host_handle, &size)))) {
             status = RECOMP_STATUS_INVALID_HANDLE;
             policy = "host-file-information-failed";
             break;
         }
 
         file_size = (uint64_t)size.QuadPart;
-        policy = "host-file-information";
+        policy = profile_metadata ? "host-profile-file-information" : "host-file-information";
+        const uint32_t attributes = profile_metadata
+            ? host.dwFileAttributes : FILE_ATTRIBUTE_NORMAL;
+        if (profile_metadata && file_information != 0u &&
+            ((file_information_class == FILE_BASIC_INFORMATION && length >= 0x24u) ||
+             (file_information_class == FILE_NETWORK_OPEN_INFORMATION && length >= 0x38u))) {
+            const FILETIME times[4] = {host.ftCreationTime, host.ftLastAccessTime,
+                host.ftLastWriteTime, host.ftLastWriteTime};
+            for (uint32_t t = 0u; t < 4u; ++t) {
+                *recomp_memory_u32(file_information + t * 8u) = times[t].dwLowDateTime;
+                *recomp_memory_u32(file_information + t * 8u + 4u) = times[t].dwHighDateTime;
+            }
+        }
         if (file_information_class == FILE_NETWORK_OPEN_INFORMATION &&
             file_information != 0u && length >= 0x38u) {
             *recomp_memory_u32(file_information + 0x20u) =
@@ -1276,7 +1305,7 @@ static void bridge_nt_query_information_file(void)
             *recomp_memory_u32(file_information + 0x2cu) =
                 (uint32_t)(file_size >> 32u);
             *recomp_memory_u32(file_information + 0x30u) =
-                FILE_ATTRIBUTE_NORMAL;
+                attributes;
         } else if (file_information_class == FILE_STANDARD_INFORMATION &&
                    file_information != 0u && length >= 0x16u) {
             *recomp_memory_u32(file_information + 0x00u) =
@@ -1288,6 +1317,11 @@ static void bridge_nt_query_information_file(void)
             *recomp_memory_u32(file_information + 0x0cu) =
                 (uint32_t)(file_size >> 32u);
             *recomp_memory_u32(file_information + 0x10u) = 1u;
+            *recomp_memory_i8(file_information + 0x14u) = (int8_t)(entry->delete_on_close != 0);
+            *recomp_memory_i8(file_information + 0x15u) = (int8_t)directory;
+        } else if (file_information_class == FILE_BASIC_INFORMATION &&
+                   file_information != 0u && length >= 0x24u && profile_metadata) {
+            *recomp_memory_u32(file_information + 0x20u) = attributes;
         }
         break;
     }

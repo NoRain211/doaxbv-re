@@ -131,6 +131,13 @@ static uint32_t open_for_delete(const char *guest_path,
     return *recomp_memory_u32(TEST_HANDLE);
 }
 
+static uint32_t query_information(uint32_t handle, uint32_t kind,
+    uint32_t length, int *passed)
+{
+    const uint32_t args[] = {handle, TEST_IOSB, TEST_INFORMATION, length, kind};
+    return invoke(211u, args, 5u, passed);
+}
+
 static int close_file(uint32_t handle, int *passed)
 {
     return expect("close status", invoke(187u, &handle, 1u, passed) == 0u);
@@ -584,6 +591,19 @@ int recomp_kernel_file_save_test(void)
         passed &= expect("metadata-only create sets attributes",
             set_file_attributes(handle, FILE_ATTRIBUTE_HIDDEN, &passed) == 0u &&
             (GetFileAttributesA(created_path) & FILE_ATTRIBUTE_HIDDEN) != 0u);
+        passed &= expect("basic query reports updated attributes",
+            query_information(handle, 4u, 0x28u, &passed) == 0u &&
+            (*recomp_memory_u32(TEST_INFORMATION + 0x20u) & FILE_ATTRIBUTE_HIDDEN) != 0u);
+        passed &= expect("network query reports updated attributes",
+            query_information(handle, 0x22u, 0x38u, &passed) == 0u &&
+            (*recomp_memory_u32(TEST_INFORMATION + 0x30u) & FILE_ATTRIBUTE_HIDDEN) != 0u);
+        {
+            const uint32_t collide_args[] = {TEST_HANDLE, DELETE, TEST_ATTRIBUTES,
+                TEST_IOSB, 0u, 0u, 7u, 2u, 0u};
+            status = invoke(190u, collide_args, 9u, &passed);
+            passed &= expect("metadata-only FILE_CREATE on existing file collides",
+                status == 0xc0000035u && *recomp_memory_u32(TEST_HANDLE) == 0u);
+        }
         passed &= close_file(handle, &passed);
         passed &= expect("abandon metadata-only create", !recomp_save_end(0u, false));
         passed &= expect("rollback removes metadata-only create",
@@ -744,6 +764,9 @@ int recomp_kernel_file_save_test(void)
         GENERIC_READ, 1u, 0u, 1u, &passed);
     handle = *recomp_memory_u32(TEST_HANDLE);
     passed &= expect("open directory denying write sharing", status == 0u && handle != 0u);
+    passed &= expect("directory query reports directory attributes",
+        query_information(handle, 4u, 0x28u, &passed) == 0u &&
+        (*recomp_memory_u32(TEST_INFORMATION + 0x20u) & FILE_ATTRIBUTE_DIRECTORY) != 0u);
     status = open_existing("\\Device\\Harddisk0\\partition1\\UDATA\\delete-directory",
         GENERIC_WRITE, 7u, 1u, 1u, &passed);
     passed &= expect("directory write sharing enforced", status == 0xc0000043u &&
