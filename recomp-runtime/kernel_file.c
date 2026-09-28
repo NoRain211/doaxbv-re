@@ -40,6 +40,7 @@ typedef struct FileHandleEntry {
     RecompDirectoryModel directory;
     FileHandleKind kind;
     int active;
+    int is_writable;
     int save_write;
     int delete_access;
     int write_attributes;
@@ -121,11 +122,13 @@ static uint32_t register_file_handle(
     HANDLE host_handle,
     FileHandleKind kind,
     const char *host_path,
-    uint32_t desired_access)
+    uint32_t desired_access,
+    int is_writable)
 {
     for (size_t i = 0; i < MAX_FILE_HANDLES; ++i) {
         if (!file_handles[i].active) {
             file_handles[i].active = 1;
+            file_handles[i].is_writable = is_writable;
             file_handles[i].save_write = 0;
             file_handles[i].delete_access =
                 (desired_access & 0x00010000u) != 0u;
@@ -211,17 +214,24 @@ static int read_guest_ansi_string(uint32_t ansi_string_address, char *out, size_
     return 1;
 }
 
-static int read_guest_object_name(uint32_t object_attributes, char *out, size_t out_size)
+static int read_guest_object_name(uint32_t object_attributes, char *out,
+    size_t out_size, uint32_t *root_directory)
 {
     if (object_attributes == 0u) {
         return 0;
     }
     uint32_t compact_name = *recomp_memory_u32(object_attributes + 4u);
     if (compact_name != 0u && read_guest_ansi_string(compact_name, out, out_size)) {
+        if (root_directory != NULL) {
+            *root_directory = *recomp_memory_u32(object_attributes);
+        }
         return 1;
     }
     uint32_t nt_name = *recomp_memory_u32(object_attributes + 8u);
     if (nt_name != 0u && read_guest_ansi_string(nt_name, out, out_size)) {
+        if (root_directory != NULL) {
+            *root_directory = *recomp_memory_u32(object_attributes + 4u);
+        }
         return 1;
     }
     return 0;
@@ -229,7 +239,10 @@ static int read_guest_object_name(uint32_t object_attributes, char *out, size_t 
 
 static int append_segment(char *path, size_t path_size, const char *segment)
 {
-    if (segment[0] == '\0' || strcmp(segment, "..") == 0 || strchr(segment, ':') != NULL) {
+    size_t seg_len = strlen(segment);
+    /* Win32 trims trailing dots/spaces, which can turn a name into "..". */
+    if (seg_len == 0u || strchr(segment, ':') != NULL ||
+        segment[seg_len - 1u] == '.' || segment[seg_len - 1u] == ' ') {
         return 0;
     }
     size_t len = strlen(path);
@@ -240,7 +253,6 @@ static int append_segment(char *path, size_t path_size, const char *segment)
         path[len++] = '\\';
         path[len] = '\0';
     }
-    size_t seg_len = strlen(segment);
     if (len + seg_len + 1 > path_size) {
         return 0;
     }
@@ -288,14 +300,12 @@ static void copy_root(char *host_path, size_t host_path_size)
     }
 }
 
-static int build_host_path(const char *relative, char *host_path, size_t host_path_size)
+static int append_relative_path(const char *relative, char *host_path, size_t host_path_size)
 {
-    copy_root(host_path, host_path_size);
-
     char segment[MAX_SEGMENT_LEN];
     size_t seg_i = 0;
     for (const char *p = relative; *p != '\0'; ++p) {
-        if (*p == '\\') {
+        if (*p == '\\' || *p == '/') {
             if (seg_i > 0) {
                 segment[seg_i] = '\0';
                 if (!append_segment(host_path, host_path_size, segment)) {
@@ -317,6 +327,12 @@ static int build_host_path(const char *relative, char *host_path, size_t host_pa
         }
     }
     return strlen(host_path) > 0;
+}
+
+static int build_host_path(const char *relative, char *host_path, size_t host_path_size)
+{
+    copy_root(host_path, host_path_size);
+    return append_relative_path(relative, host_path, host_path_size);
 }
 
 static bool is_profile_path(const char *path)
@@ -362,31 +378,7 @@ static int build_save_path(
         ++relative;
     }
 
-    char segment[MAX_SEGMENT_LEN];
-    size_t segment_length = 0u;
-    for (const char *p = relative; *p != '\0'; ++p) {
-        if (*p == '\\' || *p == '/') {
-            if (segment_length > 0u) {
-                segment[segment_length] = '\0';
-                if (!append_segment(host_path, host_path_size, segment)) {
-                    return 0;
-                }
-                segment_length = 0u;
-            }
-        } else {
-            if (segment_length >= sizeof segment - 1u) {
-                return 0;
-            }
-            segment[segment_length++] = *p;
-        }
-    }
-    if (segment_length > 0u) {
-        segment[segment_length] = '\0';
-        if (!append_segment(host_path, host_path_size, segment)) {
-            return 0;
-        }
-    }
-    return 1;
+    return append_relative_path(relative, host_path, host_path_size);
 }
 
 static int is_save_root_path(const char *guest_path)
@@ -728,11 +720,31 @@ static int host_directory_is_empty(const char *path)
     return empty;
 }
 
-/* Resolve a guest object-attributes name to a host disc path and open it the
-   way the native host does: a real read-only handle for a disc file, a
-   registered directory handle for a directory, or a not-found status. Returns
-   the policy string for logging; on a resolved file the host handle is handed
-   back through out_host_handle for the caller to register. */
+static uint32_t build_directory_relative_path(
+    uint32_t root_directory, const char *relative, char *host_path,
+    int *out_is_writable)
+{
+    for (size_t i = 0; i < MAX_FILE_HANDLES; ++i) {
+        const FileHandleEntry *entry = &file_handles[i];
+        if (!entry->active || entry->guest_handle != root_directory) {
+            continue;
+        }
+        if (entry->kind != FILE_HANDLE_DIRECTORY) {
+            break;
+        }
+        strcpy(host_path, entry->host_path);
+        if (!append_relative_path(relative, host_path, MAX_PATH_LEN)) {
+            host_path[0] = '\0';
+            return 0xc000000du; /* STATUS_INVALID_PARAMETER */
+        }
+        *out_is_writable = entry->is_writable;
+        return RECOMP_STATUS_SUCCESS;
+    }
+    return RECOMP_STATUS_INVALID_HANDLE;
+}
+
+/* Resolve a guest object to a host file or directory. The caller registers
+   the returned host handle or directory path as a guest handle. */
 static const char *resolve_and_open(
     uint32_t object_attributes,
     char *guest_path,
@@ -747,6 +759,7 @@ static const char *resolve_and_open(
     char normalized[MAX_PATH_LEN] = {0};
     char resolved_path[MAX_PATH_LEN] = {0};
     const char *path = guest_path;
+    uint32_t root_directory = 0u;
 
     *out_host_handle = INVALID_HANDLE_VALUE;
     *out_is_directory = 0;
@@ -755,7 +768,8 @@ static const char *resolve_and_open(
     host_path[0] = '\0';
 
     if (recomp_disc_root_path == NULL ||
-        !read_guest_object_name(object_attributes, guest_path, MAX_PATH_LEN)) {
+        !read_guest_object_name(object_attributes, guest_path, MAX_PATH_LEN,
+            &root_directory)) {
         return "pseudo-handle-open";
     }
 
@@ -784,45 +798,38 @@ static const char *resolve_and_open(
         return "host-raw-partition-open-failed";
     }
 
-    if (build_save_path(path, host_path, MAX_PATH_LEN)) {
+    /* Drive-qualified names can carry the special DOS-devices root handle. */
+    if (root_directory != 0u && guest_path[0] != '\\' &&
+        guest_path[0] != '/' && strchr(guest_path, ':') == NULL) {
+        *out_status = build_directory_relative_path(
+            root_directory, guest_path, host_path, out_is_writable);
+        if (*out_status != RECOMP_STATUS_SUCCESS) {
+            return "directory-relative-path-rejected";
+        }
+    } else if (build_save_path(path, host_path, MAX_PATH_LEN)) {
         *out_is_writable = 1;
         if (is_save_root_path(path)) {
             (void)create_directory_tree(host_path);
         }
-        if (try_open_host_file(host_path, MAX_PATH_LEN, out_host_handle,
-                desired_access, share_access)) {
-            return "host-save-file-open";
+    } else {
+        if (!normalize_guest_path(path, normalized, sizeof(normalized))) {
+            return "pseudo-handle-open";
         }
-        if (try_open_host_directory(host_path, MAX_PATH_LEN)) {
-            *out_is_directory = 1;
-            return "host-save-directory-open";
+        if (!build_host_path(normalized + 2, host_path, MAX_PATH_LEN)) {
+            return "pseudo-handle-open";
         }
-        *out_status = RECOMP_STATUS_OBJECT_NAME_NOT_FOUND;
-        return "host-save-path-open-failed";
-    }
-
-    if (!normalize_guest_path(path, normalized, sizeof(normalized))) {
-        return "pseudo-handle-open";
-    }
-
-    const char *relative = normalized + 2;
-    while (*relative == '\\') {
-        ++relative;
-    }
-    if (!build_host_path(relative, host_path, MAX_PATH_LEN)) {
-        return "pseudo-handle-open";
     }
 
     if (try_open_host_file(host_path, MAX_PATH_LEN, out_host_handle,
             desired_access, share_access)) {
-        return "host-disc-file-open";
+        return *out_is_writable ? "host-save-file-open" : "host-disc-file-open";
     }
     if (try_open_host_directory(host_path, MAX_PATH_LEN)) {
         *out_is_directory = 1;
-        return "host-disc-directory-open";
+        return *out_is_writable ? "host-save-directory-open" : "host-disc-directory-open";
     }
     *out_status = RECOMP_STATUS_OBJECT_NAME_NOT_FOUND;
-    return "host-disc-file-open-failed";
+    return *out_is_writable ? "host-save-path-open-failed" : "host-disc-file-open-failed";
 }
 
 static void bridge_nt_open_file(void)
@@ -866,14 +873,14 @@ static void bridge_nt_open_file(void)
 
     if (host_handle != INVALID_HANDLE_VALUE) {
         guest_handle = register_file_handle(
-            host_handle, FILE_HANDLE_HOST_FILE, host_path, desired_access);
+            host_handle, FILE_HANDLE_HOST_FILE, host_path, desired_access, is_writable);
         if (guest_handle == 0u) {
             CloseHandle(host_handle);
             status = RECOMP_STATUS_NO_MEMORY;
         }
     } else if (is_directory) {
         guest_handle = register_file_handle(
-            INVALID_HANDLE_VALUE, FILE_HANDLE_DIRECTORY, host_path, desired_access);
+            INVALID_HANDLE_VALUE, FILE_HANDLE_DIRECTORY, host_path, desired_access, is_writable);
         if (guest_handle == 0u) {
             status = RECOMP_STATUS_NO_MEMORY;
         }
@@ -881,7 +888,7 @@ static void bridge_nt_open_file(void)
         guest_handle = 0u;
     } else {
         guest_handle = register_file_handle(
-            INVALID_HANDLE_VALUE, FILE_HANDLE_PSEUDO, NULL, desired_access);
+            INVALID_HANDLE_VALUE, FILE_HANDLE_PSEUDO, NULL, desired_access, 0);
         if (guest_handle == 0u) {
             status = RECOMP_STATUS_NO_MEMORY;
         }
@@ -978,7 +985,7 @@ static void bridge_nt_create_file(void)
             (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
             status = RECOMP_STATUS_SUCCESS;
             guest_handle = register_file_handle(
-                INVALID_HANDLE_VALUE, FILE_HANDLE_DIRECTORY, host_path, desired_access);
+                INVALID_HANDLE_VALUE, FILE_HANDLE_DIRECTORY, host_path, desired_access, is_writable);
             policy = "host-save-directory-open";
             if (guest_handle == 0u) {
                 status = RECOMP_STATUS_NO_MEMORY;
@@ -1000,7 +1007,7 @@ static void bridge_nt_create_file(void)
         if (host_handle != INVALID_HANDLE_VALUE) {
             status = RECOMP_STATUS_SUCCESS;
             guest_handle = register_file_handle(
-                host_handle, FILE_HANDLE_HOST_FILE, host_path, desired_access);
+                host_handle, FILE_HANDLE_HOST_FILE, host_path, desired_access, is_writable);
             policy = "host-save-file-open";
             if (guest_handle == 0u) {
                 CloseHandle(host_handle);
@@ -1015,13 +1022,14 @@ static void bridge_nt_create_file(void)
         status != RECOMP_STATUS_SUCCESS) {
         /* Path did not resolve. The disposition decides whether that is an
            error (FILE_OPEN) or a pseudo-handle create (the rest). */
-        if (create_disposition == FILE_OPEN_DISPOSITION) {
+        if (status != RECOMP_STATUS_OBJECT_NAME_NOT_FOUND ||
+            create_disposition == FILE_OPEN_DISPOSITION) {
             guest_handle = 0u;
             policy = "pseudo-missing-file-open";
         } else {
             status = RECOMP_STATUS_SUCCESS;
             guest_handle = register_file_handle(
-                INVALID_HANDLE_VALUE, FILE_HANDLE_PSEUDO, NULL, desired_access);
+                INVALID_HANDLE_VALUE, FILE_HANDLE_PSEUDO, NULL, desired_access, 0);
             policy = "pseudo-handle-create";
             if (guest_handle == 0u) {
                 status = RECOMP_STATUS_NO_MEMORY;
@@ -1034,7 +1042,7 @@ static void bridge_nt_create_file(void)
             CloseHandle(host_handle);
         }
         guest_handle = register_file_handle(
-            INVALID_HANDLE_VALUE, FILE_HANDLE_PSEUDO, NULL, desired_access);
+            INVALID_HANDLE_VALUE, FILE_HANDLE_PSEUDO, NULL, desired_access, 0);
         if (guest_handle == 0u) {
             status = RECOMP_STATUS_NO_MEMORY;
         } else {
@@ -1042,14 +1050,14 @@ static void bridge_nt_create_file(void)
         }
     } else if (host_handle != INVALID_HANDLE_VALUE) {
         guest_handle = register_file_handle(
-            host_handle, FILE_HANDLE_HOST_FILE, host_path, desired_access);
+            host_handle, FILE_HANDLE_HOST_FILE, host_path, desired_access, is_writable);
         if (guest_handle == 0u) {
             CloseHandle(host_handle);
             status = RECOMP_STATUS_NO_MEMORY;
         }
     } else if (is_directory) {
         guest_handle = register_file_handle(
-            INVALID_HANDLE_VALUE, FILE_HANDLE_DIRECTORY, host_path, desired_access);
+            INVALID_HANDLE_VALUE, FILE_HANDLE_DIRECTORY, host_path, desired_access, is_writable);
         if (guest_handle == 0u) {
             status = RECOMP_STATUS_NO_MEMORY;
         }
@@ -1424,7 +1432,8 @@ static void bridge_nt_query_directory_file(void)
     uint32_t length = kernel_arg(7u);
     uint32_t file_information_class = kernel_arg(8u);
     uint32_t file_name = kernel_arg(9u);
-    uint32_t restart_scan = kernel_arg(10u);
+    /* Xbox BOOLEAN occupies only the low byte of its stack argument. */
+    uint32_t restart_scan = (uint8_t)kernel_arg(10u);
     uint32_t status = RECOMP_STATUS_INVALID_HANDLE;
     uint32_t bytes_written = 0u;
     size_t cursor = 0u;
@@ -1922,7 +1931,7 @@ static void bridge_nt_open_symbolic_link_object(void)
 
     ensure_symbolic_links_initialized();
     if (link_handle == 0u ||
-        !read_guest_object_name(object_attributes, link, sizeof link)) {
+        !read_guest_object_name(object_attributes, link, sizeof link, NULL)) {
         status = RECOMP_STATUS_INVALID_PARAMETER;
     } else if (recomp_symbolic_link_open(
                    &symbolic_links, link, &guest_handle)) {

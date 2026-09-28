@@ -390,10 +390,53 @@ int recomp_kernel_file_save_test(void)
         0x00110000u, &passed);
     passed &= expect("non-empty directory disposition rejected",
         set_information(handle, 13u, 1u, 1u, &passed) == 0xc0000101u);
+    {
+        uint32_t args[] = {handle, 0u, 0u, 0u, TEST_IOSB,
+            TEST_BUFFER, 0x100u, 1u, 0u, 0x12345601u};
+        passed &= expect("enumerate child with byte restart flag",
+            invoke(207u, args, 10u, &passed) == 0u &&
+            strcmp((char *)recomp_memory_i8(TEST_BUFFER + 0x40u), "child.dat") == 0);
+        args[9] = 0x12345600u;
+        passed &= expect("scan ignores upper bits of false restart flag",
+            invoke(207u, args, 10u, &passed) == 0x80000006u);
+        set_path("child.dat");
+        *recomp_memory_u32(TEST_ATTRIBUTES) = handle;
+        const uint32_t open_args[] = {TEST_HANDLE, 0x00110100u,
+            TEST_ATTRIBUTES, TEST_IOSB, 7u, 0x4040u};
+        passed &= expect("open child relative to directory handle",
+            invoke(202u, open_args, 6u, &passed) == 0u);
+        uint32_t child = *recomp_memory_u32(TEST_HANDLE);
+        const struct {
+            uint32_t root;
+            const char *name;
+            uint32_t status;
+        } rejected[] = {
+            {0xdeadbeefu, "child.dat", 0xc0000008u},
+            {child, "child.dat", 0xc0000008u},
+            {handle, "../profile.dat", 0xc000000du},
+            {handle, ".. /profile.dat", 0xc000000du},
+        };
+        for (size_t i = 0; i < sizeof rejected / sizeof rejected[0]; ++i) {
+            set_path(rejected[i].name);
+            *recomp_memory_u32(TEST_ATTRIBUTES) = rejected[i].root;
+            passed &= expect("invalid relative open rejected",
+                invoke(202u, open_args, 6u, &passed) == rejected[i].status &&
+                *recomp_memory_u32(TEST_HANDLE) == 0u);
+            const uint32_t create_args[] = {TEST_HANDLE, GENERIC_WRITE,
+                TEST_ATTRIBUTES, TEST_IOSB, 0u, 0u, 7u, 3u, 0u};
+            passed &= expect("invalid relative create does not become pseudo success",
+                invoke(190u, create_args, 9u, &passed) == rejected[i].status &&
+                *recomp_memory_u32(TEST_HANDLE) == 0u);
+        }
+        passed &= expect("set relative child disposition",
+            set_information(child, 13u, 1u, 1u, &passed) == 0u);
+        passed &= close_file(child, &passed);
+        passed &= expect("relative child removed on close",
+            GetFileAttributesA(directory_child_path) == INVALID_FILE_ATTRIBUTES);
+    }
     passed &= close_file(handle, &passed);
     passed &= expect("non-empty directory retained",
         GetFileAttributesA(delete_directory_path) != INVALID_FILE_ATTRIBUTES);
-    passed &= expect("remove directory child", DeleteFileA(directory_child_path) != 0);
     passed &= expect("mark directory read-only",
         SetFileAttributesA(delete_directory_path, FILE_ATTRIBUTE_READONLY) != 0);
     handle = open_for_delete(

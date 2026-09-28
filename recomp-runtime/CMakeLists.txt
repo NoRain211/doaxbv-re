@@ -156,6 +156,8 @@ add_executable(recomp_runtime_test
     crt_format_model.c
     crt_format_adapter.c
     crt_format_adapter_test.c
+    crt_string_adapter.c
+    crt_string_adapter_test.c
     fiber_model.c
     fiber_adapter.c
     fiber_adapter_test.c
@@ -458,6 +460,7 @@ if(RECOMP_PROGRAM_DIR)
         cri_service_adapter.c
         crt_format_model.c
         crt_format_adapter.c
+        crt_string_adapter.c
         fiber_model.c
         fiber_adapter.c
         directory_model.c
