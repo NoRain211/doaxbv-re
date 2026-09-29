@@ -173,6 +173,7 @@ int recomp_kernel_file_save_test(void)
     char directory_child_path[MAX_PATH] = {0};
     char on_close_path[MAX_PATH] = {0};
     char created_path[MAX_PATH] = {0};
+    char read_create_path[MAX_PATH] = {0};
     uint32_t status, handle;
     int passed = 1;
 
@@ -612,6 +613,65 @@ int recomp_kernel_file_save_test(void)
         passed &= expect("rollback removes metadata-only create",
             GetFileAttributesA(created_path) == INVALID_FILE_ATTRIBUTES);
     }
+    {
+        /* A read-only create is still a mutation; releasing native handles
+           lets rollback remove the file while the guest handle stays open. */
+        snprintf(read_create_path, sizeof read_create_path, "%s\\read-create.dat", live);
+        passed &= expect("begin read-only create", recomp_save_begin(0u));
+        handle = create_file("\\Device\\Harddisk0\\partition1\\UDATA\\read-create.dat", GENERIC_READ, 2u, &status, &passed);
+        passed &= expect("read-only create succeeds", status == 0u && handle != 0u);
+        passed &= expect("read-only create blocks commit", !recomp_kernel_save_handles_closed(0u));
+        recomp_kernel_release_profile_handles();
+        passed &= expect("rollback with released handle", !recomp_save_end(0u, false));
+        passed &= expect("rollback removes read-only create",
+            GetFileAttributesA(read_create_path) == INVALID_FILE_ATTRIBUTES);
+        passed &= close_file(handle, &passed);
+
+        passed &= expect("begin invalid-handle mutation", recomp_save_begin(0u));
+        passed &= expect("disposition on invalid handle fails",
+            set_information(0x7ffffff0u, 13u, 1u, 1u, &passed) == 0xc0000008u);
+        passed &= expect("invalid-handle mutation aborts save", !recomp_save_end(0u, true));
+
+        handle = open_for_delete("\\Device\\Harddisk0\\partition1\\UDATA\\profile.dat", DELETE | GENERIC_READ, &passed);
+        passed &= expect("set file position", set_information(handle, 14u, 5u, 8u, &passed) == 0u);
+        passed &= expect("position query reports cursor",
+            query_information(handle, 14u, 8u, &passed) == 0u &&
+            *recomp_memory_u32(TEST_INFORMATION) == 5u);
+        passed &= expect("begin rename", recomp_save_begin(0u));
+        passed &= expect("profile rename unsupported",
+            set_information(handle, 10u, 0u, 0x10u, &passed) == 0xc00000bbu);
+        passed &= expect("rename aborts save", recomp_save_end_recovers(0u, true));
+        recomp_kernel_release_profile_handles();
+        passed &= expect("rejected rename rolls back", !recomp_save_end(0u, true) &&
+            file_equals(path, "abXY"));
+        passed &= close_file(handle, &passed);
+
+        handle = open_for_delete("\\Device\\Harddisk0\\partition1\\UDATA\\profile.dat", FILE_WRITE_ATTRIBUTES, &passed);
+        memset(recomp_memory_i8(TEST_INFORMATION), 0, 0x28u);
+        *recomp_memory_u32(TEST_INFORMATION + 0x10u) = 0x12345678u;
+        *recomp_memory_u32(TEST_INFORMATION + 0x14u) = 0x01d00000u;
+        {
+            const uint32_t args[] = {handle, TEST_IOSB, TEST_INFORMATION, 0x28u, 4u};
+            passed &= expect("set write time", invoke(226u, args, 5u, &passed) == 0u);
+        }
+        WIN32_FILE_ATTRIBUTE_DATA timed;
+        passed &= expect("write time applied",
+            GetFileAttributesExA(path, GetFileExInfoStandard, &timed) != 0 &&
+            timed.ftLastWriteTime.dwLowDateTime == 0x12345678u &&
+            timed.ftLastWriteTime.dwHighDateTime == 0x01d00000u);
+        passed &= close_file(handle, &passed);
+
+        status = open_existing("\\Device\\Harddisk0\\partition1\\UDATA\\profile.dat", GENERIC_READ, 7u, 1u, 1u, &passed);
+        passed &= expect("folder open on a file reports not a directory",
+            status == 0xc0000103u && *recomp_memory_u32(TEST_HANDLE) == 0u);
+
+        HANDLE blocker = CreateFileA(path, GENERIC_READ, 0, NULL,
+            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+        status = open_existing("\\Device\\Harddisk0\\partition1\\UDATA\\profile.dat", GENERIC_WRITE, 7u, 0u, 0u, &passed);
+        passed &= expect("blocked write open reports sharing violation",
+            status == 0xc0000043u && *recomp_memory_u32(TEST_HANDLE) == 0u);
+        if (blocker != INVALID_HANDLE_VALUE) CloseHandle(blocker);
+    }
     handle = open_for_delete(
         "\\Device\\Harddisk0\\partition1\\UDATA\\delete.dat",
         0x00110000u, &passed);
@@ -918,6 +978,7 @@ cleanup:
     if (delete_file_path[0] != '\0') DeleteFileA(delete_file_path);
     if (transaction_file_path[0] != '\0') DeleteFileA(transaction_file_path);
     if (on_close_path[0] != '\0') DeleteFileA(on_close_path);
+    if (read_create_path[0] != '\0') DeleteFileA(read_create_path);
     if (created_path[0] != '\0') {
         SetFileAttributesA(created_path, FILE_ATTRIBUTE_NORMAL);
         DeleteFileA(created_path);

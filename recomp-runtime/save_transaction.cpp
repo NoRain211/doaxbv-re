@@ -1,5 +1,6 @@
 #include "save_transaction.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -27,8 +28,10 @@ static_assert(sizeof legacy_version == sizeof version, "markers share one size")
    one file so a save costs a few file operations. Its header records the
    image size: an image cut short by an interruption never reached live data
    and is discarded. Deleting it commits the operation. */
+/* v2 adds attributes; v3 adds the change time. */
 const char undo_magic_v1[8] = {'r', 's', 'u', 'n', 'd', 'o', '0', '1'};
-const char undo_magic[8] = {'r', 's', 'u', 'n', 'd', 'o', '0', '2'};
+const char undo_magic_v2[8] = {'r', 's', 'u', 'n', 'd', 'o', '0', '2'};
+const char undo_magic[8] = {'r', 's', 'u', 'n', 'd', 'o', '0', '3'};
 constexpr size_t undo_header = sizeof undo_magic + sizeof(uint64_t);
 #ifdef _WIN32
 HANDLE journal_lock = INVALID_HANDLE_VALUE;
@@ -43,7 +46,7 @@ constexpr DWORD settable_attributes = FILE_ATTRIBUTE_READONLY | FILE_ATTRIBUTE_H
     FILE_ATTRIBUTE_TEMPORARY | FILE_ATTRIBUTE_OFFLINE | FILE_ATTRIBUTE_NOT_CONTENT_INDEXED;
 #endif
 
-struct Times { uint64_t creation, access, write; };
+struct Times { uint64_t creation, access, write, change; };
 struct Node {
     Times times;
     fs::path path;
@@ -149,11 +152,33 @@ void write_file(const fs::path &path, std::string_view data)
 
 std::string read_file(const fs::path &path)
 {
+#ifdef _WIN32
+    /* Guest profile handles may hold delete access, which ifstream's sharing
+       mode conflicts with. */
+    HANDLE handle = CreateFileW(path.c_str(), GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    require(handle != INVALID_HANDLE_VALUE);
+    std::string data;
+    LARGE_INTEGER size{};
+    bool read = GetFileSizeEx(handle, &size) != 0 && size.QuadPart >= 0;
+    if (read) data.resize(static_cast<size_t>(size.QuadPart));
+    for (size_t at = 0; read && at < data.size();) {
+        const DWORD chunk = static_cast<DWORD>((std::min)(data.size() - at, size_t(1) << 30));
+        DWORD got = 0;
+        read = ReadFile(handle, data.data() + at, chunk, &got, nullptr) != 0 && got != 0;
+        at += got;
+    }
+    const bool closed = CloseHandle(handle) != 0;
+    require(read && closed);
+    return data;
+#else
     std::string data(static_cast<size_t>(fs::file_size(path)), '\0');
     std::ifstream stream(path, std::ios::binary);
     stream.read(data.data(), static_cast<std::streamsize>(data.size()));
     require(!stream.fail());
     return data;
+#endif
 }
 
 void put(std::string &out, uint64_t value)
@@ -167,30 +192,25 @@ void put(std::string &out, std::string_view bytes)
     out.append(bytes);
 }
 
-#ifdef _WIN32
-uint64_t ticks(FILETIME time)
-{
-    return (uint64_t(time.dwHighDateTime) << 32) | time.dwLowDateTime;
-}
-
-FILETIME filetime(uint64_t ticks)
-{
-    return {static_cast<DWORD>(ticks), static_cast<DWORD>(ticks >> 32)};
-}
-#endif
-
 void save_node(std::string &out, const fs::path &path, const fs::path &relative)
 {
     Times times{};
     uint32_t saved_attributes = 0u;
 #ifdef _WIN32
-    WIN32_FILE_ATTRIBUTE_DATA attributes;
-    require(GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &attributes) != 0);
-    require((attributes.dwFileAttributes & unsupported_attributes) == 0);
-    saved_attributes = attributes.dwFileAttributes;
-    const bool directory = (attributes.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
-    times = {ticks(attributes.ftCreationTime), ticks(attributes.ftLastAccessTime),
-        ticks(attributes.ftLastWriteTime)};
+    /* A handle query is the only way to read the change time. */
+    HANDLE handle = CreateFileW(path.c_str(), FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    require(handle != INVALID_HANDLE_VALUE);
+    FILE_BASIC_INFO info{};
+    const bool queried = GetFileInformationByHandleEx(handle, FileBasicInfo, &info, sizeof info) != 0;
+    const bool closed = CloseHandle(handle) != 0;
+    require(queried && closed);
+    require((info.FileAttributes & unsupported_attributes) == 0);
+    saved_attributes = info.FileAttributes;
+    const bool directory = (info.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+    times = {uint64_t(info.CreationTime.QuadPart), uint64_t(info.LastAccessTime.QuadPart),
+        uint64_t(info.LastWriteTime.QuadPart), uint64_t(info.ChangeTime.QuadPart)};
 #else
     const auto status = fs::symlink_status(path);
     require(fs::is_directory(status) || fs::is_regular_file(status));
@@ -201,6 +221,7 @@ void save_node(std::string &out, const fs::path &path, const fs::path &relative)
     put(out, times.creation);
     put(out, times.access);
     put(out, times.write);
+    put(out, times.change);
     put(out, uint64_t(saved_attributes));
     const auto &name = relative.native();
     put(out, std::string_view(reinterpret_cast<const char *>(name.data()),
@@ -245,32 +266,27 @@ struct Reader {
     }
 };
 
-void set_times(const Node &node)
+/* One call restores times and attributes, so setting attributes cannot move
+   the restored change time. A zero field (older images) is left unchanged. */
+void set_metadata(const Node &node)
 {
 #ifdef _WIN32
     HANDLE handle = CreateFileW(node.path.c_str(), FILE_WRITE_ATTRIBUTES,
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
         OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
     require(handle != INVALID_HANDLE_VALUE);
-    const FILETIME creation = filetime(node.times.creation);
-    const FILETIME access = filetime(node.times.access);
-    const FILETIME write = filetime(node.times.write);
-    bool copied = SetFileTime(handle, &creation, &access, &write) != 0;
+    FILE_BASIC_INFO info{};
+    info.CreationTime.QuadPart = LONGLONG(node.times.creation);
+    info.LastAccessTime.QuadPart = LONGLONG(node.times.access);
+    info.LastWriteTime.QuadPart = LONGLONG(node.times.write);
+    info.ChangeTime.QuadPart = LONGLONG(node.times.change);
+    info.FileAttributes = node.attributes & settable_attributes;
+    bool copied = SetFileInformationByHandle(handle, FileBasicInfo, &info, sizeof info) != 0;
     bool closed = CloseHandle(handle) != 0;
     require(copied && closed);
 #else
     fs::last_write_time(node.path, fs::file_time_type(
         fs::file_time_type::duration(static_cast<int64_t>(node.times.write))));
-#endif
-}
-
-void set_attributes(const Node &node)
-{
-#ifdef _WIN32
-    DWORD attributes = node.attributes & settable_attributes;
-    if (attributes != 0u) require(SetFileAttributesW(node.path.c_str(), attributes) != 0);
-#else
-    (void)node;
 #endif
 }
 
@@ -290,8 +306,9 @@ void restore(std::string_view image)
 {
     Reader in{image};
     std::vector<Node> nodes;
-    const bool has_attributes = std::memcmp(
-        image.data(), undo_magic, sizeof undo_magic) == 0;
+    const bool has_change = std::memcmp(image.data(), undo_magic, sizeof undo_magic) == 0;
+    const bool has_attributes = has_change ||
+        std::memcmp(image.data(), undo_magic_v2, sizeof undo_magic_v2) == 0;
     std::set<fs::path::string_type> seen, directories;
     while (in.at != image.size()) {
         Node node{};
@@ -301,6 +318,7 @@ void restore(std::string_view image)
         node.times.creation = in.number();
         node.times.access = in.number();
         node.times.write = in.number();
+        if (has_change) node.times.change = in.number();
         if (has_attributes) {
             const uint64_t attributes = in.number();
             require(attributes <= (std::numeric_limits<uint32_t>::max)());
@@ -334,16 +352,12 @@ void restore(std::string_view image)
             require(fs::create_directory(node.path));
         } else {
             write_file(node.path, node.data);
-            set_times(node);
-            set_attributes(node);
+            set_metadata(node);
         }
     }
     /* Creating children updates directory times, so restore them last. */
     for (auto it = nodes.rbegin(); it != nodes.rend(); ++it) {
-        if (it->directory) {
-            set_times(*it);
-            set_attributes(*it);
-        }
+        if (it->directory) set_metadata(*it);
     }
 }
 
@@ -354,6 +368,7 @@ void recover()
     const std::string image = read_file(undo);
     if (image.size() >= sizeof undo_magic) {
         require(std::memcmp(image.data(), undo_magic, sizeof undo_magic) == 0 ||
+            std::memcmp(image.data(), undo_magic_v2, sizeof undo_magic_v2) == 0 ||
             std::memcmp(image.data(), undo_magic_v1, sizeof undo_magic_v1) == 0);
     }
     uint64_t size = 0;
@@ -505,6 +520,11 @@ extern "C" bool recomp_save_end(uint32_t owner, bool success)
 extern "C" void recomp_save_note_failure(uint32_t owner)
 {
     if (depth != 0 && owner == active_owner) failed = true;
+}
+
+extern "C" bool recomp_save_end_recovers(uint32_t owner, bool success)
+{
+    return ready && depth == 1 && owner == active_owner && (failed || !success);
 }
 
 extern "C" void recomp_save_note_pending_failure(void)

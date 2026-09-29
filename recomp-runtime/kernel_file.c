@@ -97,6 +97,31 @@ static uint32_t current_save_owner(void)
 #endif
 }
 
+static FileHandleEntry *find_file_handle(uint32_t guest_handle)
+{
+    for (size_t i = 0; i < MAX_FILE_HANDLES; ++i) {
+        if (file_handles[i].active && file_handles[i].guest_handle == guest_handle) {
+            return &file_handles[i];
+        }
+    }
+    return NULL;
+}
+
+/* Rollback deletes and rebuilds the profile tree, which an open native handle
+   without delete sharing blocks. The runtime stops after a rollback, so the
+   released handles only need to fail cleanly if used. */
+void recomp_kernel_release_profile_handles(void)
+{
+    for (size_t i = 0; i < MAX_FILE_HANDLES; ++i) {
+        FileHandleEntry *entry = &file_handles[i];
+        if (entry->active && entry->host_handle != INVALID_HANDLE_VALUE &&
+            is_profile_path(entry->host_path)) {
+            CloseHandle(entry->host_handle);
+            entry->host_handle = INVALID_HANDLE_VALUE;
+        }
+    }
+}
+
 bool recomp_kernel_save_handles_closed(uint32_t owner)
 {
     for (size_t i = 0; i < MAX_FILE_HANDLES; ++i) {
@@ -497,6 +522,18 @@ static int create_parent_directories(const char *path)
     }
     *last_separator = '\0';
     return create_directory_tree(parent);
+}
+
+/* Report why a host open or create failed; only a missing path is "not found". */
+static uint32_t host_error_status(DWORD error)
+{
+    switch (error) {
+    case ERROR_FILE_EXISTS:
+    case ERROR_ALREADY_EXISTS: return 0xc0000035u; /* STATUS_OBJECT_NAME_COLLISION */
+    case ERROR_SHARING_VIOLATION: return 0xc0000043u;
+    case ERROR_ACCESS_DENIED: return 0xc0000022u;
+    default: return RECOMP_STATUS_OBJECT_NAME_NOT_FOUND;
+    }
 }
 
 static HANDLE create_host_file(
@@ -967,7 +1004,7 @@ static const char *resolve_and_open(
     /* An existing profile file that refused this open is not missing. */
     if (is_profile_path(host_path) &&
         (open_error == ERROR_SHARING_VIOLATION || open_error == ERROR_ACCESS_DENIED)) {
-        *out_status = open_error == ERROR_SHARING_VIOLATION ? 0xc0000043u : 0xc0000022u;
+        *out_status = host_error_status(open_error);
         return "host-save-file-open-rejected";
     }
     if (try_open_host_directory(host_path, MAX_PATH_LEN)) {
@@ -1016,7 +1053,7 @@ static void bridge_nt_open_file(void)
         if (host_handle != INVALID_HANDLE_VALUE) CloseHandle(host_handle);
         host_handle = create_host_file(host_path, desired_access, share_access, 1u);
         status = host_handle != INVALID_HANDLE_VALUE
-            ? RECOMP_STATUS_SUCCESS : RECOMP_STATUS_OBJECT_NAME_NOT_FOUND;
+            ? RECOMP_STATUS_SUCCESS : host_error_status(GetLastError());
         policy = host_handle != INVALID_HANDLE_VALUE
             ? "host-save-file-open" : "host-save-file-open-failed";
     }
@@ -1134,6 +1171,10 @@ static void bridge_nt_create_file(void)
                 INVALID_HANDLE_VALUE, FILE_HANDLE_DIRECTORY, host_path,
                 desired_access, share_access, is_writable, &status);
             policy = "host-save-directory-open";
+        } else if (attributes != INVALID_FILE_ATTRIBUTES) {
+            status = 0xc0000103u; /* STATUS_NOT_A_DIRECTORY */
+            guest_handle = 0u;
+            policy = "host-save-path-not-directory";
         } else {
             status = RECOMP_STATUS_OBJECT_NAME_NOT_FOUND;
             guest_handle = 0u;
@@ -1151,6 +1192,9 @@ static void bridge_nt_create_file(void)
         }
         host_handle = INVALID_HANDLE_VALUE;
         DWORD create_error = ERROR_PATH_NOT_FOUND;
+        /* Creating or replacing a file is a mutation even for a read handle. */
+        const bool replaces = GetFileAttributesA(host_path) == INVALID_FILE_ATTRIBUTES ||
+            create_disposition == 0u || create_disposition == 4u || create_disposition == 5u;
         if (create_parent_directories(host_path)) {
             host_handle = create_host_file(
                 host_path, desired_access, share_access, create_disposition);
@@ -1164,12 +1208,13 @@ static void bridge_nt_create_file(void)
             policy = "host-save-file-open";
             if (guest_handle == 0u) {
                 CloseHandle(host_handle);
+            } else if (profile_path && replaces) {
+                FileHandleEntry *entry = find_file_handle(guest_handle);
+                entry->save_owned = 1;
+                entry->save_owner = save_owner;
             }
         } else {
-            status = create_error == ERROR_FILE_EXISTS ? 0xc0000035u /* NAME_COLLISION */
-                : create_error == ERROR_SHARING_VIOLATION ? 0xc0000043u
-                : create_error == ERROR_ACCESS_DENIED ? 0xc0000022u
-                : RECOMP_STATUS_OBJECT_NAME_NOT_FOUND;
+            status = host_error_status(create_error);
             guest_handle = 0u;
             policy = "host-save-file-open-failed";
         }
@@ -1246,6 +1291,7 @@ static void bridge_nt_query_information_file(void)
     const uint32_t FILE_STANDARD_INFORMATION = 5u;
     const uint32_t FILE_NETWORK_OPEN_INFORMATION = 0x22u;
     const uint32_t FILE_BASIC_INFORMATION = 4u;
+    const uint32_t FILE_POSITION_INFORMATION = 14u;
     uint32_t status = RECOMP_STATUS_SUCCESS;
     uint64_t file_size = 0u;
     const char *policy = "zero-filled-pseudo-file-information";
@@ -1258,6 +1304,19 @@ static void bridge_nt_query_information_file(void)
         if (!file_handles[i].active ||
             file_handles[i].guest_handle != guest_handle) {
             continue;
+        }
+
+        if (file_information_class == FILE_POSITION_INFORMATION) {
+            if (file_information == 0u || length < 8u) {
+                status = 0xc0000004u; /* STATUS_INFO_LENGTH_MISMATCH */
+                policy = "position-length-mismatch";
+            } else {
+                *recomp_memory_u32(file_information) = (uint32_t)file_handles[i].cursor;
+                *recomp_memory_u32(file_information + 4u) =
+                    (uint32_t)(file_handles[i].cursor >> 32u);
+                policy = "file-position-information";
+            }
+            break;
         }
 
         if (file_handles[i].kind == FILE_HANDLE_PSEUDO) {
@@ -1377,6 +1436,15 @@ static bool handle_profile_mutation_information(
     const uint32_t STATUS_INFO_LENGTH_MISMATCH = 0xc0000004u;
     const uint32_t STATUS_ACCESS_DENIED = 0xc0000022u;
 
+    /* Renaming or linking save files is not implemented; failing keeps a
+       save from committing without the requested change. */
+    if ((file_information_class == 10u || file_information_class == 11u) &&
+        is_profile_path(entry->host_path)) {
+        *required_save_io = true;
+        *status = 0xc00000bbu; /* STATUS_NOT_SUPPORTED */
+        *policy = "profile-rename-unsupported";
+        return true;
+    }
     if (file_information_class != FILE_BASIC_INFORMATION &&
         file_information_class != FILE_DISPOSITION_INFORMATION) {
         return false;
@@ -1407,19 +1475,33 @@ static bool handle_profile_mutation_information(
             *status = RECOMP_STATUS_SUCCESS;
             *policy = "basic-information-accepted-without-action";
         } else {
-            uint32_t attributes = *recomp_memory_u32(file_information + 0x20u);
+            FILE_BASIC_INFO info = {0};
+            LARGE_INTEGER *times[4] = {&info.CreationTime, &info.LastAccessTime,
+                &info.LastWriteTime, &info.ChangeTime};
+            bool unchanged = true;
+            for (uint32_t t = 0u; t < 4u; ++t) {
+                times[t]->LowPart = *recomp_memory_u32(file_information + t * 8u);
+                times[t]->HighPart = (LONG)*recomp_memory_u32(file_information + t * 8u + 4u);
+                unchanged = unchanged && times[t]->QuadPart == 0;
+            }
+            info.FileAttributes = *recomp_memory_u32(file_information + 0x20u);
+            unchanged = unchanged && info.FileAttributes == 0u;
             if (!entry->write_attributes) {
                 *status = STATUS_ACCESS_DENIED;
                 *policy = "profile-attributes-access-denied";
-            } else if (attributes == 0u) {
+            } else if (unchanged) {
                 *status = RECOMP_STATUS_SUCCESS;
                 *policy = "basic-information-attributes-unchanged";
-            } else if (SetFileAttributesA(entry->host_path, attributes)) {
-                *status = RECOMP_STATUS_SUCCESS;
-                *policy = "profile-attributes-set";
             } else {
-                *status = STATUS_ACCESS_DENIED;
-                *policy = "profile-attributes-set-failed";
+                /* Attribute-only access never conflicts with sharing modes. */
+                HANDLE host = CreateFileA(entry->host_path, FILE_WRITE_ATTRIBUTES,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+                    OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+                const bool set = host != INVALID_HANDLE_VALUE &&
+                    SetFileInformationByHandle(host, FileBasicInfo, &info, sizeof info);
+                if (host != INVALID_HANDLE_VALUE) CloseHandle(host);
+                *status = set ? RECOMP_STATUS_SUCCESS : STATUS_ACCESS_DENIED;
+                *policy = set ? "profile-basic-information-set" : "profile-basic-information-set-failed";
             }
         }
         return true;
@@ -1462,7 +1544,11 @@ static void bridge_nt_set_information_file(void)
 
     uint32_t status = RECOMP_STATUS_INVALID_HANDLE;
     uint64_t value = 0u;
-    bool required_save_io = false;
+    /* A mutation on a bad handle still fails the save it belongs to. */
+    bool required_save_io = file_information_class == 4u ||
+        file_information_class == 10u || file_information_class == 11u ||
+        file_information_class == 13u ||
+        file_information_class == FILE_END_OF_FILE_INFORMATION;
     const char *policy = "invalid-handle";
 
     if (file_information != 0u && length >= 8u) {

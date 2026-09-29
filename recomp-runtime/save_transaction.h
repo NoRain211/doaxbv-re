@@ -17,6 +17,8 @@ bool recomp_save_begin(uint32_t owner);
 /* False means an aborted operation or an error; never continue guest writes
    after an error. A nested failure also makes the outer operation abort. */
 bool recomp_save_end(uint32_t owner, bool success);
+/* True when this recomp_save_end call would roll the profile back. */
+bool recomp_save_end_recovers(uint32_t owner, bool success);
 void recomp_save_note_failure(uint32_t owner);
 /* A required profile mutation rejected for a foreign owner aborts the save. */
 void recomp_save_note_pending_failure(void);

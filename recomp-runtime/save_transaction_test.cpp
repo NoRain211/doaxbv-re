@@ -122,12 +122,24 @@ int main()
     assert(SetFileTime(timed, &creation, &access, &write) && CloseHandle(timed));
     const DWORD original_attributes = GetFileAttributesW(payload.c_str());
     assert(original_attributes != INVALID_FILE_ATTRIBUTES);
+    const auto change_time = [](const fs::path &path) {
+        HANDLE handle = CreateFileW(path.c_str(), FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+            OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+        assert(handle != INVALID_HANDLE_VALUE);
+        FILE_BASIC_INFO info{};
+        assert(GetFileInformationByHandleEx(handle, FileBasicInfo, &info, sizeof info));
+        assert(CloseHandle(handle));
+        return info.ChangeTime.QuadPart;
+    };
+    const auto original_change = change_time(payload);
     assert(recomp_save_begin(7));
     const DWORD changed_attributes =
         (original_attributes & ~FILE_ATTRIBUTE_NORMAL) | FILE_ATTRIBUTE_READONLY;
     assert(SetFileAttributesW(payload.c_str(), changed_attributes));
     assert(!recomp_save_end(7, false));
     assert(GetFileAttributesW(payload.c_str()) == original_attributes);
+    assert(change_time(payload) == original_change);
     WIN32_FILE_ATTRIBUTE_DATA restored_times;
     assert(GetFileAttributesExW(payload.c_str(), GetFileExInfoStandard, &restored_times));
     assert(CompareFileTime(&restored_times.ftCreationTime, &creation) == 0);

@@ -79,6 +79,8 @@ RecompFunction recomp_kernel_thread(uint32_t ordinal);
 RecompFunction recomp_kernel_video(uint32_t ordinal);
 RecompFunction recomp_kernel_file(uint32_t ordinal);
 bool recomp_kernel_save_handles_closed(uint32_t owner);
+/* Close native profile handles so a rollback can rebuild the tree. */
+void recomp_kernel_release_profile_handles(void);
 /* File close model shared by the import bridge and ownership checks. */
 uint32_t recomp_kernel_close_file(uint32_t guest_handle, uint32_t owner);
 

@@ -31,8 +31,11 @@ static void save_original(uint32_t address, uint32_t success_value)
     if (!recomp_kernel_save_handles_closed(owner)) {
         recomp_save_note_failure(owner);
     }
-    if (!recomp_save_end(
-            owner, recomp_runtime.registers.eax == success_value)) {
+    const bool success = recomp_runtime.registers.eax == success_value;
+    if (recomp_save_end_recovers(owner, success)) {
+        recomp_kernel_release_profile_handles();
+    }
+    if (!recomp_save_end(owner, success)) {
         recomp_stop(1, "save:end:0x%08" PRIx32, address);
     }
 }
