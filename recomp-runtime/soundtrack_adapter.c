@@ -379,6 +379,10 @@ static void decoder_flush(void)
     kernel_return(1u, i >= 0 && recomp_music_rewind(xmos[i].decoder) ? 0u : guest_e_fail);
 }
 
+/* XAPI soundtrack and WMA XMO entries are replaced wholesale. CRI seams until
+   CRI is replaced (docs/custom-soundtracks.md): start (0x188210) and service
+   (0x1880d0) run their generated bodies, stop (0x18d270) and find_close
+   (0x18145f) fall through for contexts and handles this adapter does not own. */
 RecompFunction recomp_soundtrack_lookup_manual(uint32_t address)
 {
     switch (address) {
