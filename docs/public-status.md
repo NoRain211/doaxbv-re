@@ -12,8 +12,9 @@ SDL3, adding PlayStation 4/5 controllers, up to four controllers and vibration
 an Xbox controller smoke run; no physical PlayStation controller or
 two-controller match has been tested. 0.4.9 Beta fixes deleting a save (#71)
 with a new generation recipe; its first start upgrades the save journal,
-which earlier builds then reject. None of these releases expands the
-play-test coverage below.
+which earlier builds then reject. 0.5.0 Beta "Mixtape" adds custom
+soundtracks from `UserMusic` with a new generation recipe (#73). None of
+these releases expands the play-test coverage below.
 
 The local build published as 0.4 Beta (tag `v0.4`, commit `3848a67`,
 generated-program manifest `9558380…`) is fully playable. Long player

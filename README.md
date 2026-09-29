@@ -70,6 +70,7 @@ running; so far only the startup thread entry has been rewritten.
 | Movies and native audio | Working, including natural endings and skips |
 | Store purchases, saves and reloads | Working, with interrupted-save recovery |
 | Deleting saves | Fixed in 0.4.9 |
+| Custom soundtracks (MP3, WAV, FLAC from `UserMusic`) | Added in 0.5.0 |
 | Portraits, pool water, item previews | Restored |
 | Lighting, camera, full rendering fidelity | Incomplete |
 | Every collection item and activity/time variant | Not individually verified |
@@ -83,7 +84,7 @@ Development results do not guarantee every route works in the packaged beta.
 ## Play the beta
 
 **Requirements:** Windows 10/11 x64, a supported USA game ISO and internet
-access. The 0.4.9 Beta ZIP bundles Python, Capstone, Git, CMake and the ISO
+access. The 0.5.0 Beta ZIP bundles Python, Capstone, Git, CMake and the ISO
 extractor. If the Microsoft C++ compiler or Windows SDK is missing, setup
 offers to download and run Microsoft's installer. That installation needs
 administrator approval and several GB of disk space; the full Visual Studio

@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.5.0 Beta "Mixtape" — 2026-09-29
+
+This release adds custom soundtracks. It updates the generation recipe, so
+download the new ZIP and run `BuildGame.cmd` again; keep your existing saves.
+Releases now carry a name; 0.5.0 is "Mixtape".
+
+### Added
+
+- **Custom soundtracks** (#73). MP3, WAV, and FLAC files in the `UserMusic`
+  folder beside the game executable (`private\imported-disc\disc\UserMusic`
+  in the release folder) appear as one soundtrack in the game's own custom
+  soundtrack menu, such as the Radio Station playlist. The game still picks,
+  starts, stops, and mixes the songs; Windows Media Foundation decodes them.
+  Files are read, never changed, and the folder is scanned at startup.
+
+### Fixed
+
+- **Formatting crash** (#73). Selecting a custom song stopped the runtime
+  because its text formatter handled only a few fixed patterns. It now
+  handles every `%s %c %d %i %u %x %X` field with width and flags.
+
+### Changed
+
+- The recipe routes eight direct soundtrack calls through manual dispatch.
+  The lifter is unchanged.
+- On Windows N editions without the Media Feature Pack, the game still starts
+  and custom soundtracks stay off.
+
+### Unchanged
+
+- The save journal is unchanged from 0.4.9.
+- The known Hopping Game loading issue (#54), pool transition flash (#55)
+  and possible underwater texture issue (#56) remain.
+
 ## 0.4.9 Beta — 2026-09-29
 
 This release fixes deleting a save. It updates the generation recipe, so
