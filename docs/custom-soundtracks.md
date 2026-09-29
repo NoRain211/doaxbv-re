@@ -100,9 +100,11 @@ conventions.
 Wrappers that run the generated original afterwards (`start soundtrack`,
 `find_close` and `stop` for handles they do not own) leave `ESP` untouched so
 the generated code sees the original stack and performs its own cleanup.
-Wrapping the three CRI functions is a deliberate exception to replacing
-middleware wholesale: without a guest worker thread the original stop never
-finishes, and replacing all of CRI is out of scope for this feature.
+The three CRI wrappers are interim seams, the same pattern
+`recomp-runtime/cri_service_adapter.c` already uses for CRI file, movie, and
+stream status. Without a guest worker thread the original stop never finishes,
+so the seams drive and stop decoding until CRI is replaced wholesale, which
+remains open work.
 
 Errors reported through `GetLastError` are set by calling the game's own
 set-last-error routine at `0x00183183`. The adapter calls it and the generated
