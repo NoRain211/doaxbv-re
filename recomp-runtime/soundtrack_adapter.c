@@ -27,6 +27,8 @@ enum {
 static const uint32_t guest_e_invalidarg = 0x80070057u;
 static const uint32_t guest_e_fail = 0x80004005u;
 
+/* CRI's WMASJD contexts are a fixed static array of four (0x60 bytes apart),
+   so a table keyed by context address never needs more than four slots. */
 enum { SOUNDTRACK_ID = 1u, MAX_CONTEXTS = 4 };
 
 /* CRI player -> work -> audio -> WMASJD decoder context. */

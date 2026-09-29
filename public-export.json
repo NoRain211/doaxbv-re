@@ -115,6 +115,8 @@
     ".sfd",
     ".wav",
     ".wma",
+    ".mp3",
+    ".flac",
     ".xbx",
     ".qcow2",
     ".sav",

@@ -851,7 +851,7 @@ int main(int argc, char **argv)
             stderr,
             "usage: recomp_runtime_test "
             "[--invalid-access|--fiber-stack-recycling|"
-            "--ram-overrun|--ram-pending-ohci]\n");
+            "--ram-overrun|--ram-pending-ohci|--custom-music]\n");
         return 64;
     }
 

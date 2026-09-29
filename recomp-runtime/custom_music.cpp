@@ -168,8 +168,11 @@ extern "C" void recomp_music_initialize(const char *root)
     const auto started = std::chrono::steady_clock::now();
     const fs::path folder = fs::path(root) / "UserMusic";
     // Delay-loaded so Windows N editions without Media Foundation still run.
-    if (!LoadLibraryW(L"mfplat.dll") || !LoadLibraryW(L"mfreadwrite.dll")) {
-        report("disabled", folder.c_str(), HRESULT_FROM_WIN32(GetLastError()));
+    // Loaded once; delay-loaded imports keep them for the process anyway.
+    static const DWORD load_error = LoadLibraryW(L"mfplat.dll") &&
+        LoadLibraryW(L"mfreadwrite.dll") ? ERROR_SUCCESS : GetLastError();
+    if (load_error != ERROR_SUCCESS) {
+        report("disabled", folder.c_str(), HRESULT_FROM_WIN32(load_error));
         return;
     }
     HRESULT error = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
