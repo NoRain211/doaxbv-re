@@ -107,6 +107,37 @@ static FileHandleEntry *find_file_handle(uint32_t guest_handle)
     return NULL;
 }
 
+static uint32_t sharing_access_of(uint32_t desired_access)
+{
+    uint32_t access = 0u;
+    if ((desired_access & (GENERIC_READ | GENERIC_EXECUTE | 0x1u | 0x20u)) != 0u) {
+        access |= FILE_SHARE_READ;
+    }
+    if ((desired_access & (GENERIC_WRITE | 0x2u | 0x4u)) != 0u) access |= FILE_SHARE_WRITE;
+    if ((desired_access & DELETE) != 0u) access |= FILE_SHARE_DELETE;
+    return access;
+}
+
+/* Guest sharing on profile paths is checked here. Native profile handles
+   always share reads so the save snapshot can copy a file the guest holds
+   exclusively, and directories have no native handle at all. */
+static bool profile_sharing_conflict(
+    const char *host_path, uint32_t desired_access, uint32_t share_access)
+{
+    const uint32_t access = sharing_access_of(desired_access);
+    share_access &= FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
+    for (size_t i = 0; i < MAX_FILE_HANDLES; ++i) {
+        const FileHandleEntry *entry = &file_handles[i];
+        if (entry->active && entry->kind != FILE_HANDLE_PSEUDO &&
+            _stricmp(entry->host_path, host_path) == 0 &&
+            ((access & ~entry->share_mode) != 0u ||
+             (entry->sharing_access & ~share_access) != 0u)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 /* Rollback deletes and rebuilds the profile tree, which an open native handle
    without delete sharing blocks. The runtime stops after a rollback, so the
    released handles only need to fail cleanly if used. */
@@ -159,26 +190,12 @@ static uint32_t register_file_handle(
 {
     const bool profile_path = kind != FILE_HANDLE_PSEUDO &&
         host_path != NULL && is_profile_path(host_path);
-    uint32_t sharing_access = 0u;
-    if ((desired_access & (GENERIC_READ | GENERIC_EXECUTE | 0x1u | 0x20u)) != 0u) {
-        sharing_access |= FILE_SHARE_READ;
+    const uint32_t sharing_access = sharing_access_of(desired_access);
+    if (profile_path && profile_sharing_conflict(host_path, desired_access, share_access)) {
+        *status = 0xc0000043u; /* STATUS_SHARING_VIOLATION */
+        return 0u;
     }
-    if ((desired_access & (GENERIC_WRITE | 0x2u | 0x4u)) != 0u) sharing_access |= FILE_SHARE_WRITE;
-    if ((desired_access & DELETE) != 0u) sharing_access |= FILE_SHARE_DELETE;
     share_access &= FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
-    /* Keep directories virtual so rollback can rebuild the tree beneath readers. */
-    if (kind == FILE_HANDLE_DIRECTORY && profile_path) {
-        for (size_t i = 0; i < MAX_FILE_HANDLES; ++i) {
-            const FileHandleEntry *entry = &file_handles[i];
-            if (entry->active && entry->kind == FILE_HANDLE_DIRECTORY &&
-                _stricmp(entry->host_path, host_path) == 0 &&
-                ((sharing_access & ~entry->share_mode) != 0u ||
-                 (entry->sharing_access & ~share_access) != 0u)) {
-                *status = 0xc0000043u; /* STATUS_SHARING_VIOLATION */
-                return 0u;
-            }
-        }
-    }
     for (size_t i = 0; i < MAX_FILE_HANDLES; ++i) {
         if (!file_handles[i].active) {
             file_handles[i].active = 1;
@@ -561,7 +578,7 @@ static HANDLE create_host_file(
     if (host_access == 0u) {
         host_access = GENERIC_READ;
     }
-    if ((share_access & 1u) != 0u) {
+    if ((share_access & 1u) != 0u || is_profile_path(path)) {
         host_share |= FILE_SHARE_READ;
     }
     if ((share_access & 2u) != 0u) {
@@ -670,7 +687,7 @@ static int try_open_host_file(
     /* Preserve requested read rights without granting untracked data writes. */
     DWORD host_access = metadata_open
         ? desired_access & (GENERIC_READ | FILE_GENERIC_READ) : GENERIC_READ;
-    DWORD host_share = profile_path ? share_access & 7u : FILE_SHARE_READ;
+    DWORD host_share = profile_path ? (share_access & 7u) | FILE_SHARE_READ : FILE_SHARE_READ;
 
     if ((desired_access & DELETE) != 0u && profile_path) {
         host_access |= DELETE;
@@ -1195,7 +1212,10 @@ static void bridge_nt_create_file(void)
         /* Creating or replacing a file is a mutation even for a read handle. */
         const bool replaces = GetFileAttributesA(host_path) == INVALID_FILE_ATTRIBUTES ||
             create_disposition == 0u || create_disposition == 4u || create_disposition == 5u;
-        if (create_parent_directories(host_path)) {
+        /* Check guest sharing before a create can truncate or replace the file. */
+        if (profile_path && profile_sharing_conflict(host_path, desired_access, share_access)) {
+            create_error = ERROR_SHARING_VIOLATION;
+        } else if (create_parent_directories(host_path)) {
             host_handle = create_host_file(
                 host_path, desired_access, share_access, create_disposition);
             if (host_handle == INVALID_HANDLE_VALUE) create_error = GetLastError();

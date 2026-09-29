@@ -401,12 +401,14 @@ int recomp_kernel_file_save_test(void)
             api, 0u, &passed);
         handle = *recomp_memory_u32(TEST_HANDLE);
         passed &= expect("open delete handle denying read sharing", status == 0u);
-        HANDLE reader = CreateFileA(path, GENERIC_READ,
-            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-            NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-        passed &= expect("delete handle preserves guest read-sharing denial",
-            reader == INVALID_HANDLE_VALUE && GetLastError() == ERROR_SHARING_VIOLATION);
-        if (reader != INVALID_HANDLE_VALUE) CloseHandle(reader);
+        {
+            const uint32_t outer_handle = handle;
+            uint32_t reader = open_existing(guest_file, GENERIC_READ, 7u, api, 0u, &passed);
+            passed &= expect("delete handle preserves guest read-sharing denial",
+                reader == 0xc0000043u && *recomp_memory_u32(TEST_HANDLE) == 0u);
+            if (reader == 0u) passed &= close_file(*recomp_memory_u32(TEST_HANDLE), &passed);
+            handle = outer_handle;
+        }
         if (status == 0u) passed &= close_file(handle, &passed);
 
         status = open_existing(guest_file, DELETE | GENERIC_READ, 7u, api, 0u, &passed);
@@ -430,7 +432,17 @@ int recomp_kernel_file_save_test(void)
             api, 0u, &passed);
         handle = *recomp_memory_u32(TEST_HANDLE);
         passed &= expect("open reader denying read sharing", status == 0u);
-        passed &= expect("save refuses an unreadable snapshot", !recomp_save_begin(0u));
+        passed &= expect("exclusive guest reader does not block the snapshot",
+            recomp_save_begin(0u));
+        {
+            const uint32_t outer_handle = handle;
+            uint32_t second = open_existing(guest_file, GENERIC_READ, 7u, api, 0u, &passed);
+            passed &= expect("exclusive guest reader blocks other guest readers",
+                second == 0xc0000043u);
+            if (second == 0u) passed &= close_file(*recomp_memory_u32(TEST_HANDLE), &passed);
+            handle = outer_handle;
+        }
+        passed &= expect("save commits beside an exclusive reader", recomp_save_end(0u, true));
         if (status == 0u) passed &= close_file(handle, &passed);
         passed &= expect("closed reader permits reinitialization", recomp_save_initialize(root));
         passed &= expect("failed snapshot leaves payload intact", file_equals(path, "abXY"));
