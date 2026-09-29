@@ -3,6 +3,8 @@
 #ifdef RECOMP_FULL_PROGRAM
 #include "cri_service_adapter.h"
 #include "audio_output.h"
+#include "custom_music.h"
+#include "soundtrack_adapter.h"
 #include "d3d_presenter.h"
 #include "d3d_frame_adapter.h"
 #include "fiber_adapter.h"
@@ -815,6 +817,11 @@ std::vector<AnalogPulse> inputAnalogPulses;
     recomp_cri_service_adapter_reset();
     std::atexit(recomp_audio_output_shutdown);
     recomp_audio_output_initialize();
+    recomp_music_initialize(recomp_disc_root_path);
+    std::atexit([] {
+        recomp_soundtrack_shutdown(); // closes decoders before Media Foundation stops
+        recomp_music_shutdown();
+    });
     recomp_fiber_adapter_reset();
     recomp_input_adapter_reset();
     recomp_input_adapter_set_feedback_sink(recomp_input_host_set_vibration);

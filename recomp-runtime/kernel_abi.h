@@ -83,6 +83,13 @@ bool recomp_kernel_save_handles_closed(uint32_t owner);
 void recomp_kernel_release_profile_handles(void);
 /* File close model shared by the import bridge and ownership checks. */
 uint32_t recomp_kernel_close_file(uint32_t guest_handle, uint32_t owner);
+/* Rewrites bytes after each guest read of a handle; offset is the file offset
+   of bytes[0]. The host file is never written. */
+typedef void (*RecompReadFilter)(uint64_t offset, uint8_t *bytes, uint32_t count);
+/* Opens a host file read-only as an ordinary guest handle that the existing
+   read, query, and close bridges serve. filter may be NULL. Returns 0 on
+   failure. */
+uint32_t recomp_kernel_open_readonly(const wchar_t *path, RecompReadFilter filter);
 
 /* Plain configuration model used by its import adapter. */
 uint32_t recomp_kernel_query_nonvolatile_setting(
