@@ -10,7 +10,9 @@ generation recipe. 0.4.8 Beta keeps that recipe and reads controllers through
 SDL3, adding PlayStation 4/5 controllers, up to four controllers and vibration
 (#67, #68, #70). Its PlayStation mapping passes a virtual-controller check and
 an Xbox controller smoke run; no physical PlayStation controller or
-two-controller match has been tested. None of these releases expands the
+two-controller match has been tested. 0.4.9 Beta fixes deleting a save (#71)
+with a new generation recipe; its first start upgrades the save journal,
+which earlier builds then reject. None of these releases expands the
 play-test coverage below.
 
 The local build published as 0.4 Beta (tag `v0.4`, commit `3848a67`,

@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.4.9 Beta — 2026-09-29
+
+This release fixes deleting a save. It updates the generation recipe, so
+download the new ZIP and run `BuildGame.cmd` again; keep your existing saves.
+
+### Fixed
+
+- **Deleting a save** (#71). Confirming deletion left the Vacation slot
+  occupied. The slot now shows as New and its files are removed; other slots
+  are unchanged. Save files also follow Windows rules for sharing, creation,
+  attributes and timestamps, and a save whose file operation fails is rolled
+  back instead of committed.
+
+### Changed
+
+- The save journal is now version 2. The first start of 0.4.9 upgrades the
+  journal in its save folder, and earlier builds then refuse to start with
+  that folder. Copy saves into each new installation instead of sharing one
+  folder between versions.
+- The recipe sends two direct string comparisons to the runtime's native
+  comparator. The lifter is unchanged.
+
+### Unchanged
+
+- The known Hopping Game loading issue (#54), pool transition flash (#55)
+  and possible underwater texture issue (#56) remain.
+
 ## 0.4.8 Beta — 2026-09-28
 
 This release adds native PlayStation 4 and 5 controller support, up to four
