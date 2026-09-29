@@ -148,6 +148,9 @@ add_executable(recomp_runtime_test
     dsound_service_model.c
     dsound_service_adapter.c
     dsound_service_adapter_test.c
+    custom_music.cpp
+    soundtrack_adapter.c
+    custom_music_test.cpp
     movie_color_model.c
     cri_service_model.c
     cri_service_model_test.c
@@ -198,6 +201,12 @@ add_executable(recomp_runtime_test
     "${_recomp_test_leaf_source}")
 target_include_directories(recomp_runtime_test PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}")
+# Media Foundation is delay-loaded: Windows N editions and Server without the
+# Media Foundation feature lack it, and custom music then stays disabled.
+set(RECOMP_MEDIA_FOUNDATION mfplat mfreadwrite mfuuid ole32 delayimp)
+set(RECOMP_MEDIA_FOUNDATION_DELAYLOAD /DELAYLOAD:mfplat.dll /DELAYLOAD:mfreadwrite.dll)
+target_link_libraries(recomp_runtime_test PRIVATE ${RECOMP_MEDIA_FOUNDATION})
+target_link_options(recomp_runtime_test PRIVATE ${RECOMP_MEDIA_FOUNDATION_DELAYLOAD})
 target_compile_definitions(recomp_runtime_test PRIVATE
     RECOMP_D3D_FRAME_ENABLED RECOMP_DSOUND_TEST_CLOCK)
 
@@ -455,6 +464,8 @@ if(RECOMP_PROGRAM_DIR)
         dsound_service_model.c
         dsound_service_adapter.c
         audio_output_xaudio2.cpp
+        custom_music.cpp
+        soundtrack_adapter.c
         movie_color_model.c
         cri_service_model.c
         cri_service_adapter.c
@@ -498,7 +509,8 @@ if(RECOMP_PROGRAM_DIR)
         "${_recomp_program_dir}"
         "${CMAKE_CURRENT_SOURCE_DIR}/../xbe")
     target_link_libraries(recomp_program_runner PRIVATE
-        bcrypt dbghelp d3d11 d3dcompiler dxgi user32 xaudio2 ole32)
+        bcrypt dbghelp d3d11 d3dcompiler dxgi user32 xaudio2 ${RECOMP_MEDIA_FOUNDATION})
+    target_link_options(recomp_program_runner PRIVATE ${RECOMP_MEDIA_FOUNDATION_DELAYLOAD})
     if(WIN32)
         recomp_use_sdl3(recomp_program_runner)
     endif()
@@ -548,6 +560,8 @@ add_executable(recomp_xbox_adpcm_test xbox_adpcm.c xbox_adpcm_test.c)
 add_executable(recomp_movie_color_test movie_color_model.c movie_color_model_test.c)
 
 include(CTest)
+add_test(NAME recomp-runtime-custom-music COMMAND recomp_runtime_test --custom-music)
+set_tests_properties(recomp-runtime-custom-music PROPERTIES SKIP_RETURN_CODE 77)
 add_test(NAME recomp-runtime-movie-color COMMAND recomp_movie_color_test)
 add_test(NAME recomp-runtime-xbox-adpcm COMMAND recomp_xbox_adpcm_test)
 if(TARGET recomp_audio_output_xaudio2_test)

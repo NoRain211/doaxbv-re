@@ -19,6 +19,7 @@ int recomp_d3d_texture_model_test(void);
 int recomp_d3d_tile_model_test(void);
 int recomp_d3d_vertex_shader_model_test(void);
 int recomp_dsound_service_adapter_test(void);
+int recomp_custom_music_test(void); /* process exit code; 77 = skipped */
 int recomp_cri_service_model_test(void);
 int recomp_cri_service_adapter_test(void);
 int recomp_crt_format_adapter_test(void);
@@ -830,6 +831,9 @@ int main(int argc, char **argv)
 {
     int passed = 1;
 
+    if (argc == 2 && strcmp(argv[1], "--custom-music") == 0) {
+        return recomp_custom_music_test();
+    }
     if (argc == 2 && strcmp(argv[1], "--invalid-access") == 0) {
         return run_invalid_access();
     }
@@ -847,7 +851,7 @@ int main(int argc, char **argv)
             stderr,
             "usage: recomp_runtime_test "
             "[--invalid-access|--fiber-stack-recycling|"
-            "--ram-overrun|--ram-pending-ohci]\n");
+            "--ram-overrun|--ram-pending-ohci|--custom-music]\n");
         return 64;
     }
 

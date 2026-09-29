@@ -32,8 +32,9 @@ drop in MP3, WAV, or FLAC files, then select them through the game's custom
 soundtrack menu. Start with one soundtrack containing the supported files;
 use filenames for display names and stable IDs for selection across restarts.
 The runtime supplies the Xbox-facing catalog; users should not need an Xbox
-dashboard database or manually converted tracks. This is a proposal, not
-implemented or verified behavior.
+dashboard database or manually converted tracks. This recommendation is now
+implemented; see [custom soundtracks](../../custom-soundtracks.md). Audible
+playback still awaits a user play test.
 
 Prefer host decoding to PCM over converting every input to lossy WMA. Windows'
 [desktop codec table](https://learn.microsoft.com/en-us/windows/apps/develop/media-authoring-processing/supported-codecs)
@@ -72,8 +73,9 @@ playback check. It is not the preferred user workflow.
 Acceptance requires natural in-game selection and audible playback of each
 format, plus stop, next, seek where exposed, end-of-track advancement, volume,
 and return to ordinary game music. Include a malformed file and confirm the
-original files remain unchanged. No runtime implementation or playback test
-has been performed for this proposal.
+original files remain unchanged. The implementation's automated checks are
+listed in [custom soundtracks](../../custom-soundtracks.md#verification); the
+gameplay criteria above still await a user play test.
 
 ## Existing WMA path remains unverified
 

@@ -50,6 +50,7 @@ typedef struct FileHandleEntry {
     uint32_t share_mode;
     int write_attributes;
     int delete_on_close;
+    RecompReadFilter read_filter;
     uint32_t save_owner;
     uint32_t delete_owner;
     char host_path[MAX_PATH_LEN];
@@ -211,6 +212,7 @@ static uint32_t register_file_handle(
             file_handles[i].save_owned = profile_path &&
                 (file_handles[i].delete_access || file_handles[i].write_attributes);
             file_handles[i].delete_on_close = 0;
+            file_handles[i].read_filter = NULL;
             file_handles[i].save_owner = file_handles[i].save_owned ? current_save_owner() : 0u;
             file_handles[i].delete_owner = 0u;
             file_handles[i].host_handle = host_handle;
@@ -275,6 +277,30 @@ static uint32_t register_file_handle(
     }
     *status = RECOMP_STATUS_NO_MEMORY;
     return 0u;
+}
+
+uint32_t recomp_kernel_open_readonly(const wchar_t *path, RecompReadFilter filter)
+{
+    uint32_t status;
+    uint32_t handle;
+    HANDLE file;
+
+    if (path == NULL) {
+        return 0u;
+    }
+    file = CreateFileW(path, GENERIC_READ,
+        FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (file == INVALID_HANDLE_VALUE) {
+        return 0u;
+    }
+    handle = register_file_handle(file, FILE_HANDLE_HOST_FILE, NULL,
+        GENERIC_READ, FILE_SHARE_READ, 0, &status);
+    if (handle == 0u) {
+        CloseHandle(file);
+        return 0u;
+    }
+    find_file_handle(handle)->read_filter = filter;
+    return handle;
 }
 
 static int read_guest_ansi_string(uint32_t ansi_string_address, char *out, size_t out_size)
@@ -1983,6 +2009,9 @@ static void bridge_nt_read_file(void)
         }
 
         bytes_read = host_bytes_read;
+        if (file_handles[i].read_filter != NULL && bytes_read != 0u) {
+            file_handles[i].read_filter(read_offset, host_buffer, bytes_read);
+        }
         file_handles[i].cursor = read_offset + bytes_read;
         status = bytes_read == 0u && length != 0u
             ? RECOMP_STATUS_END_OF_FILE

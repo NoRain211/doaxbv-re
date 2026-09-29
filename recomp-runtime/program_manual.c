@@ -20,6 +20,7 @@
 #include "fiber_adapter.h"
 #include "input_adapter.h"
 #include "save_adapter.h"
+#include "soundtrack_adapter.h"
 #include "xapi_time_adapter.h"
 #include "stop_report.h"
 
@@ -199,6 +200,9 @@ RecompFunction recomp_lookup_manual(uint32_t guest_address)
     }
     if (function == NULL) {
         function = recomp_save_lookup_manual(guest_address);
+    }
+    if (function == NULL) {
+        function = recomp_soundtrack_lookup_manual(guest_address);
     }
     if (function == NULL) {
         function = recomp_xapi_time_lookup_manual(guest_address);

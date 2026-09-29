@@ -44,6 +44,9 @@ The active implementation includes:
 - controller mapping, scripted input handover and file-backed input pulses;
 - transactional saves with interrupted-write recovery;
 - owned native PCM/ADPCM audio output and cooperative movie service;
+- a `UserMusic` MP3/WAV/FLAC catalog and native PCM decoder, with local
+  codec/packet checks; natural menu selection and audible playback await a
+  named-build play test (see [native audio](native-audio.md#custom-soundtracks));
 - D3D8 model/adapter seams, render targets, mutable textures and D3D11 VSync flip presentation;
 - paired monotonic movie timing, color conversion and native SSE helpers;
 - XBE parsing and hashing for authenticated local runners.

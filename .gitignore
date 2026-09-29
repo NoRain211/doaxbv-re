@@ -32,6 +32,9 @@ tools/disasm/output/
 *.sfd
 *.wav
 *.wma
+*.mp3
+*.flac
+UserMusic/
 *.xbx
 *.qcow2
 *.sav
