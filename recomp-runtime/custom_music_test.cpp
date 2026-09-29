@@ -143,6 +143,25 @@ void write(const fs::path &path, const Bytes &bytes)
     check(static_cast<bool>(stream), "write synthetic fixture");
 }
 
+// One second of 48 kHz mono 16-bit PCM, which the reader must resample and
+// widen to 44.1 kHz stereo.
+Bytes wave_48k_mono()
+{
+    constexpr uint32_t rate = 48000;
+    Bytes bytes(44 + rate * 2);
+    auto word = [&](size_t at, uint16_t value) { std::memcpy(bytes.data() + at, &value, 2); };
+    auto dword = [&](size_t at, uint32_t value) { std::memcpy(bytes.data() + at, &value, 4); };
+    std::memcpy(bytes.data(), "RIFF", 4); dword(4, 36 + rate * 2);
+    std::memcpy(bytes.data() + 8, "WAVEfmt ", 8); dword(16, 16);
+    word(20, 1); word(22, 1); dword(24, rate); dword(28, rate * 2); word(32, 2); word(34, 16);
+    std::memcpy(bytes.data() + 36, "data", 4); dword(40, rate * 2);
+    for (uint32_t i = 0; i < rate; ++i) {
+        const auto sample = static_cast<int16_t>(std::sin(i * 660.0 * 6.283185307179586 / rate) * 8000);
+        std::memcpy(bytes.data() + 44 + i * 2, &sample, 2);
+    }
+    return bytes;
+}
+
 // Encodes pcm with a Windows encoder. False when this Windows has none for
 // the format; the caller then skips that format and says so.
 bool encode(const fs::path &path, const GUID &subtype, const Bytes &pcm)
@@ -271,7 +290,8 @@ void check_track(uint32_t index, const Bytes *exact_pcm)
 {
     const RecompMusicTrack track = *recomp_music_track(index);
     const fs::path path = recomp_music_path(track.id);
-    const bool lossy = path.extension() == ".mp3";
+    // MP3 frames pad the end and resampling filters shift it; both are near 1 s.
+    const bool approximate = path.extension() == ".mp3" || path.stem() == "d-48k-mono";
     Guest guest;
     check(call(0x1824df, {1, index, 0x5100, 0x5104, 0x5200, 33}) == 1 &&
         *recomp_memory_u32(0x5100) == track.id &&
@@ -291,11 +311,11 @@ void check_track(uint32_t index, const Bytes *exact_pcm)
     check(recomp_music_read(reference.get(), scratch.data(), 3) == -1 &&
         recomp_music_read(reference.get(), scratch.data(), RECOMP_MUSIC_MAX_READ + 4) == -1,
         "invalid read sizes rejected");
-    if (lossy) {
-        // ponytail: MP3 frames and encoder delay pad the end; allow one tenth of a second.
+    if (approximate) {
+        // ponytail: allow one tenth of a second rather than modelling each codec's padding.
         check(std::abs(static_cast<int>(track.duration_ms) - 1000) <= 100 &&
-            song.size() >= kSecondBytes && song.size() <= kSecondBytes * 11 / 10,
-            "about one second of MP3");
+            song.size() >= kSecondBytes * 9 / 10 && song.size() <= kSecondBytes * 11 / 10,
+            "about one second of converted PCM");
     } else {
         check(track.duration_ms == 1000 && song.size() == kSecondBytes,
             "exactly one second of lossless PCM");
@@ -372,10 +392,11 @@ extern "C" int recomp_custom_music_test(void)
         recomp_music_shutdown();
 
         write(folder / "a-float.WAV", wave(pcm, true));
+        write(folder / "d-48k-mono.wav", wave_48k_mono());
         const bool flac = encode(folder / "b-flac.flac", MFAudioFormat_FLAC, pcm);
         const bool mp3 = encode(folder / "c-mp3.mp3", MFAudioFormat_MP3, tone(880));
         recomp_music_initialize(root_name.c_str());
-        const uint32_t count = 2u + flac + mp3;
+        const uint32_t count = 3u + flac + mp3;
         check(recomp_music_count() == count && recomp_music_track(count - 1)->id == stable_id,
             "sorted by folded name with stable IDs after insertion");
         uint32_t total = 0;
