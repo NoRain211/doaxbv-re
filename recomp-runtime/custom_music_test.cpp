@@ -312,9 +312,9 @@ void check_track(uint32_t index, const Bytes *exact_pcm)
         recomp_music_read(reference.get(), scratch.data(), RECOMP_MUSIC_MAX_READ + 4) == -1,
         "invalid read sizes rejected");
     if (approximate) {
-        // ponytail: allow one tenth of a second rather than modelling each codec's padding.
+        // ponytail: allow a tenth of a second of padding rather than modelling each codec.
         check(std::abs(static_cast<int>(track.duration_ms) - 1000) <= 100 &&
-            song.size() >= kSecondBytes * 9 / 10 && song.size() <= kSecondBytes * 11 / 10,
+            song.size() >= kSecondBytes && song.size() <= kSecondBytes * 11 / 10,
             "about one second of converted PCM");
     } else {
         check(track.duration_ms == 1000 && song.size() == kSecondBytes,
