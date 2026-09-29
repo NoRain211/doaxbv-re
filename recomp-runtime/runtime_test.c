@@ -22,6 +22,7 @@ int recomp_dsound_service_adapter_test(void);
 int recomp_cri_service_model_test(void);
 int recomp_cri_service_adapter_test(void);
 int recomp_crt_format_adapter_test(void);
+int recomp_crt_string_adapter_test(void);
 int recomp_fiber_adapter_test(void);
 int recomp_fiber_model_test(void);
 int recomp_flag_macro_test(void);
@@ -880,6 +881,7 @@ int main(int argc, char **argv)
     passed &= recomp_cri_service_model_test();
     passed &= recomp_cri_service_adapter_test();
     passed &= recomp_crt_format_adapter_test();
+    passed &= recomp_crt_string_adapter_test();
     passed &= recomp_fiber_model_test();
     passed &= recomp_flag_macro_test();
     passed &= recomp_sse_semantics_test();

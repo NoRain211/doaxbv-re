@@ -170,7 +170,7 @@
     "tools/game-recipe/recoveries/recover-fparms-r84-20260830.json": "d3554ab49be87187af816d07f3f58978c96dd6a4d9dff48298026d84742bf98a",
     "tools/game-recipe/recoveries/recover-codeptr-r329-controller-exit.json": "9c33eed63e7b98a620c7b7ce451d37901544f86b667a781b6c837c4bfd2204a3",
     "tools/game-recipe/recoveries/recover-r468-dusk-complete.json": "9390aad40665260a7b3cc2b9bfb400318e72d51f6d1027174a78d39f392d3a98",
-    "tools/game-recipe/manual-call-targets.json": "c5c6e8d9560f18ec2e38c2a51622477db9e4f320f5d7063f605b0cc7e95a07c7",
+    "tools/game-recipe/manual-call-targets.json": "97dc3d5ebb8d444431cfbb800cf5b18aed28e590e6f7452bbaf511f409bfbe6f",
     "tools/game-recipe/recoveries/recover-input-history-radio.json": "8164a3c3d1b22d0bfdd1fc9594f503e607e2c34389ea421b197398db4d36c2e8",
     "tools/game-recipe/recoveries/recover-rest-callback.json": "73c69b062d695abd4e699695c7ef82d66ac266fc6f02844760b1f203d5c43fd3",
     "tools/game-recipe/recoveries/recover-rest-predicate.json": "994a602780c604088cc27e9d51be17547d772fa1e76f526021986a9ea75318c8",
@@ -191,7 +191,7 @@
     "tools/game-recipe/recoveries/recover-slots2.json": "4a40725ec1d9960b2253dc968a8ad33499330c2f1355d8b7dbd80b27c33ab04c",
     "tools/game-recipe/recoveries/recover-hotel-tapes.json": "f96a7f949807e3a686fc809bd924379466cfa9fe285c0ec634adccc2bb0109f9"
   },
-  "program_manifest_sha256": "ed2b21ddd6925b019de1c04d18aca602ba11e25c733378779b3456225a71b3c7",
+  "program_manifest_sha256": "6a5425769464e98f3f93d6ac660ffd1a4ca23ba73fedd2a1781823c955d5569c",
   "ebp_overrides": 10824,
   "manual_call_targets": "tools/game-recipe/manual-call-targets.json",
   "generated_files": {
@@ -204,7 +204,7 @@
     "recomp_0006.c": "8591f0787409fafde2747e587eb2526e2982591772a1e471d78ae3ed226c4c6a",
     "recomp_0007.c": "ee2b4940dd9220e79b6a69d64ddd613defaab1f5db2b0ebd9391cc9622152bc9",
     "recomp_0008.c": "4166b8bab52eb7dd60fbedbf9f9c0fcab0b82adbecf1ba264a8995271fbd7c3b",
-    "recomp_0009.c": "0145001472ff2cb605c93ecdc6ba1908b4e416dc55d118bb741ff7a43adfa9c8",
+    "recomp_0009.c": "257944bcc5f55ebec4bf2116ba994399003a7796f5dc7505b69d373339a7181f",
     "recomp_0010.c": "01eb9a8ea1ffbc9f26ae2cd9e4577f3d0d6917a84a338c6c5bb8ff86bfae04cf",
     "recomp_0011.c": "6c78ddb319c88fc011830960c1877926640422f40e39b1a2350e2287ade4b793",
     "recomp_0012.c": "18390cc276919b295fa30202808d2a96b18760e56bfcd3cc268223c7fd719e4a",

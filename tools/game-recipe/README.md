@@ -8,6 +8,11 @@ The function shards contain addresses and analysis metadata. The 61 recovery
 files must retain their listed order. Neither contains machine instructions or
 game assets. Manual call targets preserve native adapter routing.
 
+The wide-string comparison target routes both direct callers through the native
+CRT adapter. This preserves equality when validating a profile name before
+deletion; the split generated comparator lost the flags for its equal return.
+Regeneration changes only those two call sites.
+
 The casino recoveries follow the Radio input. They restore the Blackjack, Poker,
 and Slots handlers and the split bodies that crashed in play. The stub-class
 recovery also joins the same split defect in twelve other functions, including

@@ -41,6 +41,39 @@ static std::string get(const fs::path &path)
     return std::string(std::istreambuf_iterator<char>(file), {});
 }
 
+static void append_u64(std::string &image, uint64_t value)
+{
+    image.append(reinterpret_cast<const char *>(&value), sizeof value);
+}
+
+static void append_times(std::string &image, char kind, uint64_t base)
+{
+    image.push_back(kind);
+    append_u64(image, base);
+    append_u64(image, base + 1000u);
+    append_u64(image, base + 2000u);
+}
+
+/* A root directory and one file. Only v2 records attributes. */
+static std::string undo_image(bool v2, uint64_t file_times, uint64_t file_attributes)
+{
+    std::string image(v2 ? "rsundo02" : "rsundo01", 8u);
+    append_u64(image, 0u);
+    append_times(image, 'D', 0u);
+    if (v2) append_u64(image, 0u);
+    append_u64(image, 0u);
+    append_times(image, 'F', file_times);
+    if (v2) append_u64(image, file_attributes);
+    const auto name = fs::path("legacy").native();
+    append_u64(image, name.size() * sizeof name[0]);
+    image.append(reinterpret_cast<const char *>(name.data()), name.size() * sizeof name[0]);
+    append_u64(image, 11u);
+    image += "legacy save";
+    const uint64_t size = image.size();
+    image.replace(8u, sizeof size, reinterpret_cast<const char *>(&size), sizeof size);
+    return image;
+}
+
 int main()
 {
     const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
@@ -80,6 +113,40 @@ int main()
     assert(get(payload) == "first complete save");
     assert(!fs::exists(journal / "undo"));
 
+#ifdef _WIN32
+    /* Distinct times catch a swapped restore. */
+    const FILETIME creation{1u, 0x01D00000u}, access{2u, 0x01D10000u}, write{3u, 0x01D20000u};
+    HANDLE timed = CreateFileW(payload.c_str(), FILE_WRITE_ATTRIBUTES, 0, nullptr,
+        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    assert(timed != INVALID_HANDLE_VALUE);
+    assert(SetFileTime(timed, &creation, &access, &write) && CloseHandle(timed));
+    const DWORD original_attributes = GetFileAttributesW(payload.c_str());
+    assert(original_attributes != INVALID_FILE_ATTRIBUTES);
+    const auto change_time = [](const fs::path &path) {
+        HANDLE handle = CreateFileW(path.c_str(), FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+            OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+        assert(handle != INVALID_HANDLE_VALUE);
+        FILE_BASIC_INFO info{};
+        assert(GetFileInformationByHandleEx(handle, FileBasicInfo, &info, sizeof info));
+        assert(CloseHandle(handle));
+        return info.ChangeTime.QuadPart;
+    };
+    const auto original_change = change_time(payload);
+    assert(recomp_save_begin(7));
+    const DWORD changed_attributes =
+        (original_attributes & ~FILE_ATTRIBUTE_NORMAL) | FILE_ATTRIBUTE_READONLY;
+    assert(SetFileAttributesW(payload.c_str(), changed_attributes));
+    assert(!recomp_save_end(7, false));
+    assert(GetFileAttributesW(payload.c_str()) == original_attributes);
+    assert(change_time(payload) == original_change);
+    WIN32_FILE_ATTRIBUTE_DATA restored_times;
+    assert(GetFileAttributesExW(payload.c_str(), GetFileExInfoStandard, &restored_times));
+    assert(CompareFileTime(&restored_times.ftCreationTime, &creation) == 0);
+    assert(CompareFileTime(&restored_times.ftLastAccessTime, &access) == 0);
+    assert(CompareFileTime(&restored_times.ftLastWriteTime, &write) == 0);
+#endif
+
     assert(recomp_save_begin(7));
     assert(!recomp_save_begin(9));
     assert(!recomp_save_end(9, true));
@@ -95,6 +162,18 @@ int main()
     assert(get(payload) == "first complete save");
     assert(fs::is_directory(live / "empty"));
     assert(!fs::exists(live / "new-file"));
+
+    /* A rejected foreign mutation aborts whichever operation is pending. */
+    recomp_save_note_pending_failure();
+    assert(!recomp_save_pending());
+    assert(recomp_save_begin(7));
+    assert(recomp_save_end(7, true));
+    assert(recomp_save_begin(7));
+    put(payload, "rejected by another owner");
+    recomp_save_note_failure(9);
+    recomp_save_note_pending_failure();
+    assert(!recomp_save_end(7, true));
+    assert(get(payload) == "first complete save");
 
     assert(recomp_save_begin(7));
     put(payload, "interrupted operation");
@@ -171,6 +250,58 @@ int main()
     assert(get(payload) == "newer than the image");
     fs::remove(journal / "unknown");
     assert(recomp_save_initialize(root_name.c_str()));
+
+    /* Recover the previous known image format, then upgrade its marker past
+       a temporary marker left by an interrupted upgrade. */
+    const uint64_t legacy_times = 132000000000000000u;
+    put(journal / "version", "recomp-save-undo-v2\nx");
+    assert(!recomp_save_initialize(root_name.c_str()));
+    put(journal / "version", "recomp-save-undo-v1\n");
+    put(journal / "version.tmp", "recomp-sa");
+    put(journal / "undo", undo_image(false, legacy_times, 0u));
+    assert(recomp_save_initialize(root_name.c_str()));
+    assert(!fs::exists(payload));
+#ifdef _WIN32
+    WIN32_FILE_ATTRIBUTE_DATA legacy;
+    assert(GetFileAttributesExW((live / "legacy").c_str(), GetFileExInfoStandard, &legacy));
+    const auto ticks = [](FILETIME time) {
+        return (uint64_t(time.dwHighDateTime) << 32) | time.dwLowDateTime;
+    };
+    assert(ticks(legacy.ftCreationTime) == legacy_times);
+    assert(ticks(legacy.ftLastAccessTime) == legacy_times + 1000u);
+    assert(ticks(legacy.ftLastWriteTime) == legacy_times + 2000u);
+#else
+    assert(uint64_t(fs::last_write_time(live / "legacy").time_since_epoch().count()) ==
+        legacy_times + 2000u);
+#endif
+    assert(get(live / "legacy") == "legacy save");
+    assert(get(journal / "version") == "recomp-save-undo-v2\n");
+    assert(!fs::exists(journal / "version.tmp"));
+    assert(!fs::exists(journal / "undo"));
+
+#ifdef _WIN32
+    /* Storage attributes rollback cannot rebuild are refused before any change. */
+    const auto sparse = live / "sparse";
+    put(sparse, "sparse");
+    HANDLE sparse_handle = CreateFileW(sparse.c_str(), GENERIC_READ | GENERIC_WRITE,
+        0, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    assert(sparse_handle != INVALID_HANDLE_VALUE);
+    DWORD returned;
+    assert(DeviceIoControl(sparse_handle, FSCTL_SET_SPARSE, nullptr, 0,
+        nullptr, 0, &returned, nullptr));
+    assert(CloseHandle(sparse_handle));
+    assert(!recomp_save_begin(7));
+    assert(!fs::exists(journal / "undo"));
+    fs::remove(sparse);
+    assert(recomp_save_initialize(root_name.c_str()));
+
+    put(journal / "undo", undo_image(true, legacy_times, FILE_ATTRIBUTE_ENCRYPTED));
+    assert(!recomp_save_initialize(root_name.c_str()));
+    assert(get(live / "legacy") == "legacy save");
+    assert(fs::is_regular_file(journal / "undo"));
+    fs::remove(journal / "undo");
+    assert(recomp_save_initialize(root_name.c_str()));
+#endif
 
     const auto outside = root / "outside";
     put(outside / "untouched", "outside data");
