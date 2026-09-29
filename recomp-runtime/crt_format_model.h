@@ -11,40 +11,38 @@ typedef enum RecompCrtFormatResult {
     RECOMP_CRT_FORMAT_UNSUPPORTED_DIRECTIVE,
 } RecompCrtFormatResult;
 
-RecompCrtFormatResult recomp_crt_format_literal(
-    char *destination,
-    size_t destination_capacity,
-    const char *format,
-    size_t *written);
+/*
+ * One argument of a guest va_list. value is the raw 32-bit slot; the model
+ * reads it for c, d, i, u, x, and X. string is read only for s and must be a
+ * NUL-terminated host string that stays valid until the next fetch.
+ */
+typedef struct RecompCrtFormatArgument {
+    uint32_t value;
+    const char *string;
+} RecompCrtFormatArgument;
 
-RecompCrtFormatResult recomp_crt_format_one_string(
-    char *destination,
-    size_t destination_capacity,
-    const char *format,
-    const char *string_argument,
-    size_t *written);
+/*
+ * Supplies argument index (0-based) for a directive with this conversion
+ * character. Returns 0 to abort the format.
+ */
+typedef int (*RecompCrtFormatFetch)(
+    void *context,
+    size_t index,
+    char conversion,
+    RecompCrtFormatArgument *argument);
 
-RecompCrtFormatResult recomp_crt_format_two_strings(
+/*
+ * Supports literals, %%, and %s %c %d %i %u %x %X with width and the ISO C
+ * flags of each conversion (d i: "-+ 0"; u: "-0"; x X: "-0#"; c s: "-").
+ * Precision, length modifiers, and other conversions are unsupported.
+ * Calls fetch once per directive, right before formatting it.
+ */
+RecompCrtFormatResult recomp_crt_format(
     char *destination,
     size_t destination_capacity,
     const char *format,
-    const char *first_string_argument,
-    const char *second_string_argument,
-    size_t *written);
-
-RecompCrtFormatResult recomp_crt_format_one_signed_decimal(
-    char *destination,
-    size_t destination_capacity,
-    const char *format,
-    int32_t argument,
-    size_t *written);
-
-RecompCrtFormatResult recomp_crt_format_string_signed_decimal(
-    char *destination,
-    size_t destination_capacity,
-    const char *format,
-    const char *string_argument,
-    int32_t signed_argument,
+    RecompCrtFormatFetch fetch,
+    void *context,
     size_t *written);
 
 #endif
