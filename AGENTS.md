@@ -49,7 +49,10 @@ function that owns it.
 4. Report observed behavior. Forced state is a hypothesis, not a result.
 5. Keep models separable from interception and host delivery details.
 6. Replace library code such as D3D8, XAPI, CRT, and middleware wholesale;
-   decompile only game-owned logic.
+   decompile only game-owned logic. Until a library is replaced, an adapter may
+   wrap or call its generated functions at a documented seam. Record each seam
+   in a comment beside the adapter's manual lookup and in the feature's `docs/`
+   page, and treat wholesale replacement as open work.
 7. Base every public branch on `origin/main`. A local branch that does not
    contain the public root commit `ef3bc2e` carries private history: never
    push it or merge it into a public branch. Port the change onto `main`.
