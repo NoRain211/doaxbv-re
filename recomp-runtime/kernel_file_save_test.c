@@ -593,7 +593,10 @@ int recomp_kernel_file_save_test(void)
             (GetFileAttributesA(created_path) & FILE_ATTRIBUTE_HIDDEN) != 0u);
         passed &= expect("basic query reports updated attributes",
             query_information(handle, 4u, 0x28u, &passed) == 0u &&
-            (*recomp_memory_u32(TEST_INFORMATION + 0x20u) & FILE_ATTRIBUTE_HIDDEN) != 0u);
+            (*recomp_memory_u32(TEST_INFORMATION + 0x20u) & FILE_ATTRIBUTE_HIDDEN) != 0u &&
+            *recomp_memory_u32(TEST_INFORMATION + 0x1cu) != 0u);
+        passed &= expect("basic query rejects the unpadded length",
+            query_information(handle, 4u, 0x24u, &passed) == 0xc0000004u);
         passed &= expect("network query reports updated attributes",
             query_information(handle, 0x22u, 0x38u, &passed) == 0u &&
             (*recomp_memory_u32(TEST_INFORMATION + 0x30u) & FILE_ATTRIBUTE_HIDDEN) != 0u);

@@ -1267,10 +1267,20 @@ static void bridge_nt_query_information_file(void)
         const FileHandleEntry *entry = &file_handles[i];
         const bool directory = entry->kind == FILE_HANDLE_DIRECTORY;
         /* Profile metadata can change through NtSetInformationFile, so report
-           the host's. Disc files keep the frozen host's answers. */
-        WIN32_FILE_ATTRIBUTE_DATA host;
-        const bool profile_metadata = is_profile_path(entry->host_path) &&
-            GetFileAttributesExA(entry->host_path, GetFileExInfoStandard, &host);
+           the host's, read through an attribute-only handle that sharing
+           modes never block. Disc files keep the frozen host's answers. */
+        FILE_BASIC_INFO host = {0};
+        bool profile_metadata = false;
+        if (is_profile_path(entry->host_path)) {
+            HANDLE query = CreateFileA(entry->host_path, FILE_READ_ATTRIBUTES,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+                OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+            if (query != INVALID_HANDLE_VALUE) {
+                profile_metadata = GetFileInformationByHandleEx(
+                    query, FileBasicInfo, &host, sizeof host) != 0;
+                CloseHandle(query);
+            }
+        }
         LARGE_INTEGER size = {0};
         if ((directory && !profile_metadata) ||
             (!directory && (entry->host_handle == INVALID_HANDLE_VALUE ||
@@ -1279,19 +1289,25 @@ static void bridge_nt_query_information_file(void)
             policy = "host-file-information-failed";
             break;
         }
+        if (profile_metadata && file_information_class == FILE_BASIC_INFORMATION &&
+            length < 0x28u) {
+            status = 0xc0000004u; /* STATUS_INFO_LENGTH_MISMATCH */
+            policy = "basic-information-length-mismatch";
+            break;
+        }
 
         file_size = (uint64_t)size.QuadPart;
         policy = profile_metadata ? "host-profile-file-information" : "host-file-information";
         const uint32_t attributes = profile_metadata
-            ? host.dwFileAttributes : FILE_ATTRIBUTE_NORMAL;
+            ? host.FileAttributes : FILE_ATTRIBUTE_NORMAL;
         if (profile_metadata && file_information != 0u &&
-            ((file_information_class == FILE_BASIC_INFORMATION && length >= 0x24u) ||
+            ((file_information_class == FILE_BASIC_INFORMATION && length >= 0x28u) ||
              (file_information_class == FILE_NETWORK_OPEN_INFORMATION && length >= 0x38u))) {
-            const FILETIME times[4] = {host.ftCreationTime, host.ftLastAccessTime,
-                host.ftLastWriteTime, host.ftLastWriteTime};
+            const LARGE_INTEGER times[4] = {host.CreationTime, host.LastAccessTime,
+                host.LastWriteTime, host.ChangeTime};
             for (uint32_t t = 0u; t < 4u; ++t) {
-                *recomp_memory_u32(file_information + t * 8u) = times[t].dwLowDateTime;
-                *recomp_memory_u32(file_information + t * 8u + 4u) = times[t].dwHighDateTime;
+                *recomp_memory_u32(file_information + t * 8u) = times[t].LowPart;
+                *recomp_memory_u32(file_information + t * 8u + 4u) = (uint32_t)times[t].HighPart;
             }
         }
         if (file_information_class == FILE_NETWORK_OPEN_INFORMATION &&
@@ -1320,7 +1336,7 @@ static void bridge_nt_query_information_file(void)
             *recomp_memory_i8(file_information + 0x14u) = (int8_t)(entry->delete_on_close != 0);
             *recomp_memory_i8(file_information + 0x15u) = (int8_t)directory;
         } else if (file_information_class == FILE_BASIC_INFORMATION &&
-                   file_information != 0u && length >= 0x24u && profile_metadata) {
+                   file_information != 0u && length >= 0x28u && profile_metadata) {
             *recomp_memory_u32(file_information + 0x20u) = attributes;
         }
         break;
@@ -1384,7 +1400,7 @@ static bool handle_profile_mutation_information(
     }
 
     if (file_information_class == FILE_BASIC_INFORMATION) {
-        if (length < 0x24u || file_information == 0u) {
+        if (length < 0x28u || file_information == 0u) {
             *status = STATUS_INFO_LENGTH_MISMATCH;
             *policy = "basic-information-length-mismatch";
         } else if (!profile_path) {
