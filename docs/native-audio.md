@@ -101,6 +101,6 @@ the launcher checkbox.
 | Playlist field | Meaning |
 |----------------|---------|
 | `+0x000` | Entry count, at most 100 |
-| `+0x644` | Entry array, 16 bytes each; entry `+6` is the 16-bit location mask, `+0xC` the song ID |
+| `+0x644` | Pointer to the entry array, 16 bytes per entry; entry `+6` is the 16-bit location mask, `+0xC` the song ID |
 | `+0x64C` | Next position |
 | `+0x650` | Playing position |

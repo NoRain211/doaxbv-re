@@ -180,9 +180,22 @@ static int music_shuffle_enabled(void)
         const char *setting = getenv("RECOMP_MUSIC_SHUFFLE");
 
         enabled = setting != NULL && strcmp(setting, "1") == 0;
-        srand((unsigned)time(NULL));
     }
     return enabled;
+}
+
+/* Private xorshift32 state, so no shared C runtime rand state is touched. */
+static uint32_t music_shuffle_random(void)
+{
+    static uint32_t state;
+
+    if (state == 0u) {
+        state = (uint32_t)time(NULL) | 1u;
+    }
+    state ^= state << 13;
+    state ^= state >> 17;
+    state ^= state << 5;
+    return state;
 }
 
 static void music_shuffle_after(uint32_t player, uint32_t list_before, uint32_t next_before)
@@ -208,7 +221,7 @@ static void music_shuffle_after(uint32_t player, uint32_t list_before, uint32_t 
         memcpy(&masks[i], recomp_memory(entry + ENTRY_LOCATION_MASK, 2u), 2u);
     }
     pick = recomp_music_shuffle_pick(masks, count, playing,
-        (int8_t)*recomp_memory(player + PLAYER_LOCATION, 1u), (uint32_t)rand());
+        (int8_t)*recomp_memory(player + PLAYER_LOCATION, 1u), music_shuffle_random());
     if (pick >= 0) {
         *recomp_memory_u32(list + PLAYLIST_NEXT) = (uint32_t)pick;
         fprintf(stderr, "[music-shuffle] next=%d of %d\n", pick, count);

@@ -1,4 +1,5 @@
 #include "runtime.h"
+#include "program_manual.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -20,8 +21,6 @@ int recomp_d3d_tile_model_test(void);
 int recomp_d3d_vertex_shader_model_test(void);
 int recomp_dsound_service_adapter_test(void);
 int recomp_custom_music_test(void); /* process exit code; 77 = skipped */
-int recomp_music_shuffle_pick(const uint16_t *masks, int count, int playing,
-                              int location, uint32_t random);
 int recomp_cri_service_model_test(void);
 int recomp_cri_service_adapter_test(void);
 int recomp_crt_format_adapter_test(void);
