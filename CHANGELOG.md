@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.5.2 Beta "Mixtape" — 2026-09-30
+
+This hotfix adds volume control. It changes only the launcher and run script;
+the recipe, runtime and saves are unchanged. Extract the new ZIP into a new
+folder and run `BuildGame.cmd` again.
+
+### Changed
+
+- **Volume** (#76). The game always started at 20% volume. The launcher now
+  has a **Volume** choice (100%, 75%, 50%, 25%, Mute), saved with its other
+  settings, and the game starts at 100% by default. `RunGame.cmd` also uses
+  100% unless `RECOMP_AUDIO_GAIN` (0 to 1) is already set.
+
 ## 0.5.1 Beta "Mixtape" — 2026-09-29
 
 This hotfix moves the custom music folder. It changes only the runtime and

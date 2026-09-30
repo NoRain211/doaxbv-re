@@ -14,7 +14,8 @@ two-controller match has been tested. 0.4.9 Beta fixes deleting a save (#71)
 with a new generation recipe; its first start upgrades the save journal,
 which earlier builds then reject. 0.5.0 Beta "Mixtape" adds custom
 soundtracks from `UserMusic` with a new generation recipe (#73); 0.5.1 moves
-that folder to `private/UserMusic` and adds a launcher button for it (#75). None of
+that folder to `private/UserMusic` and adds a launcher button for it (#75);
+0.5.2 adds a launcher volume choice that defaults to 100% (#76). None of
 these releases expands the play-test coverage below.
 
 The local build published as 0.4 Beta (tag `v0.4`, commit `3848a67`,
