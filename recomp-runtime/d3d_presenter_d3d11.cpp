@@ -3193,6 +3193,8 @@ RecompD3dPresenterError submitPresent(
         const long long now = std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now().time_since_epoch()).count();
         presenter->vrr_slot_ns = (std::max)(presenter->vrr_slot_ns + 1000000000 / 60, now);
+        // Submit the frame's last commands now, so the GPU finishes them before the flip.
+        presenter->context->Flush();
         recomp_d3d_sleep_until(presenter->vrr_slot_ns);
     }
     LARGE_INTEGER qpc_before{}, qpc_after{};
