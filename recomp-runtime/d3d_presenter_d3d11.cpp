@@ -481,6 +481,9 @@ struct RecompD3dPresenter {
     // Display refreshes each present stayed on screen (DXGI statistics), 1..8+.
     unsigned refresh_holds[9]{};
     UINT last_stat_present = 0u, last_stat_refresh = 0u;
+    /* RECOMP_D3D_PRESENT_LOG: one CSV row of raw DXGI counters per present,
+       in QPC ticks, to line up with a PresentMon --qpc_time capture. */
+    FILE *present_log = nullptr;
     UINT sync_interval = 1u;
     bool vrr = false;           // RECOMP_D3D_VRR=1: the game's 60 Hz timer paces a VRR display
     bool first_present_reported = false;
@@ -663,6 +666,10 @@ void releaseGraphics(RecompD3dPresenter *presenter)
 void releasePresenter(RecompD3dPresenter *presenter)
 {
     releaseGraphics(presenter);
+    if (presenter->present_log != nullptr) {
+        std::fclose(presenter->present_log);
+        presenter->present_log = nullptr;
+    }
     if (presenter->window != nullptr && IsWindow(presenter->window)) {
         DestroyWindow(presenter->window);
     }
@@ -3174,10 +3181,13 @@ RecompD3dPresenterError submitPresent(
             std::chrono::steady_clock::now().time_since_epoch()).count();
     };
     const double present_start_ms = presenter->performance_counter ? clock_ms() : 0.0;
-    const HRESULT present_result = presenter->swap_chain->Present(
-        immediate_present || presenter->vrr ? 0u : syncInterval(presenter),
-        immediate_present ? DXGI_PRESENT_DO_NOT_WAIT
-            : presenter->vrr ? DXGI_PRESENT_ALLOW_TEARING : 0u);
+    const UINT sync_interval = immediate_present || presenter->vrr ? 0u : syncInterval(presenter);
+    const UINT present_flags = immediate_present ? DXGI_PRESENT_DO_NOT_WAIT
+        : presenter->vrr ? DXGI_PRESENT_ALLOW_TEARING : 0u;
+    LARGE_INTEGER qpc_before{}, qpc_after{};
+    QueryPerformanceCounter(&qpc_before);
+    const HRESULT present_result = presenter->swap_chain->Present(sync_interval, present_flags);
+    QueryPerformanceCounter(&qpc_after);
     if (FAILED(present_result)) {
         std::fprintf(
             stderr,
@@ -3191,6 +3201,18 @@ RecompD3dPresenterError submitPresent(
         return RECOMP_D3D_PRESENTER_HOST_FAILURE;
     }
     ++presenter->present_count;
+    if (presenter->present_log != nullptr) {
+        DXGI_FRAME_STATISTICS stats{};
+        UINT last_present = 0u;
+        const HRESULT stats_result = presenter->swap_chain->GetFrameStatistics(&stats);
+        presenter->swap_chain->GetLastPresentCount(&last_present);
+        std::fprintf(presenter->present_log,
+            "%u,%lld,%lld,%u,0x%X,0x%08lX,%u,0x%08lX,%u,%u,%u,%lld\n",
+            presenter->present_count, qpc_before.QuadPart, qpc_after.QuadPart,
+            sync_interval, present_flags, static_cast<unsigned long>(present_result),
+            last_present, static_cast<unsigned long>(stats_result), stats.PresentCount,
+            stats.PresentRefreshCount, stats.SyncRefreshCount, stats.SyncQPCTime.QuadPart);
+    }
     if (presenter->performance_counter) {
         const double present_end_ms = clock_ms();
         // The first Present lands before the sampled window opens.
@@ -3323,6 +3345,17 @@ RecompD3dPresenterError d3d11_backend_create(
         }
         created->vrr = tearing != FALSE;
         std::fprintf(stderr, "recomp d3d presenter: vrr %s\n", created->vrr ? "on" : "unsupported");
+    }
+    if (const char *log = std::getenv("RECOMP_D3D_PRESENT_LOG")) {
+        created->present_log = std::fopen(log, "w");
+        if (created->present_log != nullptr) {
+            LARGE_INTEGER frequency{};
+            QueryPerformanceFrequency(&frequency);
+            std::fprintf(created->present_log, "# qpc_frequency=%lld\n"
+                "present,qpc_before,qpc_after,sync_interval,flags,present_hr,last_present_count,"
+                "stats_hr,stats_present_count,present_refresh_count,sync_refresh_count,sync_qpc\n",
+                frequency.QuadPart);
+        }
     }
     created->owner_thread = GetCurrentThreadId();
     if (!createWindow(created)) {
