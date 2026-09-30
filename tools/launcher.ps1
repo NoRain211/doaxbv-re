@@ -37,9 +37,14 @@ $smaa = New-Object Windows.Forms.CheckBox -Property @{ Text = 'SMAA'; Left = 100
 $play = New-Object Windows.Forms.Button -Property @{ Text = 'Play'; Left = 151; Top = 104; DialogResult = 'OK' }
 $music = New-Object Windows.Forms.Button -Property @{ Text = 'Music folder'; Left = 12; Top = 104; Width = 90 }
 $music.Add_Click({
-    $folder = Join-Path $root 'private\UserMusic'
-    New-Item -ItemType Directory -Force $folder | Out-Null
-    Invoke-Item $folder
+    # Report here; the script-wide trap would close the launcher.
+    try {
+        $folder = Join-Path $root 'private\UserMusic'
+        New-Item -ItemType Directory -Force $folder | Out-Null
+        Invoke-Item $folder
+    } catch {
+        [Windows.Forms.MessageBox]::Show($_.Exception.Message, 'DOAXBV launcher') | Out-Null
+    }
 })
 $form.Controls.AddRange(@($smaa, $music, $play))
 $form.AcceptButton = $play
