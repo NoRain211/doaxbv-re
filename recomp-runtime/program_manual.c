@@ -27,6 +27,7 @@
 #include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
 
 #ifdef RECOMP_FULL_PROGRAM
 void sub_0006AFD0(void);
@@ -35,6 +36,32 @@ void recomp_program_thread_start(void);
 #ifdef RECOMP_FULL_PROGRAM
 void sub_0011F250(void);
 #endif
+
+static int shuffle_allows(const uint16_t *masks, int i, int playing, int location)
+{
+    return i != playing &&
+        (location < 0 || location >= 8 || (masks[i] & (1u << location)) != 0u);
+}
+
+int recomp_music_shuffle_pick(const uint16_t *masks, int count, int playing,
+                              int location, uint32_t random)
+{
+    int allowed = 0;
+
+    for (int i = 0; i < count; ++i) {
+        allowed += shuffle_allows(masks, i, playing, location);
+    }
+    if (allowed == 0) {
+        return -1;
+    }
+    random %= (uint32_t)allowed;
+    for (int i = 0; i < count; ++i) {
+        if (shuffle_allows(masks, i, playing, location) && random-- == 0u) {
+            return i;
+        }
+    }
+    return -1;
+}
 
 #ifdef RECOMP_FULL_PROGRAM
 static void recomp_start_consumer_adapter(void)
@@ -102,6 +129,8 @@ static void recomp_view_entry_adapter(void)
 #ifdef RECOMP_FULL_PROGRAM
 void sub_0001B340(void);
 void sub_000E8100(void);
+void sub_000B8F70(void);
+void sub_000B9790(void);
 
 static void restore_controller_settings(void)
 {
@@ -124,6 +153,91 @@ static void update_controller_settings(void)
         !recomp_controller_settings_save(recomp_disc_root_path, modes)) {
         recomp_stop(1, "controls:write-preference");
     }
+}
+
+/* Radio shuffle. The game's music player starts the playlist song at
+   0x000B8F70 and runs each frame at 0x000B9790 (EAX is the player). Both
+   leave the playlist's next index one past the playing song, wrapping at the
+   end; the game has no random mode. With RECOMP_MUSIC_SHUFFLE=1 that step is
+   replaced by a random entry allowed at the current location. The host
+   random source leaves the game's own rand sequence untouched. */
+enum {
+    PLAYER_PLAYLIST = 0x658u,
+    PLAYER_LOCATION = 0x6e0u,
+    PLAYLIST_ENTRIES = 0x644u,
+    PLAYLIST_NEXT = 0x64cu,
+    PLAYLIST_PLAYING = 0x650u,
+    PLAYLIST_CAPACITY = 100,
+    ENTRY_SIZE = 0x10u,
+    ENTRY_LOCATION_MASK = 6u
+};
+
+static int music_shuffle_enabled(void)
+{
+    static int enabled = -1;
+
+    if (enabled < 0) {
+        const char *setting = getenv("RECOMP_MUSIC_SHUFFLE");
+
+        enabled = setting != NULL && strcmp(setting, "1") == 0;
+        srand((unsigned)time(NULL));
+    }
+    return enabled;
+}
+
+static void music_shuffle_after(uint32_t player, uint32_t list_before, uint32_t next_before)
+{
+    uint32_t list = *recomp_memory_u32(player + PLAYER_PLAYLIST);
+    uint16_t masks[PLAYLIST_CAPACITY];
+    int count, next, playing, pick;
+
+    if (list == 0u) {
+        return;
+    }
+    count = (int)*recomp_memory_u32(list);
+    next = (int)*recomp_memory_u32(list + PLAYLIST_NEXT);
+    playing = (int)*recomp_memory_u32(list + PLAYLIST_PLAYING);
+    if (count < 2 || count > PLAYLIST_CAPACITY ||
+            (list == list_before && (uint32_t)next == next_before) ||
+            next != (playing + 1) % count) {
+        return;
+    }
+    for (int i = 0; i < count; ++i) {
+        uint32_t entry = *recomp_memory_u32(list + PLAYLIST_ENTRIES) + (uint32_t)i * ENTRY_SIZE;
+
+        memcpy(&masks[i], recomp_memory(entry + ENTRY_LOCATION_MASK, 2u), 2u);
+    }
+    pick = recomp_music_shuffle_pick(masks, count, playing,
+        (int8_t)*recomp_memory(player + PLAYER_LOCATION, 1u), (uint32_t)rand());
+    if (pick >= 0) {
+        *recomp_memory_u32(list + PLAYLIST_NEXT) = (uint32_t)pick;
+        fprintf(stderr, "[music-shuffle] next=%d of %d\n", pick, count);
+    }
+}
+
+static void music_shuffle_call(void (*original)(void))
+{
+    uint32_t player = recomp_runtime.registers.eax;
+    uint32_t list = 0u, next = 0u;
+
+    if (music_shuffle_enabled()) {
+        list = *recomp_memory_u32(player + PLAYER_PLAYLIST);
+        next = list != 0u ? *recomp_memory_u32(list + PLAYLIST_NEXT) : 0u;
+    }
+    original();
+    if (music_shuffle_enabled()) {
+        music_shuffle_after(player, list, next);
+    }
+}
+
+static void music_start_song(void)
+{
+    music_shuffle_call(sub_000B8F70);
+}
+
+static void music_update(void)
+{
+    music_shuffle_call(sub_000B9790);
 }
 
 /* 0x000C9CC0: init of task 0x13, the hotel room menu's View Collection
@@ -222,6 +336,12 @@ RecompFunction recomp_lookup_manual(uint32_t guest_address)
     }
     if (function == NULL && guest_address == 0x000c9cc0u) {
         function = enter_collection_screen;
+    }
+    if (function == NULL && guest_address == 0x000b8f70u) {
+        function = music_start_song;
+    }
+    if (function == NULL && guest_address == 0x000b9790u) {
+        function = music_update;
     }
 #endif
     if (function == NULL && guest_address == 0x0018322du) {
