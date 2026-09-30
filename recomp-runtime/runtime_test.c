@@ -1,4 +1,5 @@
 #include "runtime.h"
+#include "program_manual.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -816,6 +817,28 @@ static int run_ram_overrun(void)
     return EXIT_SUCCESS;
 }
 
+/* Location 0 allows entries 0, 2 and 3; 2 is playing, so only 0 and 3. */
+static int run_music_shuffle_pick(void)
+{
+    const uint16_t masks[4] = {0x1u, 0x2u, 0x1u, 0x1u};
+    int seen[4] = {0};
+
+    for (uint32_t random = 0u; random < 16u; ++random) {
+        int pick = recomp_music_shuffle_pick(masks, 4, 2, 0, random);
+
+        if (pick != 0 && pick != 3) {
+            fprintf(stderr, "music shuffle: picked %d\n", pick);
+            return 0;
+        }
+        ++seen[pick];
+    }
+    return seen[0] > 0 && seen[3] > 0 &&
+        recomp_music_shuffle_pick(masks, 4, 2, -1, 1u) == 1 &&
+        recomp_music_shuffle_pick(masks, 1, 0, -1, 0u) == -1 &&
+        recomp_music_shuffle_pick(masks, 2, 0, 1, 0u) == 1 &&
+        recomp_music_shuffle_pick(masks, 2, 1, 1, 0u) == -1;
+}
+
 static int run_ram_pending_ohci(void)
 {
     uint8_t *ram = calloc_ram_fixture();
@@ -869,6 +892,7 @@ int main(int argc, char **argv)
         free(ram);
     }
     passed &= run_cached_ram_alias();
+    passed &= run_music_shuffle_pick();
     passed &= run_physical_ram_alias();
     passed &= recomp_xapi_time_adapter_test();
     passed &= recomp_device_model_test();

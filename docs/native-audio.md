@@ -70,3 +70,37 @@ each format. Natural selection, audible playback, playlist play-through, next
 track, end-of-track advance, seeking within a song where the game offers it,
 volume, stop, and return to the game's own music still need a user play test
 of a named build.
+
+## Radio shuffle
+
+The game has no random play: its music player keeps each playlist's next
+position one past the playing song, adds one after every song, and wraps at
+the end. Each playlist entry also carries a location mask, and the player
+skips songs not allowed where the player is.
+
+With the launcher's **Shuffle music** checkbox, or `RECOMP_MUSIC_SHUFFLE=1`
+for a runner started directly, the runtime wraps the two player functions
+that start songs (`0x000B8F70`, which starts the playlist song, and
+`0x000B9790`, the per-frame update; EAX is the player). Each runs
+unchanged. When it leaves the playlist's next position at the game's
+sequential step, the wrapper replaces it with a random entry allowed at the
+current location, never the playing song, and logs `[music-shuffle] next=N
+of M`. The recipe routes the direct calls to both functions through manual
+dispatch. The host random source is used, so the game's own `rand`
+sequence is unchanged. Saved playlists and their order are unchanged.
+
+"Previous" still steps back one entry from the shuffled next song. The goal
+is an option in the game's own PC settings screen (#77, #22) that replaces
+the launcher checkbox.
+
+| Player field | Meaning |
+|--------------|---------|
+| `+0x658` | Active playlist |
+| `+0x6E0` | Current location, 0-7 (signed byte) |
+
+| Playlist field | Meaning |
+|----------------|---------|
+| `+0x000` | Entry count, at most 100 |
+| `+0x644` | Pointer to the entry array, 16 bytes per entry; entry `+6` is the 16-bit location mask, `+0xC` the song ID |
+| `+0x64C` | Next position |
+| `+0x650` | Playing position |

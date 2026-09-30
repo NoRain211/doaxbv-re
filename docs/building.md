@@ -222,6 +222,8 @@ See [`docs/native-audio.md`](native-audio.md#custom-soundtracks) for supported
 formats, limits, and the remaining gameplay acceptance checks.
 Pass `--vsync` for paced presentation. Set `RECOMP_AUDIO_GAIN` from 0 to 1 for
 sound. Audio is muted by default when you start the runner directly.
+Set `RECOMP_MUSIC_SHUFFLE=1` to shuffle Radio Station playlists; see
+[`docs/native-audio.md`](native-audio.md#radio-shuffle).
 The game renders 16:9 in an 854x480 window. Set `RECOMP_D3D_WIDESCREEN=0` for
 its 4:3 view in a 640x480 window.
 Set `RECOMP_D3D_SCALE` from 1 to 8 to multiply the render height, for example
