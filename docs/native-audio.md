@@ -34,11 +34,13 @@ buffer lifetime/error handling, and adapter playback controls respectively.
 
 ## Custom soundtracks
 
-Players drop MP3, WAV, or FLAC files into UserMusic beside the imported XBE
-and pick them in the game's own custom soundtrack screen, such as the Radio
-Station playlist. The runner creates the folder at startup if it is missing
-and scans it once, so added or removed files appear after a restart. Keep the
-disc root, and so UserMusic, under private/.
+Players drop MP3, WAV, or FLAC files into `private\UserMusic` in the release
+folder, which the launcher's **Music folder** button opens, and pick them in
+the game's own custom soundtrack screen, such as the Radio Station playlist.
+`RunGame.cmd` passes that folder to the runner as `RECOMP_USER_MUSIC`; a
+runner started without it uses UserMusic beside the imported XBE. The runner
+creates the folder at startup if it is missing and scans it once, so added or
+removed files appear after a restart.
 
 The game stays in control: it enumerates the soundtrack, chooses the song,
 starts and stops it, and mixes it through CRI and DirectSound. The runtime

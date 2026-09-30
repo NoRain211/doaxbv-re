@@ -382,11 +382,11 @@ extern "C" int recomp_custom_music_test(void)
         TempRoot root;
         const auto folder = root.path / "UserMusic";
         check(fs::create_directories(folder), "new test directory");
-        const auto root_name = root.path.string();
+        const auto folder_name = folder.string();
         const Bytes pcm = tone(440), pcm_wave = wave(pcm, false);
         write(folder / L"z-\u97f3.wav", pcm_wave);
         write(folder / "broken.mp3", {1, 2, 3});
-        recomp_music_initialize(root_name.c_str());
+        recomp_music_initialize(folder_name.c_str());
         check(recomp_music_count() == 1, "malformed file skipped");
         const uint32_t stable_id = recomp_music_track(0)->id;
         recomp_music_shutdown();
@@ -395,7 +395,7 @@ extern "C" int recomp_custom_music_test(void)
         write(folder / "d-48k-mono.wav", wave_48k_mono());
         const bool flac = encode(folder / "b-flac.flac", MFAudioFormat_FLAC, pcm);
         const bool mp3 = encode(folder / "c-mp3.mp3", MFAudioFormat_MP3, tone(880));
-        recomp_music_initialize(root_name.c_str());
+        recomp_music_initialize(folder_name.c_str());
         const uint32_t count = 3u + flac + mp3;
         check(recomp_music_count() == count && recomp_music_track(count - 1)->id == stable_id,
             "sorted by folded name with stable IDs after insertion");
@@ -415,7 +415,7 @@ extern "C" int recomp_custom_music_test(void)
         original.close();
         check(after == pcm_wave, "original file unchanged");
         for (const auto &entry : fs::directory_iterator(folder)) fs::remove(entry.path());
-        recomp_music_initialize(root_name.c_str());
+        recomp_music_initialize(folder_name.c_str());
         check(recomp_music_count() == 0 && !recomp_music_open(stable_id), "removed and empty library");
         Guest guest;
         check(call(0x182430, {0x5000}) == UINT32_MAX && last_error(18), "empty library has no soundtrack");

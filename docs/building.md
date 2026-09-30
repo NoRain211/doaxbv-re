@@ -213,8 +213,10 @@ generated program and user-owned XBE under ignored local directories.
 `recomp_program_runner.exe` loads the generated program and the user-owned XBE.
 It creates storage beside the XBE under `.recomp-storage`. See
 [`docs/recomp-save-contract.md`](recomp-save-contract.md) for save behavior.
-The runner also creates `UserMusic` beside the XBE. Drop MP3, WAV, and FLAC
-files there and restart to list them in the game's custom soundtrack menu.
+The runner also creates the folder named by `RECOMP_USER_MUSIC`, or
+`UserMusic` beside the XBE when it is unset; `RunGame.cmd` sets it to
+`private/UserMusic`. Drop MP3, WAV, and FLAC files there and restart to list
+them in the game's custom soundtrack menu.
 See [`docs/native-audio.md`](native-audio.md#custom-soundtracks) for supported
 formats, limits, and the remaining gameplay acceptance checks.
 Pass `--vsync` for paced presentation. Set `RECOMP_AUDIO_GAIN` from 0 to 1 for
