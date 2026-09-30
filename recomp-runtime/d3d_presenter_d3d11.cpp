@@ -1,5 +1,6 @@
 #include "d3d_presenter_d3d11_backend.h"
 #include "d3d_draw_model.h"
+#include "d3d_vblank.h"
 #include "d3d_vertex_program.h"
 
 #define WIN32_LEAN_AND_MEAN
@@ -486,6 +487,7 @@ struct RecompD3dPresenter {
     FILE *present_log = nullptr;
     UINT sync_interval = 1u;
     bool vrr = false;           // RECOMP_D3D_VRR=1: the game's 60 Hz timer paces a VRR display
+    long long vrr_slot_ns = 0;  // steady_clock time of the last VRR present slot
     bool first_present_reported = false;
     unsigned frame_dump_count = 0u;
     ULONGLONG next_frame_dump_ms = 0u;
@@ -3184,6 +3186,15 @@ RecompD3dPresenterError submitPresent(
     const UINT sync_interval = immediate_present || presenter->vrr ? 0u : syncInterval(presenter);
     const UINT present_flags = immediate_present ? DXGI_PRESENT_DO_NOT_WAIT
         : presenter->vrr ? DXGI_PRESENT_ALLOW_TEARING : 0u;
+    if (presenter->vrr && !immediate_present) {
+        /* VRR shows a frame the moment it is presented, so render-time jitter
+           became 12-23 ms frames. Present on the guest's exact 1/60 s grid; a
+           late frame presents now and moves the grid, as the guest timer does. */
+        const long long now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        presenter->vrr_slot_ns = (std::max)(presenter->vrr_slot_ns + 1000000000 / 60, now);
+        recomp_d3d_sleep_until(presenter->vrr_slot_ns);
+    }
     LARGE_INTEGER qpc_before{}, qpc_after{};
     QueryPerformanceCounter(&qpc_before);
     const HRESULT present_result = presenter->swap_chain->Present(sync_interval, present_flags);
