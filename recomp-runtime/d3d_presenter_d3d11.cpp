@@ -426,7 +426,6 @@ struct RecompD3dPresenter {
     ID3D11VertexShader *vrr_vs = nullptr;
     ID3D11PixelShader *vrr_ps = nullptr;
     ID3D11SamplerState *vrr_sampler = nullptr;
-    ID3D11Query *vrr_done = nullptr;    // signals when the GPU has finished a VRR frame
     ID3D11VertexShader *gamma_vertex_shader = nullptr;
     ID3D11PixelShader *gamma_pixel_shader = nullptr;
     ID3D11Buffer *gamma_buffer = nullptr;
@@ -592,7 +591,6 @@ void releaseGraphics(RecompD3dPresenter *presenter)
     releaseCom(presenter->vrr_vs);
     releaseCom(presenter->vrr_ps);
     releaseCom(presenter->vrr_sampler);
-    releaseCom(presenter->vrr_done);
     releaseCom(presenter->gamma_vertex_shader);
     releaseCom(presenter->gamma_pixel_shader);
     releaseCom(presenter->gamma_buffer);
@@ -3191,25 +3189,13 @@ RecompD3dPresenterError submitPresent(
     if (presenter->vrr && !immediate_present) {
         /* VRR shows a frame the moment it is presented, so render-time jitter
            became 12-23 ms frames. Present on the guest's exact 1/60 s grid; a
-           late frame presents now and moves the grid, as the guest timer does.
-           Late means the GPU is still rendering it: the flip would wait for it. */
-        const auto now_ns = [] {
-            return std::chrono::duration_cast<std::chrono::nanoseconds>(
-                std::chrono::steady_clock::now().time_since_epoch()).count();
-        };
-        presenter->vrr_slot_ns = (std::max)(presenter->vrr_slot_ns + 1000000000 / 60, now_ns());
-        if (presenter->vrr_done == nullptr) {
-            const D3D11_QUERY_DESC query = {D3D11_QUERY_EVENT, 0u};
-            presenter->device->CreateQuery(&query, &presenter->vrr_done);
-        }
-        if (presenter->vrr_done != nullptr) presenter->context->End(presenter->vrr_done);
+           late frame presents now and moves the grid, as the guest timer does. */
+        const long long now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        presenter->vrr_slot_ns = (std::max)(presenter->vrr_slot_ns + 1000000000 / 60, now);
+        // Submit the frame's last commands now, so the GPU finishes them before the flip.
         presenter->context->Flush();
         recomp_d3d_sleep_until(presenter->vrr_slot_ns);
-        while (presenter->vrr_done != nullptr && presenter->context->GetData(
-                presenter->vrr_done, nullptr, 0u, D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_FALSE) {
-            recomp_d3d_sleep_until(now_ns() + 250000);
-        }
-        presenter->vrr_slot_ns = (std::max)(presenter->vrr_slot_ns, now_ns());
     }
     LARGE_INTEGER qpc_before{}, qpc_after{};
     QueryPerformanceCounter(&qpc_before);
