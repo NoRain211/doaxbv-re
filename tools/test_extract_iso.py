@@ -65,6 +65,8 @@ class ExtractionTests(unittest.TestCase):
                 self.assertEqual(launch(root), 0)
                 self.assertEqual(run.call_args.args[0], [str(runner), "--xbe", str(image), "--vsync"])
                 self.assertEqual(run.call_args.kwargs["env"]["RECOMP_AUDIO_GAIN"], "0.2")
+                self.assertEqual(run.call_args.kwargs["env"]["RECOMP_USER_MUSIC"],
+                                 str(root / "private" / "UserMusic"))
                 log = next((root / "private").glob("run-*.log")).read_text()
                 self.assertIn(data["runner_sha256"], log)
                 self.assertIn(str(receipt), log)

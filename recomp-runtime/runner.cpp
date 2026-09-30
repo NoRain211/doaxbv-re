@@ -817,7 +817,13 @@ std::vector<AnalogPulse> inputAnalogPulses;
     recomp_cri_service_adapter_reset();
     std::atexit(recomp_audio_output_shutdown);
     recomp_audio_output_initialize();
-    recomp_music_initialize(recomp_disc_root_path);
+    {
+        // run_game.py points this at the release's private\UserMusic.
+        const char *music = std::getenv("RECOMP_USER_MUSIC");
+        static const std::string music_folder = music && *music ? std::string(music) :
+            (std::filesystem::path(recomp_disc_root_path) / "UserMusic").string();
+        recomp_music_initialize(music_folder.c_str());
+    }
     std::atexit([] {
         recomp_soundtrack_shutdown(); // closes decoders before Media Foundation stops
         recomp_music_shutdown();

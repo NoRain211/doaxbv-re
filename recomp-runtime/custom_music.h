@@ -24,11 +24,12 @@ typedef struct RecompMusicTrack {
 } RecompMusicTrack;
 typedef struct RecompMusicDecoder RecompMusicDecoder;
 
-/* Runtime thread only. Scan once at startup; root is the private disc root.
+/* Runtime thread only. Scan once at startup; folder is the private UserMusic
+   folder, created when missing.
    Originals are opened read-only. No encoded or decoded cache is written.
    Without Media Foundation (Windows N editions) the catalog stays empty.
    Close every decoder before recomp_music_shutdown. */
-void recomp_music_initialize(const char *root);
+void recomp_music_initialize(const char *folder);
 void recomp_music_shutdown(void);
 uint32_t recomp_music_count(void);
 /* Sum of every track's duration in milliseconds, saturated. */
