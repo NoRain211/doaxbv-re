@@ -35,9 +35,11 @@ $resolution = Add-Choice 'Resolution' 12 $heightNames $nearest
 $msaaNames = [string[]]($samples | ForEach-Object { if ($_ -eq 1) { 'Off' } else { "$($_)x" } })
 $msaa = Add-Choice 'MSAA' 44 $msaaNames ([Array]::IndexOf($samples, [int]$settings.msaa))
 $smaa = New-Object Windows.Forms.CheckBox -Property @{ Text = 'SMAA'; Left = 100; Top = 76; Checked = [bool]$settings.smaa }
-# Settings saved before 0.5.2 have no volume; IndexOf then returns -1 and 100% is picked.
+# PowerShell 7 loads JSON numbers as Int64, so cast. Settings saved before
+# 0.5.2 have no volume; casting $null would give 0 (Mute), so use -1 (100%).
+$savedVolume = if ($null -ne $settings.volume) { [Array]::IndexOf($volumes, [int]$settings.volume) } else { -1 }
 $volumeNames = [string[]]($volumes | ForEach-Object { if ($_ -eq 0) { 'Mute' } else { "$_%" } })
-$volume = Add-Choice 'Volume' 104 $volumeNames ([Array]::IndexOf($volumes, $settings.volume))
+$volume = Add-Choice 'Volume' 104 $volumeNames $savedVolume
 $play = New-Object Windows.Forms.Button -Property @{ Text = 'Play'; Left = 151; Top = 136; DialogResult = 'OK' }
 $music = New-Object Windows.Forms.Button -Property @{ Text = 'Music folder'; Left = 12; Top = 136; Width = 90 }
 $music.Add_Click({
