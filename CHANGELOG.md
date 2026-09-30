@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.5.1 Beta "Mixtape" — 2026-09-29
+
+This hotfix moves the custom music folder. It changes only the runtime and
+launcher; the recipe and saves are unchanged. Extract the new ZIP into a new
+folder and run `BuildGame.cmd` again.
+
+### Changed
+
+- **Music folder** (#75). Custom songs now go in `private\UserMusic` in the
+  release folder instead of `private\imported-disc\disc\UserMusic`, and the
+  launcher has a **Music folder** button that opens it. Move any songs from
+  the 0.5.0 location.
+
 ## 0.5.0 Beta "Mixtape" — 2026-09-29
 
 This release adds custom soundtracks. It updates the generation recipe, so
