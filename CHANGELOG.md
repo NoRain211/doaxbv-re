@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.5.3 Beta "Mixtape" — 2026-09-30
+
+This release adds Radio Station shuffle. It updates the generation recipe, so
+download the new ZIP and run `BuildGame.cmd` again; saves are unchanged.
+
+### Added
+
+- **Shuffle** (#78, #77). The game has no random play: its music player steps
+  to the next playlist song. Ticking **Shuffle music** in the launcher, or
+  setting `RECOMP_MUSIC_SHUFFLE=1`, plays each playlist in random order,
+  custom soundtrack songs included. Songs still follow the game's location
+  rules, the playing song is never picked again next, and saved playlists keep
+  their order. "Previous" steps back one entry from the shuffled next song.
+  An option in the game's own settings screen is planned (#77, #22).
+
+### Changed
+
+- The recipe routes the direct calls to the music player's two song-start
+  functions through manual dispatch. The lifter is unchanged.
+
 ## 0.5.2 Beta "Mixtape" — 2026-09-30
 
 This hotfix adds volume control. It changes only the launcher and run script;
