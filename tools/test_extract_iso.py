@@ -60,11 +60,12 @@ class ExtractionTests(unittest.TestCase):
                     "runner_sha256": sha256(runner), "xbe_sha256": sha256(image),
                     "recipe_sha256": "synthetic-recipe", "generation_parity": "exact-local-match"}
             receipt.write_text(json.dumps(data))
-            with patch("run_game.subprocess.run") as run:
+            with patch("run_game.subprocess.run") as run, patch.dict(os.environ):
+                os.environ.pop("RECOMP_AUDIO_GAIN", None)
                 run.return_value.returncode = 0
                 self.assertEqual(launch(root), 0)
                 self.assertEqual(run.call_args.args[0], [str(runner), "--xbe", str(image), "--vsync"])
-                self.assertEqual(run.call_args.kwargs["env"]["RECOMP_AUDIO_GAIN"], "0.2")
+                self.assertEqual(run.call_args.kwargs["env"]["RECOMP_AUDIO_GAIN"], "1")
                 self.assertEqual(run.call_args.kwargs["env"]["RECOMP_USER_MUSIC"],
                                  str(root / "private" / "UserMusic"))
                 log = next((root / "private").glob("run-*.log")).read_text()
@@ -110,13 +111,14 @@ class ExtractionTests(unittest.TestCase):
                 launch(root)
             (imported / "receipt.json").write_text(json.dumps({"status": "extracted"}))
             (disc / "synthetic.xbe").touch()
-            with patch("run_game.subprocess.run") as run:
+            with patch("run_game.subprocess.run") as run, \
+                    patch.dict(os.environ, {"RECOMP_AUDIO_GAIN": "0.5"}):
                 run.return_value.returncode = 7
                 self.assertEqual(launch(root), 7)
                 self.assertEqual(run.call_args.args[0],
                                  [str(root / "recomp_program_runner.exe"), "--xbe",
                                   str(disc / "synthetic.xbe"), "--vsync"])
-                self.assertEqual(run.call_args.kwargs["env"]["RECOMP_AUDIO_GAIN"], "0.2")
+                self.assertEqual(run.call_args.kwargs["env"]["RECOMP_AUDIO_GAIN"], "0.5")
                 self.assertEqual(run.call_args.kwargs["cwd"], disc)
 
     def test_paths_and_complete_listing(self):
